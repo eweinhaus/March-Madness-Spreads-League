@@ -15,6 +15,7 @@ from auth import (
     verify_password, get_password_hash, create_access_token, verify_token
 )
 from typing import Optional
+import urllib.parse
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -23,11 +24,21 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+# Parse database URL and handle port
+database_url = os.getenv("DATABASE_URL")
+if database_url:
+    # Parse the URL
+    parsed = urllib.parse.urlparse(database_url)
+    # Get the port from the URL or use default
+    port = parsed.port or 5432
+    # Reconstruct the URL with the correct port
+    database_url = database_url.replace(f":{parsed.port}", f":{port}")
+
 # Create connection pool
 pool = SimpleConnectionPool(
     minconn=1,
     maxconn=10,
-    dsn=os.getenv("DATABASE_URL")
+    dsn=database_url
 )
 
 # OAuth2 scheme
