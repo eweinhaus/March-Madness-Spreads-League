@@ -452,7 +452,15 @@ def get_live_games():
     """Get all live games (games that have started but don't have a winner yet) and their picks."""
     try:
         with get_db_cursor() as cur:
-            current_time = datetime.now()
+            current_time = datetime.utcnow()
+            logger.info(f"Checking live games at {current_time} UTC")
+            
+            # First get all games to log their dates
+            cur.execute("SELECT id, game_date, winning_team FROM games")
+            all_games = cur.fetchall()
+            for game in all_games:
+                logger.info(f"Game {game['id']}: date={game['game_date']} UTC, winner={game['winning_team']}, is_live={game['game_date'] <= current_time and (game['winning_team'] is None or game['winning_team'] == '')}")
+            
             cur.execute("""
                 SELECT 
                     g.id as game_id,
@@ -474,11 +482,12 @@ def get_live_games():
                 LEFT JOIN picks p ON g.id = p.game_id
                 LEFT JOIN users u ON p.user_id = u.id
                 WHERE g.game_date <= %s 
-                AND g.winning_team IS NULL
+                AND (g.winning_team IS NULL OR g.winning_team = '')
                 GROUP BY g.id
                 ORDER BY g.game_date DESC
             """, (current_time,))
             games = cur.fetchall()
+            logger.info(f"Found {len(games)} live games")
             return games
     except Exception as e:
         logger.error(f"Error fetching live games: {str(e)}")

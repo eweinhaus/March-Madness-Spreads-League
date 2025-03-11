@@ -62,21 +62,21 @@ const AdminGames = () => {
     setSuccess(null);
     
     try {
-      // Convert spread to float and prepare game data
+      // Convert the local datetime to UTC before sending to server
+      const localDate = new Date(newGame.game_date);
+      const utcDate = new Date(localDate.getTime() - localDate.getTimezoneOffset() * 60000);
+      
       const gameData = {
         ...newGame,
-        spread: parseFloat(newGame.spread)
+        spread: parseFloat(newGame.spread),
+        game_date: utcDate.toISOString()
       };
       
-      // Send game to backend with auth headers
       await axios.post(`${API_URL}/games`, gameData, {
         headers: getAuthHeaders()
       });
       
-      // Refresh games list
       await fetchGames();
-      
-      // Reset form
       setNewGame({
         home_team: '',
         away_team: '',
@@ -124,15 +124,42 @@ const AdminGames = () => {
     }
   };
 
+  // Helper function to format date for datetime-local input
+  const formatDateForInput = (dateString) => {
+    const date = new Date(dateString);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
+  };
+
+  // Helper function to format date for display
+  const formatDateForDisplay = (dateString) => {
+    const date = new Date(dateString);
+    return date.toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZoneName: 'short'
+    });
+  };
+
   // Helper function to check if a game has started
   const hasGameStarted = (gameDate) => {
-    return new Date() >= new Date(gameDate);
+    const now = new Date();
+    const gameTime = new Date(gameDate);
+    return now >= gameTime;
   };
 
   const handleEditClick = (game) => {
     setEditingGame({
       ...game,
-      game_date: new Date(game.game_date).toISOString().slice(0, 16)
+      game_date: formatDateForInput(game.game_date)
     });
     setShowEditModal(true);
   };
@@ -143,9 +170,14 @@ const AdminGames = () => {
     setSuccess(null);
     
     try {
+      // Convert the local datetime to UTC before sending to server
+      const localDate = new Date(editingGame.game_date);
+      const utcDate = new Date(localDate.getTime() - localDate.getTimezoneOffset() * 60000);
+      
       const gameData = {
         ...editingGame,
-        spread: parseFloat(editingGame.spread)
+        spread: parseFloat(editingGame.spread),
+        game_date: utcDate.toISOString()
       };
       
       await axios.put(`${API_URL}/games/${editingGame.id}`, gameData, {
@@ -248,7 +280,7 @@ const AdminGames = () => {
         </Form.Group>
 
         <Form.Group className="mb-3">
-          <Form.Label>Game Date & Time</Form.Label>
+          <Form.Label>Game Date & Time (Your Local Time)</Form.Label>
           <Form.Control
             type="datetime-local"
             name="game_date"
@@ -281,13 +313,7 @@ const AdminGames = () => {
             const gameStarted = hasGameStarted(game.game_date);
             return (
               <tr key={game.id}>
-                <td>{new Date(game.game_date).toLocaleString(undefined, {
-                  year: 'numeric',
-                  month: 'numeric',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}</td>
+                <td>{formatDateForDisplay(game.game_date)}</td>
                 <td>{game.away_team} @ {game.home_team}</td>
                 <td>{game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} +${-game.spread}`}</td>
                 <td>
