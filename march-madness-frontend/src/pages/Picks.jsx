@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { Container, Row, Col, Card, Button, Alert } from "react-bootstrap";
+import { API_URL } from "../config";
 
 export default function Picks() {
   const [games, setGames] = useState([]);
@@ -18,8 +19,8 @@ export default function Picks() {
     setIsLoading(true);
     // Fetch games and existing picks
     Promise.all([
-      axios.get("http://localhost:8000/games", { headers }),
-      axios.get("http://localhost:8000/my_picks", { headers })
+      axios.get(`${API_URL}/games`, { headers }),
+      axios.get(`${API_URL}/my_picks`, { headers })
     ])
       .then(([gamesRes, picksRes]) => {
         setGames(gamesRes.data);
@@ -50,7 +51,7 @@ export default function Picks() {
     try {
       const responses = await Promise.all(
         Object.entries(picks).map(([gameId, pickedTeam]) => 
-          axios.post("http://localhost:8000/submit_pick", 
+          axios.post(`${API_URL}/submit_pick`, 
             {
               game_id: parseInt(gameId),
               picked_team: pickedTeam

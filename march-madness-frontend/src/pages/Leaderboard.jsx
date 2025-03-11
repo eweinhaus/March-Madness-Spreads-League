@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { Alert, Modal, Button, Table } from "react-bootstrap";
+import { API_URL } from "../config";
 
 export default function Leaderboard() {
   const [leaderboard, setLeaderboard] = useState([]);
@@ -14,7 +15,7 @@ export default function Leaderboard() {
   }, []);
 
   const fetchLeaderboard = () => {
-    axios.get("http://localhost:8000/leaderboard")
+    axios.get(`${API_URL}/leaderboard`)
       .then(res => {
         setLeaderboard(res.data);
         setError(null);
@@ -28,7 +29,7 @@ export default function Leaderboard() {
   const handleUserClick = async (username) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get(`http://localhost:8000/user_picks/${username}`, {
+      const response = await axios.get(`${API_URL}/user_picks/${username}`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }

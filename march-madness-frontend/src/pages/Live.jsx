@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { Alert, Card, ListGroup, Badge, Container, Spinner } from "react-bootstrap";
+import { API_URL } from "../config";
 
 export default function Live() {
   const [liveGames, setLiveGames] = useState([]);
@@ -15,7 +16,7 @@ export default function Live() {
     setLoading(true);
     setError(null);
     
-    axios.get("http://localhost:8000/live_games")
+    axios.get(`${API_URL}/live_games`)
       .then(res => {
         setLiveGames(Array.isArray(res.data) ? res.data : []);
         setError(null);

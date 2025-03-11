@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import './App.css';
 import axios from 'axios';
+import { API_URL } from "./config";
 
 import Home from './pages/Home';
 import Picks from './pages/Picks';
@@ -28,7 +29,7 @@ function ProtectedRoute({ children, adminOnly = false }) {
       }
 
       try {
-        const response = await fetch('http://localhost:8000/users/me', {
+        const response = await fetch(`${API_URL}/users/me`, {
           headers: {
             'Authorization': `Bearer ${token}`
           }
@@ -79,7 +80,7 @@ function AppContent() {
     setIsAuthenticated(!!token);
 
     if (token) {
-      fetch('http://localhost:8000/users/me', {
+      fetch(`${API_URL}/users/me`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Form, Button, Alert, Container, Row, Col } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
+import { API_URL } from "../config";
 
 const Register = () => {
   const [formData, setFormData] = useState({
@@ -33,7 +34,7 @@ const Register = () => {
     try {
       console.log('Sending registration request...');
       // Register the user
-      const registerResponse = await fetch('http://localhost:8000/register', {
+      const registerResponse = await fetch(`${API_URL}/register`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -55,7 +56,7 @@ const Register = () => {
 
       console.log('Registration successful, attempting auto-login...');
       // Automatically log in the user
-      const loginResponse = await fetch('http://localhost:8000/token', {
+      const loginResponse = await fetch(`${API_URL}/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
