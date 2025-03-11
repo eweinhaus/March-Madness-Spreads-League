@@ -14,5 +14,8 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api/, '')
       }
     }
+  },
+  preview: {
+    allowedHosts: ['march-madness-spreads-league.onrender.com']
   }
 })
