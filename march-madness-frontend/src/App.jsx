@@ -103,31 +103,34 @@ function AppContent() {
 
   return (
     <div className="App">
-      <Navbar bg="dark" variant="dark" expand="lg" className="navbar">
+      <Navbar bg="dark" variant="dark" expand="lg" className="navbar" collapseOnSelect>
         <Container>
           <Navbar.Brand as={Link} to="/">March Madness Spreads</Navbar.Brand>
           <Navbar.Toggle aria-controls="basic-navbar-nav" />
           <Navbar.Collapse id="basic-navbar-nav">
             <Nav className="me-auto">
-              <Nav.Link as={Link} to="/">Home</Nav.Link>
-              <Nav.Link as={Link} to="/live">Live</Nav.Link>
-              <Nav.Link as={Link} to="/leaderboard">Leaderboard</Nav.Link>
-              <Nav.Link as={Link} to="/picks">Picks</Nav.Link>
+              <Nav.Link as={Link} to="/" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Home</Nav.Link>
+              <Nav.Link as={Link} to="/live" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Live</Nav.Link>
+              <Nav.Link as={Link} to="/leaderboard" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Leaderboard</Nav.Link>
+              <Nav.Link as={Link} to="/picks" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Picks</Nav.Link>
               {isAuthenticated && isAdmin && (
-                <Nav.Link as={Link} to="/admin/games">Admin: Games</Nav.Link>
+                <Nav.Link as={Link} to="/admin/games" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Admin: Games</Nav.Link>
               )}
               {isAuthenticated && isAdmin && (
-                <Nav.Link as={Link} to="/admin/user-picks">Admin: User Picks</Nav.Link>
+                <Nav.Link as={Link} to="/admin/user-picks" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Admin: User Picks</Nav.Link>
               )}
             </Nav>
             <Nav>
               {isAuthenticated ? (
-                <Button variant="outline-light" onClick={handleLogout}>Logout</Button>
+                <div className="d-flex align-items-center">
+                  {user && <span className="text-light me-2 d-none d-sm-inline">{user.username}</span>}
+                  <Button variant="outline-light" onClick={handleLogout}>Logout</Button>
+                </div>
               ) : (
-                <>
-                  <Nav.Link as={Link} to="/login">Login</Nav.Link>
-                  <Nav.Link as={Link} to="/register">Register</Nav.Link>
-                </>
+                <div className="d-flex flex-column flex-sm-row">
+                  <Nav.Link as={Link} to="/login" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Login</Nav.Link>
+                  <Nav.Link as={Link} to="/register" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Register</Nav.Link>
+                </div>
               )}
             </Nav>
           </Navbar.Collapse>

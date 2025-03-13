@@ -91,68 +91,75 @@ const Register = () => {
   };
 
   return (
-    <Container className="mt-5">
+    <Container className="mt-3 mt-md-5 px-3 px-md-4">
       <Row className="justify-content-center">
-        <Col md={6}>
-          <h2 className="text-center mb-4">Register</h2>
-          {error && <Alert variant="danger">{error}</Alert>}
-          <Form onSubmit={handleSubmit}>
-            <Form.Group className="mb-3">
-              <Form.Label>Username</Form.Label>
-              <Form.Control
-                type="text"
-                name="username"
-                value={formData.username}
-                onChange={handleChange}
-                required
-              />
-            </Form.Group>
+        <Col xs={12} sm={10} md={8} lg={6} xl={5}>
+          <div className="bg-white p-3 p-md-4 rounded shadow-sm">
+            <h2 className="text-center mb-3 mb-md-4">Register</h2>
+            {error && <Alert variant="danger">{error}</Alert>}
+            <Form onSubmit={handleSubmit}>
+              <Form.Group className="mb-3">
+                <Form.Label>Username</Form.Label>
+                <Form.Control
+                  type="text"
+                  name="username"
+                  value={formData.username}
+                  onChange={handleChange}
+                  required
+                  className="py-2"
+                />
+              </Form.Group>
 
-            <Form.Group className="mb-3">
-              <Form.Label>Full Name</Form.Label>
-              <Form.Control
-                type="text"
-                name="full_name"
-                value={formData.full_name}
-                onChange={handleChange}
-                required
-              />
-            </Form.Group>
+              <Form.Group className="mb-3">
+                <Form.Label>Full Name</Form.Label>
+                <Form.Control
+                  type="text"
+                  name="full_name"
+                  value={formData.full_name}
+                  onChange={handleChange}
+                  required
+                  className="py-2"
+                />
+              </Form.Group>
 
-            <Form.Group className="mb-3">
-              <Form.Label>Password</Form.Label>
-              <Form.Control
-                type="password"
-                name="password"
-                value={formData.password}
-                onChange={handleChange}
-                required
-              />
-            </Form.Group>
+              <Form.Group className="mb-3">
+                <Form.Label>Password</Form.Label>
+                <Form.Control
+                  type="password"
+                  name="password"
+                  value={formData.password}
+                  onChange={handleChange}
+                  required
+                  className="py-2"
+                />
+              </Form.Group>
 
-            <Form.Group className="mb-3">
-              <Form.Label>Confirm Password</Form.Label>
-              <Form.Control
-                type="password"
-                name="confirmPassword"
-                value={formData.confirmPassword}
-                onChange={handleChange}
-                required
-              />
-            </Form.Group>
+              <Form.Group className="mb-4">
+                <Form.Label>Confirm Password</Form.Label>
+                <Form.Control
+                  type="password"
+                  name="confirmPassword"
+                  value={formData.confirmPassword}
+                  onChange={handleChange}
+                  required
+                  className="py-2"
+                />
+              </Form.Group>
 
-            <div className="d-grid gap-2">
-              <Button variant="primary" type="submit">
-                Register
-              </Button>
-              <Button 
-                variant="outline-secondary" 
-                onClick={() => navigate('/login')}
-              >
-                Already have an account? Login
-              </Button>
-            </div>
-          </Form>
+              <div className="d-grid gap-2">
+                <Button variant="primary" type="submit" className="py-2">
+                  Register
+                </Button>
+                <Button 
+                  variant="outline-secondary" 
+                  onClick={() => navigate('/login')}
+                  className="py-2 mt-1"
+                >
+                  Already have an account? Login
+                </Button>
+              </div>
+            </Form>
+          </div>
         </Col>
       </Row>
     </Container>

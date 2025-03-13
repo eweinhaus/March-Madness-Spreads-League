@@ -100,16 +100,16 @@ export default function Picks() {
   const availableGames = games.filter(game => !hasGameStarted(game.game_date));
 
   return (
-    <Container>
-      <Row className="mb-4">
+    <Container fluid="md" className="px-2 px-md-3">
+      <Row className="mb-3 mb-md-4">
         <Col>
-          <h2 className="text-start">Make Your Picks</h2>
-          <p className="text-muted">Select your picks for upcoming games. All picks must be submitted before game time.</p>
+          <h2 className="text-center text-md-start">Make Your Picks</h2>
+          <p className="text-muted text-center text-md-start">Select your picks for upcoming games. All picks must be submitted before game time.</p>
         </Col>
       </Row>
 
       {error && (
-        <Row className="mb-4">
+        <Row className="mb-3 mb-md-4">
           <Col>
             <Alert variant="danger">{error}</Alert>
           </Col>
@@ -130,7 +130,7 @@ export default function Picks() {
         </Row>
       ) : (
         <>
-          <Row xs={1} md={2} lg={3} className="g-4">
+          <Row xs={1} sm={2} lg={3} className="g-3 g-md-4">
             {availableGames.map(game => {
               const existingPick = existingPicks[game.id];
               const currentPick = picks[game.id];
@@ -138,33 +138,34 @@ export default function Picks() {
 
               return (
                 <Col key={game.id}>
-                  <Card>
-                    <Card.Body>
-                      <Card.Title className="d-flex justify-content-between align-items-center">
-                        <span>{game.away_team}</span>
-                        <small className="text-muted">@</small>
-                        <span>{game.home_team}</span>
+                  <Card className="h-100 shadow-sm">
+                    <Card.Body className="d-flex flex-column">
+                      <Card.Title className="d-flex justify-content-between align-items-center mb-3">
+                        <span className="text-truncate me-1">{game.away_team}</span>
+                        <small className="text-muted mx-1">@</small>
+                        <span className="text-truncate ms-1">{game.home_team}</span>
                       </Card.Title>
-                      <Card.Text>
-                        Spread: {game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} +${-game.spread}`}
-                        <br />
-                        Game time: {formatDateForDisplay(game.game_date)}
+                      <Card.Text className="mb-3">
+                        <div className="mb-1"><strong>Spread:</strong> {game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} +${-game.spread}`}</div>
+                        <div className="mb-1"><strong>Game time:</strong> {formatDateForDisplay(game.game_date)}</div>
                         {existingPick && (
-                          <div className="mt-2">
+                          <div className="mt-2 text-success">
                             <strong>Your pick: {existingPick}</strong>
                           </div>
                         )}
                       </Card.Text>
-                      <div className="d-grid gap-2">
+                      <div className="d-grid gap-2 mt-auto">
                         <Button
                           variant={selectedTeam === game.away_team ? "success" : "outline-primary"}
                           onClick={() => handlePick(game.id, game.away_team)}
+                          className="py-2"
                         >
                           {game.away_team} {game.spread > 0 ? `+${game.spread}` : `+${-game.spread}`}
                         </Button>
                         <Button
                           variant={selectedTeam === game.home_team ? "success" : "outline-primary"}
                           onClick={() => handlePick(game.id, game.home_team)}
+                          className="py-2"
                         >
                           {game.home_team} {game.spread > 0 ? `-${game.spread}` : `-${-game.spread}`}
                         </Button>
@@ -179,7 +180,7 @@ export default function Picks() {
           {Object.keys(picks).length > 0 && (
             <Row className="mt-4">
               <Col className="d-flex justify-content-center">
-                <Button variant="success" size="lg" onClick={submitPicks}>
+                <Button variant="success" size="lg" onClick={submitPicks} className="px-4 py-2">
                   Submit Picks
                 </Button>
               </Col>

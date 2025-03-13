@@ -50,11 +50,11 @@ export default function Leaderboard() {
   };
 
   return (
-    <div className="container my-5">
-      <h2 className="mb-4">Leaderboard</h2>
+    <div className="container my-3 my-md-5 px-2 px-md-3">
+      <h2 className="mb-3 mb-md-4 text-center text-md-start">Leaderboard</h2>
       
       {error && (
-        <Alert variant="danger" className="mb-4">
+        <Alert variant="danger" className="mb-3 mb-md-4">
           {error}
         </Alert>
       )}
@@ -64,11 +64,11 @@ export default function Leaderboard() {
           No entries in the leaderboard yet.
         </Alert>
       ) : (
-        <ul className="list-group">
+        <ul className="list-group shadow-sm">
           {leaderboard.map((player, index) => (
             <li 
               key={player.username} 
-              className="list-group-item d-flex justify-content-between align-items-center"
+              className="list-group-item d-flex justify-content-between align-items-center py-3"
               style={{ cursor: 'pointer' }}
               onClick={() => handleUserClick(player.username)}
             >
@@ -81,48 +81,50 @@ export default function Leaderboard() {
         </ul>
       )}
 
-      <Modal show={showModal} onHide={handleCloseModal} size="lg">
+      <Modal show={showModal} onHide={handleCloseModal} size="lg" centered fullscreen="sm-down">
         <Modal.Header closeButton>
           <Modal.Title>{selectedUser}'s Picks</Modal.Title>
         </Modal.Header>
-        <Modal.Body>
+        <Modal.Body className="p-2 p-md-3">
           {userPicks.length === 0 ? (
             <Alert variant="info">
               No picks available for games that have started.
             </Alert>
           ) : (
-            <Table striped bordered hover>
-              <thead>
-                <tr>
-                  <th>Game</th>
-                  <th>Spread</th>
-                  <th>Pick</th>
-                  <th>Result</th>
-                  <th>Points</th>
-                </tr>
-              </thead>
-              <tbody>
-                {userPicks.map((pick) => (
-                  <tr key={pick.game_id}>
-                    <td>{pick.away_team} @ {pick.home_team}</td>
-                    <td>
-                      {pick.spread > 0 
-                        ? `${pick.home_team} -${pick.spread}` 
-                        : `${pick.away_team} +${-pick.spread}`}
-                    </td>
-                    <td>{pick.picked_team}</td>
-                    <td>
-                      {pick.winning_team 
-                        ? pick.winning_team === "PUSH"
-                          ? "PUSH"
-                          : `Covered: ${pick.winning_team}`
-                        : "Pending"}
-                    </td>
-                    <td>{pick.points_awarded}</td>
+            <div className="table-responsive">
+              <Table striped bordered hover responsive className="mb-0">
+                <thead>
+                  <tr>
+                    <th>Game</th>
+                    <th>Spread</th>
+                    <th>Pick</th>
+                    <th>Result</th>
+                    <th>Points</th>
                   </tr>
-                ))}
-              </tbody>
-            </Table>
+                </thead>
+                <tbody>
+                  {userPicks.map((pick) => (
+                    <tr key={pick.game_id}>
+                      <td className="text-nowrap">{pick.away_team} @ {pick.home_team}</td>
+                      <td>
+                        {pick.spread > 0 
+                          ? `${pick.home_team} -${pick.spread}` 
+                          : `${pick.away_team} +${-pick.spread}`}
+                      </td>
+                      <td>{pick.picked_team}</td>
+                      <td>
+                        {pick.winning_team 
+                          ? pick.winning_team === "PUSH"
+                            ? "PUSH"
+                            : `Covered: ${pick.winning_team}`
+                          : "Pending"}
+                      </td>
+                      <td className="text-center">{pick.points_awarded}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+            </div>
           )}
         </Modal.Body>
         <Modal.Footer>

@@ -121,7 +121,8 @@
 
 @media (max-width: 768px) {
   .container {
-    padding: 0 0.5rem;
+    padding: 0 0.75rem;
+    width: 100%;
   }
   
   .card {
@@ -130,6 +131,79 @@
   
   .btn-group {
     flex-direction: column;
+    width: 100%;
+  }
+  
+  .main-content {
+    margin-top: 56px;
+    padding: 1rem 0.5rem;
+  }
+  
+  .navbar-collapse {
+    background-color: #343a40;
+    padding: 0.5rem;
+    border-radius: 0 0 8px 8px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  }
+  
+  .table {
+    font-size: 0.85rem;
+  }
+  
+  .table td, .table th {
+    padding: 0.5rem;
+  }
+  
+  h1 {
+    font-size: 1.8rem;
+  }
+  
+  h2 {
+    font-size: 1.5rem;
+  }
+  
+  h3 {
+    font-size: 1.2rem;
+  }
+  
+  .display-4 {
+    font-size: 2rem;
+  }
+  
+  .lead {
+    font-size: 1rem;
+  }
+  
+  .modal-dialog {
+    margin: 0.5rem;
+  }
+}
+
+@media (max-width: 576px) {
+  .d-flex.gap-3 {
+    flex-direction: column;
+    gap: 0.5rem !important;
+  }
+  
+  .btn-lg {
+    width: 100%;
+    margin-bottom: 0.5rem;
+  }
+  
+  .list-group-item {
+    padding: 0.75rem;
+  }
+  
+  .badge {
+    font-size: 0.7rem;
+  }
+  
+  .card-title {
+    font-size: 1rem;
+  }
+  
+  .card-text {
+    font-size: 0.9rem;
   }
 }
 
