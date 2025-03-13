@@ -10,6 +10,33 @@ export default function Picks() {
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Convert UTC from database to local time
+  const utcToLocal = (utcDateString) => {
+    //Get time in utc
+    const utc = new Date(utcDateString);
+    //Get offset from utc
+    const offset = utc.getTimezoneOffset();
+    //Convert to local time
+    const local = new Date(utc.getTime() - (offset * 60 * 1000));
+    return local;
+  };
+
+  // Helper function to format date for display
+  const formatDateForDisplay = (utcDateString) => {
+    const localDate = utcToLocal(utcDateString);
+    
+    // Format in local time with timezone name
+    return localDate.toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      timeZoneName: 'short'  // This will show EDT/EST
+    });
+  };
+
   useEffect(() => {
     const token = localStorage.getItem('token');
     const headers = {
@@ -136,14 +163,7 @@ export default function Picks() {
                       <Card.Text>
                         Spread: {game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} +${-game.spread}`}
                         <br />
-                        Game time: {new Date(game.game_date).toLocaleString('en-US', {
-                          year: 'numeric',
-                          month: 'numeric',
-                          day: 'numeric',
-                          hour: 'numeric',
-                          minute: '2-digit',
-                          hour12: true
-                        })}
+                        Game time: {formatDateForDisplay(game.game_date)}
                         {existingPick && (
                           <div className="mt-2">
                             <strong>Your pick: {existingPick}</strong>

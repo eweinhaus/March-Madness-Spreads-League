@@ -9,7 +9,8 @@ const AdminGames = () => {
     home_team: '',
     away_team: '',
     spread: '',
-    game_date: ''
+    game_date: '',
+    half: 1
   });
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -20,6 +21,8 @@ const AdminGames = () => {
 
   // Fetch games on component mount
   useEffect(() => {
+    console.log('User Local Time:', new Date().toLocaleString());
+    console.log('User Timezone:', Intl.DateTimeFormat().resolvedOptions().timeZone);
     fetchGames();
   }, []);
 
@@ -52,8 +55,63 @@ const AdminGames = () => {
     const { name, value } = e.target;
     setNewGame(prev => ({
       ...prev,
-      [name]: value
+      [name]: name === 'half' ? parseInt(value) : value
     }));
+  };
+
+  // Convert local time to UTC for database storage
+  const localToUTC = (localDateString) => {
+    //This function is not needed because the datetime-local input already stores the time in UTC
+    //Get local time
+    const local = new Date(localDateString);
+    return local.toISOString();
+  };
+
+  // Convert UTC from database to local time (EDT)
+  const utcToLocal = (utcDateString) => {
+    //Get time in utc
+    const utc = new Date(utcDateString);
+    //Get offset from utc
+    const offset = utc.getTimezoneOffset();
+    //Convert to local time
+    const local = new Date(utc.getTime() - (offset * 60 * 1000));
+    return local;
+  };
+
+  // Helper function to format date for datetime-local input
+  const formatDateForInput = (utcDateString) => {
+    const localDate = utcToLocal(utcDateString);
+    
+    // Format in local time
+    const year = localDate.getFullYear();
+    const month = String(localDate.getMonth() + 1).padStart(2, '0');
+    const day = String(localDate.getDate()).padStart(2, '0');
+    const hours = String(localDate.getHours()).padStart(2, '0');
+    const minutes = String(localDate.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
+  };
+
+  // Helper function to format date for display
+  const formatDateForDisplay = (utcDateString) => {
+    const localDate = utcToLocal(utcDateString);
+    
+    // Format in local time with timezone name
+    return localDate.toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      timeZoneName: 'short'  // This will show EDT/EST
+    });
+  };
+
+  // Helper function to check if a game has started
+  const hasGameStarted = (utcDateString) => {
+    const now = new Date();  // Local time
+    const gameTime = new Date(utcDateString);  // Converts UTC to local automatically
+    return now >= gameTime;
   };
 
   const handleSubmit = async (e) => {
@@ -62,17 +120,17 @@ const AdminGames = () => {
     setSuccess(null);
     
     try {
-      // Convert the local datetime to UTC before sending to server
-      const localDate = new Date(newGame.game_date);
-      const utcDate = new Date(localDate.getTime() - localDate.getTimezoneOffset() * 60000);
+      console.log('User Entered Time:', newGame.game_date);
+      console.log('User Timezone:', Intl.DateTimeFormat().resolvedOptions().timeZone);
       
       const gameData = {
         ...newGame,
         spread: parseFloat(newGame.spread),
-        game_date: utcDate.toISOString()
+        game_date: localToUTC(newGame.game_date),
+        half: parseInt(newGame.half)  // Ensure half is parsed as integer
       };
       
-      await axios.post(`${API_URL}/games`, gameData, {
+      const response = await axios.post(`${API_URL}/games`, gameData, {
         headers: getAuthHeaders()
       });
       
@@ -81,7 +139,8 @@ const AdminGames = () => {
         home_team: '',
         away_team: '',
         spread: '',
-        game_date: ''
+        game_date: '',
+        half: 1
       });
       
       setSuccess('Game added successfully!');
@@ -124,42 +183,11 @@ const AdminGames = () => {
     }
   };
 
-  // Helper function to format date for datetime-local input
-  const formatDateForInput = (dateString) => {
-    const date = new Date(dateString);
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    return `${year}-${month}-${day}T${hours}:${minutes}`;
-  };
-
-  // Helper function to format date for display
-  const formatDateForDisplay = (dateString) => {
-    const date = new Date(dateString);
-    return date.toLocaleString('en-US', {
-      year: 'numeric',
-      month: 'numeric',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-      timeZoneName: 'short'
-    });
-  };
-
-  // Helper function to check if a game has started
-  const hasGameStarted = (gameDate) => {
-    const now = new Date();
-    const gameTime = new Date(gameDate);
-    return now >= gameTime;
-  };
-
   const handleEditClick = (game) => {
+    const localGameDate = formatDateForInput(game.game_date);  // Convert UTC to local for edit form
     setEditingGame({
       ...game,
-      game_date: formatDateForInput(game.game_date)
+      game_date: localGameDate
     });
     setShowEditModal(true);
   };
@@ -170,14 +198,11 @@ const AdminGames = () => {
     setSuccess(null);
     
     try {
-      // Convert the local datetime to UTC before sending to server
-      const localDate = new Date(editingGame.game_date);
-      const utcDate = new Date(localDate.getTime() - localDate.getTimezoneOffset() * 60000);
-      
       const gameData = {
         ...editingGame,
         spread: parseFloat(editingGame.spread),
-        game_date: utcDate.toISOString()
+        game_date: localToUTC(editingGame.game_date),
+        half: parseInt(editingGame.half)  // Ensure half is parsed as integer
       };
       
       await axios.put(`${API_URL}/games/${editingGame.id}`, gameData, {
@@ -203,7 +228,7 @@ const AdminGames = () => {
     const { name, value } = e.target;
     setEditingGame(prev => ({
       ...prev,
-      [name]: value
+      [name]: name === 'half' ? parseInt(value) : value
     }));
   };
 
@@ -291,6 +316,19 @@ const AdminGames = () => {
           />
         </Form.Group>
 
+        <Form.Group className="mb-3">
+          <Form.Label>Tournament Half</Form.Label>
+          <Form.Select
+            name="half"
+            value={newGame.half}
+            onChange={handleInputChange}
+            required
+          >
+            <option value={1}>Start through 32</option>
+            <option value={2}>16 through Finals</option>
+          </Form.Select>
+        </Form.Group>
+
         <Button variant="primary" type="submit">
           Add Game
         </Button>
@@ -304,6 +342,7 @@ const AdminGames = () => {
             <th>Date</th>
             <th>Matchup</th>
             <th>Spread</th>
+            <th>Half</th>
             <th>Status</th>
             <th>Actions</th>
           </tr>
@@ -316,6 +355,7 @@ const AdminGames = () => {
                 <td>{formatDateForDisplay(game.game_date)}</td>
                 <td>{game.away_team} @ {game.home_team}</td>
                 <td>{game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} +${-game.spread}`}</td>
+                <td>{game.half === 1 ? 'Start through 32' : '16 through Finals'}</td>
                 <td>
                   {game.winning_team ? (
                     <span className="text-success">
@@ -427,6 +467,19 @@ const AdminGames = () => {
                 required
                 step="300"
               />
+            </Form.Group>
+
+            <Form.Group className="mb-3">
+              <Form.Label>Tournament Half</Form.Label>
+              <Form.Select
+                name="half"
+                value={editingGame?.half || 1}
+                onChange={handleEditInputChange}
+                required
+              >
+                <option value={1}>Start through 32</option>
+                <option value={2}>16 through Finals</option>
+              </Form.Select>
             </Form.Group>
 
             {editingGame?.winning_team && (
