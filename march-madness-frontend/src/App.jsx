@@ -10,6 +10,7 @@ import Home from './pages/Home';
 import Picks from './pages/Picks';
 import Leaderboard from './pages/Leaderboard';
 import AdminGames from './pages/AdminGames';
+import AdminUserPicks from './pages/AdminUserPicks';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Live from './pages/Live';
@@ -115,6 +116,9 @@ function AppContent() {
               {isAuthenticated && isAdmin && (
                 <Nav.Link as={Link} to="/admin/games">Admin: Games</Nav.Link>
               )}
+              {isAuthenticated && isAdmin && (
+                <Nav.Link as={Link} to="/admin/user-picks">Admin: User Picks</Nav.Link>
+              )}
             </Nav>
             <Nav>
               {isAuthenticated ? (
@@ -145,6 +149,11 @@ function AppContent() {
           <Route path="/admin/games" element={
             <ProtectedRoute adminOnly={true}>
               <AdminGames />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/user-picks" element={
+            <ProtectedRoute adminOnly={true}>
+              <AdminUserPicks />
             </ProtectedRoute>
           } />
         </Routes>

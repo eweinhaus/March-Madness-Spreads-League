@@ -227,6 +227,12 @@ class GameUpdate(BaseModel):
         # Truncate seconds from game_date
         self.game_date = self.game_date.replace(second=0, microsecond=0)
 
+class UserPicksStatus(BaseModel):
+    username: str
+    total_games: int
+    picks_made: int
+    is_complete: bool
+
 @app.post("/submit_pick")
 async def submit_pick(
     pick: PickSubmission,
@@ -624,6 +630,34 @@ async def get_my_picks(current_user: User = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"Error fetching user picks: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/user_picks_status")
+async def get_user_picks_status(current_user: User = Depends(get_current_admin_user)):
+    """Get the picks status for all users."""
+    with get_db_cursor() as cur:
+        # Get total number of games
+        cur.execute("SELECT COUNT(*) as total FROM games")
+        total_games = cur.fetchone()['total']
+        
+        # Get all users and their picks count
+        cur.execute("""
+            SELECT u.username, COUNT(p.id) as picks_count
+            FROM users u
+            LEFT JOIN picks p ON u.id = p.user_id
+            GROUP BY u.id, u.username
+            ORDER BY u.username
+        """)
+        
+        users_status = []
+        for row in cur.fetchall():
+            users_status.append(UserPicksStatus(
+                username=row['username'],
+                total_games=total_games,
+                picks_made=row['picks_count'],
+                is_complete=row['picks_count'] == total_games
+            ))
+        
+        return users_status
 
 # Create tables on startup
 def create_tables():
