@@ -6,7 +6,7 @@ import { API_URL } from "../config";
 const Register = () => {
   const [formData, setFormData] = useState({
     username: '',
-    email: '',
+    full_name: '',
     password: '',
     confirmPassword: '',
   });
@@ -41,7 +41,7 @@ const Register = () => {
         },
         body: JSON.stringify({
           username: formData.username,
-          email: formData.email,
+          full_name: formData.full_name,
           password: formData.password,
         }),
       });
@@ -109,11 +109,11 @@ const Register = () => {
             </Form.Group>
 
             <Form.Group className="mb-3">
-              <Form.Label>Email</Form.Label>
+              <Form.Label>Full Name</Form.Label>
               <Form.Control
-                type="email"
-                name="email"
-                value={formData.email}
+                type="text"
+                name="full_name"
+                value={formData.full_name}
                 onChange={handleChange}
                 required
               />

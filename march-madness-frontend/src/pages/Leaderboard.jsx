@@ -72,7 +72,7 @@ export default function Leaderboard() {
               style={{ cursor: 'pointer' }}
               onClick={() => handleUserClick(player.username)}
             >
-              {index + 1}. {player.username}
+              {index + 1}. {player.full_name}
               <span className="badge bg-primary rounded-pill">
                 {player.total_points} points
               </span>

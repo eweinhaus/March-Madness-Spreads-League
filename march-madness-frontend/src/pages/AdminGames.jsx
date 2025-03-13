@@ -190,6 +190,7 @@ const AdminGames = () => {
     const { name, value } = e.target;
     setEditingGame(prev => ({
       ...prev,
+      [name]: value
     }));
   };
 

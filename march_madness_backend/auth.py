@@ -26,7 +26,7 @@ class TokenData(BaseModel):
 
 class UserCreate(BaseModel):
     username: str
-    email: str
+    full_name: str
     password: str
 
 class UserLogin(BaseModel):
@@ -36,7 +36,7 @@ class UserLogin(BaseModel):
 class User(BaseModel):
     id: int
     username: str
-    email: str
+    full_name: str
     is_admin: bool
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

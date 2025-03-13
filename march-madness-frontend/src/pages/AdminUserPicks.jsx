@@ -101,7 +101,7 @@ const AdminUserPicks = () => {
           <Table striped bordered hover responsive>
             <thead>
               <tr>
-                <th>Username</th>
+                <th>Name</th>
                 <th>Progress</th>
                 <th>Status</th>
               </tr>
@@ -109,7 +109,7 @@ const AdminUserPicks = () => {
             <tbody>
               {userPicksStatus.map((user) => (
                 <tr key={user.username}>
-                  <td>{user.username}</td>
+                  <td>{user.full_name}</td>
                   <td>
                     <div className="d-flex align-items-center">
                       <div className="progress flex-grow-1 me-2" style={{ height: '20px' }}>

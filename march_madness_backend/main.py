@@ -16,6 +16,7 @@ from auth import (
 )
 from typing import Optional
 import urllib.parse
+from db import drop_and_recreate_tables
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -97,7 +98,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     
     with get_db_cursor() as cur:
         cur.execute(
-            "SELECT id, username, email, is_admin FROM users WHERE username = %s",
+            "SELECT id, username, full_name, is_admin FROM users WHERE username = %s",
             (username,)
         )
         user = cur.fetchone()
@@ -129,23 +130,15 @@ async def register(user: UserCreate):
                     detail="Username already registered"
                 )
             
-            # Check if email exists
-            cur.execute("SELECT id FROM users WHERE email = %s", (user.email,))
-            if cur.fetchone():
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Email already registered"
-                )
-            
             # Create user
             hashed_password = get_password_hash(user.password)
             cur.execute(
                 """
-                INSERT INTO users (username, email, password_hash)
+                INSERT INTO users (username, full_name, password_hash)
                 VALUES (%s, %s, %s)
-                RETURNING id, username, email, is_admin
+                RETURNING id, username, full_name, is_admin
                 """,
-                (user.username, user.email, hashed_password)
+                (user.username, user.full_name, hashed_password)
             )
             new_user = cur.fetchone()
             
@@ -229,6 +222,7 @@ class GameUpdate(BaseModel):
 
 class UserPicksStatus(BaseModel):
     username: str
+    full_name: str
     total_games: int
     picks_made: int
     is_complete: bool
@@ -349,7 +343,7 @@ def get_leaderboard():
     try:
         with get_db_cursor() as cur:
             cur.execute("""
-                SELECT u.username, l.total_points 
+                SELECT u.username, u.full_name, l.total_points 
                 FROM leaderboard l 
                 JOIN users u ON l.user_id = u.id
                 ORDER BY l.total_points DESC
@@ -459,14 +453,13 @@ def get_live_games():
     try:
         with get_db_cursor() as cur:
             current_time = datetime.now()
-            four_hours_ago = current_time - timedelta(hours=4)
             logger.info(f"Checking live games at {current_time}")
             
             # First get all games to log their dates
             cur.execute("SELECT id, game_date, winning_team FROM games")
             all_games = cur.fetchall()
             for game in all_games:
-                logger.info(f"Game {game['id']}: date={game['game_date']}, winner={game['winning_team']}, is_live={game['game_date'] <= current_time and game['game_date'] >= four_hours_ago and (game['winning_team'] is None or game['winning_team'] == '')}")
+                logger.info(f"Game {game['id']}: date={game['game_date']}, winner={game['winning_team']}, is_live={game['game_date'] <= current_time and (game['winning_team'] is None or game['winning_team'] == '')}")
             
             cur.execute("""
                 SELECT 
@@ -480,6 +473,7 @@ def get_live_games():
                         json_agg(
                             json_build_object(
                                 'username', u.username,
+                                'full_name', u.full_name,
                                 'picked_team', p.picked_team
                             )
                         ) FILTER (WHERE u.username IS NOT NULL),
@@ -489,11 +483,10 @@ def get_live_games():
                 LEFT JOIN picks p ON g.id = p.game_id
                 LEFT JOIN users u ON p.user_id = u.id
                 WHERE g.game_date <= %s 
-                AND g.game_date >= %s
                 AND (g.winning_team IS NULL OR g.winning_team = '')
                 GROUP BY g.id
                 ORDER BY g.game_date DESC
-            """, (current_time, four_hours_ago))
+            """, (current_time,))
             games = cur.fetchall()
             logger.info(f"Found {len(games)} live games")
             return games
@@ -641,10 +634,10 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
         
         # Get all users and their picks count
         cur.execute("""
-            SELECT u.username, COUNT(p.id) as picks_count
+            SELECT u.username, u.full_name, COUNT(p.id) as picks_count
             FROM users u
             LEFT JOIN picks p ON u.id = p.user_id
-            GROUP BY u.id, u.username
+            GROUP BY u.id, u.username, u.full_name
             ORDER BY u.username
         """)
         
@@ -652,6 +645,7 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
         for row in cur.fetchall():
             users_status.append(UserPicksStatus(
                 username=row['username'],
+                full_name=row['full_name'],
                 total_games=total_games,
                 picks_made=row['picks_count'],
                 is_complete=row['picks_count'] == total_games
@@ -713,11 +707,11 @@ def create_admin_user():
             hashed_password = get_password_hash(admin_password)
             cur.execute(
                 """
-                INSERT INTO users (username, email, password_hash, is_admin)
+                INSERT INTO users (username, full_name, password_hash, is_admin)
                 VALUES (%s, %s, %s, TRUE)
                 RETURNING id
                 """,
-                ("admin", "admin@example.com", hashed_password)
+                ("admin", "Administrator", hashed_password)
             )
             admin_id = cur.fetchone()["id"]
             
@@ -732,7 +726,8 @@ def create_admin_user():
         logger.error(f"Error creating admin user: {str(e)}")
 
 # Initialize database
-create_tables()
+with get_db_connection() as conn:
+    drop_and_recreate_tables(conn)
 create_admin_user()
 
 # Run the server
