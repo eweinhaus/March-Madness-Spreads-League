@@ -209,7 +209,6 @@ class Game(BaseModel):
     away_team: str
     spread: float
     game_date: datetime
-    half: int = 1  # 1 for "Start through 32", 2 for "16 through Finals"
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -222,7 +221,6 @@ class GameUpdate(BaseModel):
     spread: float
     game_date: datetime
     winning_team: Optional[str] = None
-    half: int = 1  # 1 for "Start through 32", 2 for "16 through Finals"
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -244,7 +242,7 @@ async def submit_pick(
                 raise HTTPException(status_code=404, detail="Game not found")
             
             # Check if game has already started
-            current_time = datetime.utcnow()
+            current_time = datetime.now()
             if current_time >= game["game_date"]:
                 raise HTTPException(
                     status_code=400,
@@ -367,11 +365,11 @@ async def create_game(
             logger.info(f"Creating new game: {game}")
             cur.execute(
                 """
-                INSERT INTO games (home_team, away_team, spread, game_date, half)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO games (home_team, away_team, spread, game_date)
+                VALUES (%s, %s, %s, %s)
                 RETURNING *
                 """,
-                (game.home_team, game.away_team, game.spread, game.game_date, game.half)
+                (game.home_team, game.away_team, game.spread, game.game_date)
             )
             new_game = cur.fetchone()
             logger.info(f"Game created successfully: {new_game}")
@@ -426,7 +424,7 @@ def get_user_picks(username: str):
     """Get a user's picks for games that have already started."""
     try:
         with get_db_cursor() as cur:
-            current_time = datetime.utcnow()
+            current_time = datetime.now()
             cur.execute("""
                 SELECT 
                     g.id as game_id,
@@ -454,15 +452,15 @@ def get_live_games():
     """Get all live games (games that have started but don't have a winner yet) and their picks."""
     try:
         with get_db_cursor() as cur:
-            current_time = datetime.utcnow()
+            current_time = datetime.now()
             four_hours_ago = current_time - timedelta(hours=4)
-            logger.info(f"Checking live games at {current_time} UTC")
+            logger.info(f"Checking live games at {current_time}")
             
             # First get all games to log their dates
             cur.execute("SELECT id, game_date, winning_team FROM games")
             all_games = cur.fetchall()
             for game in all_games:
-                logger.info(f"Game {game['id']}: date={game['game_date']} UTC, winner={game['winning_team']}, is_live={game['game_date'] <= current_time and game['game_date'] >= four_hours_ago and (game['winning_team'] is None or game['winning_team'] == '')}")
+                logger.info(f"Game {game['id']}: date={game['game_date']}, winner={game['winning_team']}, is_live={game['game_date'] <= current_time and game['game_date'] >= four_hours_ago and (game['winning_team'] is None or game['winning_team'] == '')}")
             
             cur.execute("""
                 SELECT 
@@ -516,11 +514,11 @@ async def update_game(
             cur.execute(
                 """
                 UPDATE games 
-                SET home_team = %s, away_team = %s, spread = %s, game_date = %s, winning_team = %s, half = %s
+                SET home_team = %s, away_team = %s, spread = %s, game_date = %s, winning_team = %s
                 WHERE id = %s
                 RETURNING *
                 """,
-                (game.home_team, game.away_team, game.spread, game.game_date, game.winning_team, game.half, game_id)
+                (game.home_team, game.away_team, game.spread, game.game_date, game.winning_team, game_id)
             )
             updated_game = cur.fetchone()
             
@@ -647,7 +645,6 @@ def create_tables():
             spread NUMERIC(4,1) NOT NULL,
             game_date TIMESTAMP NOT NULL,
             winning_team VARCHAR(50) NULL,
-            half INT DEFAULT 1 CHECK (half IN (1, 2)),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 

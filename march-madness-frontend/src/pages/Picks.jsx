@@ -10,30 +10,16 @@ export default function Picks() {
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Convert UTC from database to local time
-  const utcToLocal = (utcDateString) => {
-    //Get time in utc
-    const utc = new Date(utcDateString);
-    //Get offset from utc
-    const offset = utc.getTimezoneOffset();
-    //Convert to local time
-    const local = new Date(utc.getTime() - (offset * 60 * 1000));
-    return local;
-  };
-
   // Helper function to format date for display
-  const formatDateForDisplay = (utcDateString) => {
-    const localDate = utcToLocal(utcDateString);
-    
-    // Format in local time with timezone name
-    return localDate.toLocaleString('en-US', {
+  const formatDateForDisplay = (dateString) => {
+    const date = new Date(dateString);
+    return date.toLocaleString('en-US', {
       year: 'numeric',
       month: 'numeric',
       day: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
-      hour12: true,
-      timeZoneName: 'short'  // This will show EDT/EST
+      hour12: true
     });
   };
 
@@ -106,7 +92,6 @@ export default function Picks() {
     }
   };
 
-  // Helper function to check if a game has started
   const hasGameStarted = (gameDate) => {
     return new Date() >= new Date(gameDate);
   };

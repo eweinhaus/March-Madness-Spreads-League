@@ -46,7 +46,6 @@ def create_tables(conn):
                 spread NUMERIC(4,1) NOT NULL,
                 game_date TIMESTAMP NOT NULL,
                 winning_team VARCHAR(50) NULL,
-                half INT DEFAULT 1 CHECK (half IN (1, 2)),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
