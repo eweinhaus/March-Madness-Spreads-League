@@ -73,8 +73,11 @@ export default function Picks() {
     setPicks({ ...picks, [gameId]: team });
   };
 
-  const handleTiebreakerPick = (tiebreakerId, answer) => {
-    setTiebreakerPicks({ ...tiebreakerPicks, [tiebreakerId]: parseFloat(answer) });
+  const handleTiebreakerPick = (tiebreakerId, answer, isNumeric = true) => {
+    setTiebreakerPicks({ 
+      ...tiebreakerPicks, 
+      [tiebreakerId]: isNumeric ? parseFloat(answer) : answer 
+    });
   };
 
   const submitPicks = async () => {
@@ -172,7 +175,7 @@ export default function Picks() {
       ) : (availableGames.length === 0 && availableTiebreakers.length === 0) ? (
         <Row>
           <Col>
-            <Alert variant="info">No available games or tiebreakers to pick at this time.</Alert>
+            <Alert variant="info">No available contests to pick at this time</Alert>
           </Col>
         </Row>
       ) : (
@@ -242,6 +245,12 @@ export default function Picks() {
                   const existingAnswer = existingTiebreakerPicks[tiebreaker.id];
                   const currentAnswer = tiebreakerPicks[tiebreaker.id];
                   const answer = currentAnswer !== undefined ? currentAnswer : existingAnswer;
+                  
+                  // Determine if the question likely requires a numeric or text answer
+                  const isNumericQuestion = tiebreaker.question.toLowerCase().includes('how many') || 
+                                           tiebreaker.question.toLowerCase().includes('score') ||
+                                           tiebreaker.question.toLowerCase().includes('points') ||
+                                           tiebreaker.question.toLowerCase().includes('total');
 
                   return (
                     <Col key={tiebreaker.id}>
@@ -257,14 +266,24 @@ export default function Picks() {
                             )}
                           </Card.Text>
                           <Form.Group className="mt-auto">
-                            <Form.Control
-                              type="number"
-                              step="0.1"
-                              placeholder="Enter your answer"
-                              value={answer !== undefined ? answer : ''}
-                              onChange={(e) => handleTiebreakerPick(tiebreaker.id, e.target.value)}
-                              className="text-center"
-                            />
+                            {isNumericQuestion ? (
+                              <Form.Control
+                                type="number"
+                                step="0.1"
+                                placeholder="Enter your answer"
+                                value={answer !== undefined ? answer : ''}
+                                onChange={(e) => handleTiebreakerPick(tiebreaker.id, e.target.value, true)}
+                                className="text-center"
+                              />
+                            ) : (
+                              <Form.Control
+                                type="text"
+                                placeholder="Enter your answer"
+                                value={answer !== undefined ? answer : ''}
+                                onChange={(e) => handleTiebreakerPick(tiebreaker.id, e.target.value, false)}
+                                className="text-center"
+                              />
+                            )}
                           </Form.Group>
                         </Card.Body>
                       </Card>

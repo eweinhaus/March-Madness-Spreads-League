@@ -197,12 +197,12 @@ const AdminTiebreakers = () => {
     
     try {
       console.log('Preparing to finish tiebreaker:', tiebreakerToFinish);
-      console.log('Finish score entered:', finishScore);
+      console.log('Finish answer entered:', finishScore);
       
       const finishData = {
         question: tiebreakerToFinish.question,
         start_time: tiebreakerToFinish.start_time,
-        answer: parseFloat(finishScore),
+        answer: finishScore,
         is_active: false
       };
       
@@ -281,7 +281,7 @@ const AdminTiebreakers = () => {
             <th>Start Time</th>
             <th>Question</th>
             <th>Status</th>
-            <th>Score</th>
+            <th>Answer</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -393,14 +393,13 @@ const AdminTiebreakers = () => {
         <Modal.Body>
           <Form onSubmit={handleFinishSubmit}>
             <Form.Group className="mb-3">
-              <Form.Label>Enter Result</Form.Label>
-              <Form.Control
-                type="number"
-                step="0.01"
-                value={finishScore}
-                onChange={(e) => setFinishScore(e.target.value)}
-                required
-              />
+              <Form.Label>Enter Result (or N/A if not one result)</Form.Label>
+                <Form.Control
+                  type="text"
+                  value={finishScore}
+                  onChange={(e) => setFinishScore(e.target.value)}
+                  required
+                />
             </Form.Group>
             <div className="d-flex justify-content-end gap-2">
               <Button variant="secondary" onClick={() => setShowFinishModal(false)}>

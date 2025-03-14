@@ -14,9 +14,9 @@ from auth import (
     Token, UserCreate, UserLogin, User,
     verify_password, get_password_hash, create_access_token, verify_token
 )
-from typing import Optional
+from typing import Optional, Union
 import urllib.parse
-from db import create_tables
+import db
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -699,12 +699,17 @@ class Tiebreaker(BaseModel):
 class TiebreakerUpdate(BaseModel):
     question: str
     start_time: datetime
-    answer: Optional[float] = None
+    answer: Optional[Union[str, float]] = None
     is_active: bool = True
 
 class TiebreakerPick(BaseModel):
     tiebreaker_id: int
-    answer: float
+    answer: Union[str, float]
+
+class TiebreakerPointsUpdate(BaseModel):
+    user_id: int
+    tiebreaker_id: int
+    points: int
 
 @app.post("/tiebreakers")
 async def create_tiebreaker(
@@ -810,59 +815,6 @@ async def update_tiebreaker(
                 (tiebreaker.question, tiebreaker.start_time, tiebreaker.answer, tiebreaker.is_active, tiebreaker_id)
             )
             updated_tiebreaker = cur.fetchone()
-            
-            # If answer was provided, update points for closest picks
-            if tiebreaker.answer is not None and existing_tiebreaker["answer"] is None:
-                # Get all picks for this tiebreaker
-                cur.execute(
-                    """
-                    SELECT id, user_id, answer 
-                    FROM tiebreaker_picks 
-                    WHERE tiebreaker_id = %s
-                    """,
-                    (tiebreaker_id,)
-                )
-                picks = cur.fetchall()
-                
-                if picks:
-                    # Find the closest answer
-                    closest_diff = float('inf')
-                    for pick in picks:
-                        diff = abs(float(pick["answer"]) - float(tiebreaker.answer))
-                        if diff < closest_diff:
-                            closest_diff = diff
-                    
-                    # Award points to users with the closest answer
-                    for pick in picks:
-                        diff = abs(float(pick["answer"]) - float(tiebreaker.answer))
-                        points = 1 if diff == closest_diff else 0
-                        
-                        cur.execute(
-                            """
-                            UPDATE tiebreaker_picks 
-                            SET points_awarded = %s
-                            WHERE id = %s
-                            """,
-                            (points, pick["id"])
-                        )
-                        
-                        # Update leaderboard
-                        cur.execute(
-                            """
-                            UPDATE leaderboard 
-                            SET total_points = (
-                                SELECT COALESCE(SUM(points_awarded), 0)
-                                FROM picks
-                                WHERE user_id = %s
-                            ) + (
-                                SELECT COALESCE(SUM(points_awarded), 0)
-                                FROM tiebreaker_picks
-                                WHERE user_id = %s
-                            )
-                            WHERE user_id = %s
-                            """,
-                            (pick["user_id"], pick["user_id"], pick["user_id"])
-                        )
             
             return updated_tiebreaker
     except Exception as e:
@@ -1045,45 +997,60 @@ async def get_user_all_picks(
         logger.error(f"Error fetching all user picks: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Create tables on startup
-def create_tables():
-    with get_db_cursor(commit=True) as cur:
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            username VARCHAR(50) UNIQUE NOT NULL,
-            email VARCHAR(100) UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            is_admin BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS games (
-            id SERIAL PRIMARY KEY,
-            home_team VARCHAR(50) NOT NULL,
-            away_team VARCHAR(50) NOT NULL,
-            spread NUMERIC(4,1) NOT NULL,
-            game_date TIMESTAMP NOT NULL,
-            winning_team VARCHAR(50) NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS picks (
-            id SERIAL PRIMARY KEY,
-            user_id INT REFERENCES users(id) ON DELETE CASCADE,
-            game_id INT REFERENCES games(id) ON DELETE CASCADE,
-            picked_team VARCHAR(50) NOT NULL,
-            points_awarded INT DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(user_id, game_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS leaderboard (
-            user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-            total_points INT DEFAULT 0,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
+@app.put("/tiebreaker_picks/points")
+async def update_tiebreaker_points(
+    points_update: TiebreakerPointsUpdate,
+    current_user: User = Depends(get_current_admin_user)
+):
+    """Update points for a tiebreaker pick (admin only)."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Check if tiebreaker pick exists
+            cur.execute(
+                """
+                SELECT * FROM tiebreaker_picks 
+                WHERE user_id = %s AND tiebreaker_id = %s
+                """, 
+                (points_update.user_id, points_update.tiebreaker_id)
+            )
+            existing_pick = cur.fetchone()
+            if not existing_pick:
+                raise HTTPException(status_code=404, detail="Tiebreaker pick not found")
+            
+            # Update points
+            cur.execute(
+                """
+                UPDATE tiebreaker_picks 
+                SET points_awarded = %s
+                WHERE user_id = %s AND tiebreaker_id = %s
+                RETURNING *
+                """,
+                (points_update.points, points_update.user_id, points_update.tiebreaker_id)
+            )
+            updated_pick = cur.fetchone()
+            
+            # Update leaderboard
+            cur.execute(
+                """
+                UPDATE leaderboard 
+                SET total_points = (
+                    SELECT COALESCE(SUM(points_awarded), 0)
+                    FROM picks
+                    WHERE user_id = %s
+                ) + (
+                    SELECT COALESCE(SUM(points_awarded), 0)
+                    FROM tiebreaker_picks
+                    WHERE user_id = %s
+                )
+                WHERE user_id = %s
+                """,
+                (points_update.user_id, points_update.user_id, points_update.user_id)
+            )
+            
+            return updated_pick
+    except Exception as e:
+        logger.error(f"Error updating tiebreaker points: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def create_admin_user(username, full_name, password):
     """Create an admin user if no admin exists."""
@@ -1123,7 +1090,7 @@ def wipe_all_admin_users():
 
 # Initialize database
 with get_db_connection() as conn:
-    create_tables()
+    db.create_tables(conn)
     #create_admin_user(username, full_name, password)
 
 # Run the server

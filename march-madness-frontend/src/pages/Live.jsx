@@ -145,7 +145,7 @@ export default function Live() {
                     <Card.Text>
                       Started: {formatGameDate(tiebreaker.start_time)}
                     </Card.Text>
-                    <small className="text-muted">Click to view answers</small>
+                    <small className="text-muted">Click to view picks</small>
                   </Card.Body>
                 </Card>
               </div>

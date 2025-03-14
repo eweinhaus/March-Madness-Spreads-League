@@ -112,7 +112,7 @@ export default function Leaderboard() {
         <Modal.Body className="p-2 p-md-3">
           {(!userPicks.picks || userPicks.picks.length === 0) && (!userPicks.tiebreakers || userPicks.tiebreakers.length === 0) ? (
             <Alert variant="info">
-              No picks available for games or tiebreakers that have started.
+              No contests available that have started.
             </Alert>
           ) : (
             <>
@@ -125,7 +125,6 @@ export default function Leaderboard() {
                         <th>Spread</th>
                         <th>Pick</th>
                         <th>Result</th>
-                        <th>Points</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -145,7 +144,6 @@ export default function Leaderboard() {
                                 : `${pick.winning_team}`
                               : "Pending"}
                           </td>
-                          <td className="text-center">{pick.points_awarded}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -161,7 +159,6 @@ export default function Leaderboard() {
                         <tr>
                           <th>Question</th>
                           <th>Pick</th>
-                          <th>Correct Answer</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -174,7 +171,6 @@ export default function Leaderboard() {
                                   ? tiebreaker.user_answer 
                                   : <span className="text-muted">No Answer</span>}
                               </td>
-                              <td>{tiebreaker.correct_answer || 'Pending'}</td>
                             </tr>
                           );
                         })}

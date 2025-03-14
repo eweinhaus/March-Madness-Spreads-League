@@ -99,7 +99,7 @@ const AdminUserPicks = () => {
             <Col md={4}>
               <Card className="mb-3">
                 <Card.Body className="bg-light">
-                  <Card.Title className="h5 text-success">Users with no Outstanding Picks</Card.Title>
+                  <Card.Title className="h5 text-success">Users without Outstanding Picks</Card.Title>
                   <Card.Text className="h2 text-success">{completedUsers}</Card.Text>
                 </Card.Body>
               </Card>
@@ -173,6 +173,7 @@ const AdminUserPicks = () => {
         show={showModal}
         onHide={() => setShowModal(false)}
         userPicks={selectedUserPicks}
+        isAdmin={true}
       />
 
       <style jsx>{`

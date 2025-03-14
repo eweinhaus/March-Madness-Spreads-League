@@ -69,7 +69,7 @@ def create_tables(conn):
                     id SERIAL PRIMARY KEY,
                     question TEXT NOT NULL,
                     start_time TIMESTAMP NOT NULL,
-                    answer NUMERIC NULL,
+                    answer TEXT NULL,
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -78,8 +78,8 @@ def create_tables(conn):
                     id SERIAL PRIMARY KEY,
                     user_id INT REFERENCES users(id) ON DELETE CASCADE,
                     tiebreaker_id INT REFERENCES tiebreakers(id) ON DELETE CASCADE,
-                    answer NUMERIC NOT NULL,
-                    points_awarded INT DEFAULT 0,
+                    answer TEXT NOT NULL,
+                    points_awarded FLOAT DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, tiebreaker_id)
                 );
