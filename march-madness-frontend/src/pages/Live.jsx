@@ -93,8 +93,7 @@ export default function Live() {
           No live games or tiebreakers at the moment.
         </Alert>
       )}
-
-      {!loading && !error && liveGames.length > 0 && (
+      {!loading && !error && (
         <>
           <h2 className="mb-4">Live Contests</h2>
           <div className="row">
@@ -107,19 +106,20 @@ export default function Live() {
                 >
                   <Card.Header className="d-flex justify-content-between align-items-center">
                     <span>
-                      {game.away_team} @ {game.home_team}
+                      Started: {formatGameDate(game.game_date)}
                     </span>
                     <Badge bg="primary">
-                      {game.spread > 0 
+                      Spread: {game.spread > 0 
                         ? `${game.home_team} -${game.spread}` 
                         : `${game.away_team} +${-game.spread}`}
                     </Badge>
                   </Card.Header>
                   <Card.Body>
                     <Card.Text>
-                      Started: {formatGameDate(game.game_date)}
+                      <span>
+                      {game.away_team} @ {game.home_team}
+                      </span>
                     </Card.Text>
-                    <small className="text-muted">Click to view picks</small>
                   </Card.Body>
                 </Card>
               </div>
@@ -139,13 +139,15 @@ export default function Live() {
                   className="hover-shadow"
                 >
                   <Card.Header>
-                    <span>{tiebreaker.question}</span>
+                    <span>
+                      Started: {formatGameDate(tiebreaker.start_time)}
+                    </span>
                   </Card.Header>
                   <Card.Body>
                     <Card.Text>
-                      Started: {formatGameDate(tiebreaker.start_time)}
+                      
+                      <span>{tiebreaker.question}</span>
                     </Card.Text>
-                    <small className="text-muted">Click to view picks</small>
                   </Card.Body>
                 </Card>
               </div>

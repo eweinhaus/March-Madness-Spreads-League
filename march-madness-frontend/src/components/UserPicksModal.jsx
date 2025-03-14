@@ -116,7 +116,7 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
               </tbody>
             </Table>
           </Tab>
-          <Tab eventKey="tiebreakers" title="Tiebreaker Picks">
+          <Tab eventKey="tiebreakers" title="Question Picks">
             <Table striped bordered hover responsive>
               <thead>
                 <tr>

@@ -115,13 +115,13 @@ function AppContent() {
               <Nav.Link as={Link} to="/leaderboard" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Leaderboard</Nav.Link>
               <Nav.Link as={Link} to="/picks" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Picks</Nav.Link>
               {isAuthenticated && isAdmin && (
-                <Nav.Link as={Link} to="/admin/games" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Admin: Games</Nav.Link>
+                <Nav.Link as={Link} to="/admin/games" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>$Games</Nav.Link>
               )}
               {isAuthenticated && isAdmin && (
-                <Nav.Link as={Link} to="/admin/tiebreakers" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Admin: Tiebreakers</Nav.Link>
+                <Nav.Link as={Link} to="/admin/tiebreakers" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>$Questions</Nav.Link>
               )}
               {isAuthenticated && isAdmin && (
-                <Nav.Link as={Link} to="/admin/user-picks" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Admin: User Picks</Nav.Link>
+                <Nav.Link as={Link} to="/admin/user-picks" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>$User Picks</Nav.Link>
               )}
             </Nav>
             <Nav>

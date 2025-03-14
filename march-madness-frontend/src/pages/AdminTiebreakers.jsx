@@ -238,7 +238,7 @@ const AdminTiebreakers = () => {
 
   return (
     <Container className="py-4">
-      <h2 className="mb-4">Manage Tiebreakers</h2>
+      <h2 className="mb-4">Manage Questions</h2>
       
       {error && <Alert variant="danger">{error}</Alert>}
       {success && <Alert variant="success">{success}</Alert>}
@@ -343,7 +343,7 @@ const AdminTiebreakers = () => {
             </Form.Group>
 
             <Form.Group className="mb-3">
-              <Form.Label>Start Time</Form.Label>
+              <Form.Label>Start Time (Question locks at this time)</Form.Label>
               <Form.Control
                 type="datetime-local"
                 name="start_time"
@@ -393,7 +393,7 @@ const AdminTiebreakers = () => {
         <Modal.Body>
           <Form onSubmit={handleFinishSubmit}>
             <Form.Group className="mb-3">
-              <Form.Label>Enter Result (or N/A if not one result)</Form.Label>
+              <Form.Label>Enter Result (or N/A if multiple results)</Form.Label>
                 <Form.Control
                   type="text"
                   value={finishScore}

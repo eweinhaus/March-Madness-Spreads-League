@@ -184,9 +184,6 @@ export default function Picks() {
           {availableGames.length > 0 && (
             <>
               <Row className="mb-3">
-                <Col>
-                  <h3 className="h4">Game Picks</h3>
-                </Col>
               </Row>
               <Row xs={1} sm={2} lg={3} className="g-3 g-md-4">
                 {availableGames.map(game => {
