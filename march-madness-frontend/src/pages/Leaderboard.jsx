@@ -30,36 +30,39 @@ export default function Leaderboard() {
   const handleUserClick = async (username) => {
     try {
       const token = localStorage.getItem('token');
-      const [picksResponse, tiebreakersResponse] = await Promise.all([
-        axios.get(`${API_URL}/user_picks/${username}`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        }),
-        axios.get(`${API_URL}/my_tiebreaker_picks`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        })
-      ]);
+      
+      // Use the admin endpoint to get all picks for the selected user
+      const response = await axios.get(`${API_URL}/admin/user_all_picks/${username}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       
       const userInfo = leaderboard.find(player => player.username === username);
       setSelectedUserFullName(userInfo?.full_name || username);
       
       // Filter tiebreakers to only show ones that have started
-      const activeTiebreakers = tiebreakersResponse.data.filter(
+      const activeTiebreakers = response.data.tiebreaker_picks.filter(
         t => new Date(t.start_time) <= new Date()
       );
       
+      // Debug logging for Ethan Weinhaus2
+      if (username === "Ethan Weinhaus2" || username.includes("Weinhaus")) {
+        console.log("User:", username);
+        console.log("Response data:", JSON.stringify(response.data, null, 2));
+        console.log("Tiebreakers data:", JSON.stringify(activeTiebreakers, null, 2));
+      }
+      
       setUserPicks({
-        picks: picksResponse.data,
+        picks: response.data.game_picks.filter(game => new Date(game.game_date) <= new Date()),
         tiebreakers: activeTiebreakers
       });
       setSelectedUser(username);
       setShowModal(true);
     } catch (err) {
       console.error(err);
-      setError('Failed to load user picks');
+      //Log error in console
+      console.log(err.response?.data || err.message);
     }
   };
 
@@ -162,13 +165,19 @@ export default function Leaderboard() {
                         </tr>
                       </thead>
                       <tbody>
-                        {userPicks.tiebreakers.map((tiebreaker) => (
-                          <tr key={tiebreaker.tiebreaker_id}>
-                            <td>{tiebreaker.question}</td>
-                            <td>{tiebreaker.user_answer}</td>
-                            <td>{tiebreaker.correct_answer || 'Pending'}</td>
-                          </tr>
-                        ))}
+                        {userPicks.tiebreakers.map((tiebreaker) => {
+                          return (
+                            <tr key={tiebreaker.tiebreaker_id}>
+                              <td>{tiebreaker.question}</td>
+                              <td>
+                                {tiebreaker.user_answer !== null && tiebreaker.user_answer !== undefined 
+                                  ? tiebreaker.user_answer 
+                                  : <span className="text-muted">No Answer</span>}
+                              </td>
+                              <td>{tiebreaker.correct_answer || 'Pending'}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </Table>
                   </div>

@@ -87,9 +87,6 @@ const AdminUserPicks = () => {
       <Card className="mb-4">
         <Card.Body>
           <Card.Title className="h3 mb-4">Upcoming Picks Status</Card.Title>
-          <Alert variant="info" className="mb-4">
-            This page shows the status of picks for upcoming games and tiebreakers only. Games and tiebreakers that have already started are not included.
-          </Alert>
           <Row>
             <Col md={4}>
               <Card className="mb-3">
@@ -102,7 +99,7 @@ const AdminUserPicks = () => {
             <Col md={4}>
               <Card className="mb-3">
                 <Card.Body className="bg-light">
-                  <Card.Title className="h5 text-success">Users with All Picks</Card.Title>
+                  <Card.Title className="h5 text-success">Users with no Outstanding Picks</Card.Title>
                   <Card.Text className="h2 text-success">{completedUsers}</Card.Text>
                 </Card.Body>
               </Card>
