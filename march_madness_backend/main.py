@@ -16,7 +16,7 @@ from auth import (
 )
 from typing import Optional
 import urllib.parse
-from db import drop_and_recreate_tables
+from db import create_tables
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -628,30 +628,366 @@ async def get_my_picks(current_user: User = Depends(get_current_user)):
 async def get_user_picks_status(current_user: User = Depends(get_current_admin_user)):
     """Get the picks status for all users."""
     with get_db_cursor() as cur:
-        # Get total number of games
-        cur.execute("SELECT COUNT(*) as total FROM games")
-        total_games = cur.fetchone()['total']
+        current_time = datetime.now()
         
-        # Get all users and their picks count
+        # Get total number of upcoming games
         cur.execute("""
-            SELECT u.username, u.full_name, COUNT(p.id) as picks_count
+            SELECT COUNT(*) as total 
+            FROM games 
+            WHERE game_date > %s
+        """, (current_time,))
+        total_upcoming_games = cur.fetchone()['total']
+        
+        # Get total number of upcoming tiebreakers
+        cur.execute("""
+            SELECT COUNT(*) as total 
+            FROM tiebreakers 
+            WHERE start_time > %s AND is_active = TRUE
+        """, (current_time,))
+        total_upcoming_tiebreakers = cur.fetchone()['total']
+        
+        total_required_picks = total_upcoming_games + total_upcoming_tiebreakers
+        
+        # Get all users and their picks count for upcoming games and tiebreakers
+        cur.execute("""
+            WITH upcoming_picks AS (
+                SELECT u.id as user_id, COUNT(p.id) as picks_count
+                FROM users u
+                LEFT JOIN picks p ON u.id = p.user_id
+                LEFT JOIN games g ON p.game_id = g.id
+                WHERE g.game_date > %s
+                GROUP BY u.id
+            ),
+            upcoming_tiebreaker_picks AS (
+                SELECT u.id as user_id, COUNT(tp.id) as picks_count
+                FROM users u
+                LEFT JOIN tiebreaker_picks tp ON u.id = tp.user_id
+                LEFT JOIN tiebreakers t ON tp.tiebreaker_id = t.id
+                WHERE t.start_time > %s AND t.is_active = TRUE
+                GROUP BY u.id
+            )
+            SELECT 
+                u.username, 
+                u.full_name,
+                COALESCE(up.picks_count, 0) + COALESCE(utp.picks_count, 0) as total_picks_made
             FROM users u
-            LEFT JOIN picks p ON u.id = p.user_id
-            GROUP BY u.id, u.username, u.full_name
+            LEFT JOIN upcoming_picks up ON u.id = up.user_id
+            LEFT JOIN upcoming_tiebreaker_picks utp ON u.id = utp.user_id
             ORDER BY u.username
-        """)
+        """, (current_time, current_time))
         
         users_status = []
         for row in cur.fetchall():
             users_status.append(UserPicksStatus(
                 username=row['username'],
                 full_name=row['full_name'],
-                total_games=total_games,
-                picks_made=row['picks_count'],
-                is_complete=row['picks_count'] == total_games
+                total_games=total_required_picks,
+                picks_made=row['total_picks_made'],
+                is_complete=row['total_picks_made'] == total_required_picks
             ))
         
         return users_status
+
+class Pick(BaseModel):
+    game_id: int
+    picked_team: str
+
+class Tiebreaker(BaseModel):
+    question: str
+    start_time: datetime
+
+class TiebreakerUpdate(BaseModel):
+    question: str
+    start_time: datetime
+    answer: Optional[float] = None
+    is_active: bool = True
+
+class TiebreakerPick(BaseModel):
+    tiebreaker_id: int
+    answer: float
+
+@app.post("/tiebreakers")
+async def create_tiebreaker(
+    tiebreaker: Tiebreaker,
+    current_user: User = Depends(get_current_admin_user)
+):
+    """Create a new tiebreaker (admin only)."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            logger.info(f"Creating new tiebreaker: {tiebreaker}")
+            cur.execute(
+                """
+                INSERT INTO tiebreakers (question, start_time)
+                VALUES (%s, %s)
+                RETURNING *
+                """,
+                (tiebreaker.question, tiebreaker.start_time)
+            )
+            new_tiebreaker = cur.fetchone()
+            logger.info(f"Tiebreaker created successfully: {new_tiebreaker}")
+            return new_tiebreaker
+    except Exception as e:
+        logger.error(f"Error creating tiebreaker: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tiebreakers")
+def get_tiebreakers():
+    """Get all tiebreakers."""
+    try:
+        with get_db_cursor() as cur:
+            logger.info("Fetching all tiebreakers")
+            cur.execute("SELECT * FROM tiebreakers ORDER BY start_time")
+            tiebreakers = cur.fetchall()
+            logger.info(f"Found {len(tiebreakers)} tiebreakers")
+            return tiebreakers
+    except Exception as e:
+        logger.error(f"Error fetching tiebreakers: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/live_tiebreakers")
+def get_live_tiebreakers():
+    """Get all live tiebreakers (tiebreakers that have started but don't have an answer yet)."""
+    try:
+        with get_db_cursor() as cur:
+            current_time = datetime.now()
+            logger.info(f"Checking live tiebreakers at {current_time}")
+            
+            cur.execute("""
+                SELECT 
+                    t.id as tiebreaker_id,
+                    t.question,
+                    t.start_time,
+                    t.is_active,
+                    COALESCE(
+                        json_agg(
+                            json_build_object(
+                                'username', u.username,
+                                'full_name', u.full_name,
+                                'answer', tp.answer
+                            )
+                        ) FILTER (WHERE u.username IS NOT NULL),
+                        '[]'
+                    ) as picks
+                FROM tiebreakers t
+                LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id
+                LEFT JOIN users u ON tp.user_id = u.id
+                WHERE t.start_time <= %s 
+                AND t.is_active = TRUE
+                AND t.answer IS NULL
+                GROUP BY t.id
+                ORDER BY t.start_time DESC
+            """, (current_time,))
+            tiebreakers = cur.fetchall()
+            logger.info(f"Found {len(tiebreakers)} live tiebreakers")
+            return tiebreakers
+    except Exception as e:
+        logger.error(f"Error fetching live tiebreakers: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/tiebreakers/{tiebreaker_id}")
+async def update_tiebreaker(
+    tiebreaker_id: int,
+    tiebreaker: TiebreakerUpdate,
+    current_user: User = Depends(get_current_admin_user)
+):
+    """Update a tiebreaker (admin only)."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Check if tiebreaker exists
+            cur.execute("SELECT * FROM tiebreakers WHERE id = %s", (tiebreaker_id,))
+            existing_tiebreaker = cur.fetchone()
+            if not existing_tiebreaker:
+                raise HTTPException(status_code=404, detail="Tiebreaker not found")
+            
+            # Update tiebreaker
+            cur.execute(
+                """
+                UPDATE tiebreakers 
+                SET question = %s, start_time = %s, answer = %s, is_active = %s
+                WHERE id = %s
+                RETURNING *
+                """,
+                (tiebreaker.question, tiebreaker.start_time, tiebreaker.answer, tiebreaker.is_active, tiebreaker_id)
+            )
+            updated_tiebreaker = cur.fetchone()
+            
+            # If answer was provided, update points for closest picks
+            if tiebreaker.answer is not None and existing_tiebreaker["answer"] is None:
+                # Get all picks for this tiebreaker
+                cur.execute(
+                    """
+                    SELECT id, user_id, answer 
+                    FROM tiebreaker_picks 
+                    WHERE tiebreaker_id = %s
+                    """,
+                    (tiebreaker_id,)
+                )
+                picks = cur.fetchall()
+                
+                if picks:
+                    # Find the closest answer
+                    closest_diff = float('inf')
+                    for pick in picks:
+                        diff = abs(float(pick["answer"]) - float(tiebreaker.answer))
+                        if diff < closest_diff:
+                            closest_diff = diff
+                    
+                    # Award points to users with the closest answer
+                    for pick in picks:
+                        diff = abs(float(pick["answer"]) - float(tiebreaker.answer))
+                        points = 1 if diff == closest_diff else 0
+                        
+                        cur.execute(
+                            """
+                            UPDATE tiebreaker_picks 
+                            SET points_awarded = %s
+                            WHERE id = %s
+                            """,
+                            (points, pick["id"])
+                        )
+                        
+                        # Update leaderboard
+                        cur.execute(
+                            """
+                            UPDATE leaderboard 
+                            SET total_points = (
+                                SELECT COALESCE(SUM(points_awarded), 0)
+                                FROM picks
+                                WHERE user_id = %s
+                            ) + (
+                                SELECT COALESCE(SUM(points_awarded), 0)
+                                FROM tiebreaker_picks
+                                WHERE user_id = %s
+                            )
+                            WHERE user_id = %s
+                            """,
+                            (pick["user_id"], pick["user_id"], pick["user_id"])
+                        )
+            
+            return updated_tiebreaker
+    except Exception as e:
+        logger.error(f"Error updating tiebreaker: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/tiebreakers/{tiebreaker_id}")
+async def delete_tiebreaker(
+    tiebreaker_id: int,
+    current_user: User = Depends(get_current_admin_user)
+):
+    """Delete a tiebreaker (admin only)."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Check if tiebreaker exists
+            cur.execute("SELECT * FROM tiebreakers WHERE id = %s", (tiebreaker_id,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Tiebreaker not found")
+            
+            # Delete tiebreaker (picks will be deleted automatically due to CASCADE)
+            cur.execute("DELETE FROM tiebreakers WHERE id = %s RETURNING *", (tiebreaker_id,))
+            deleted_tiebreaker = cur.fetchone()
+            
+            # Update leaderboard points
+            cur.execute(
+                """
+                UPDATE leaderboard l
+                SET total_points = (
+                    SELECT COALESCE(SUM(points_awarded), 0)
+                    FROM picks
+                    WHERE user_id = l.user_id
+                ) + (
+                    SELECT COALESCE(SUM(points_awarded), 0)
+                    FROM tiebreaker_picks
+                    WHERE user_id = l.user_id
+                )
+                """
+            )
+            
+            return {"message": "Tiebreaker deleted successfully", "tiebreaker": deleted_tiebreaker}
+    except Exception as e:
+        logger.error(f"Error deleting tiebreaker: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/tiebreaker_picks")
+async def create_tiebreaker_pick(
+    pick: TiebreakerPick,
+    current_user: User = Depends(get_current_user)
+):
+    """Create a new tiebreaker pick."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Check if tiebreaker exists and is active
+            cur.execute(
+                """
+                SELECT * FROM tiebreakers 
+                WHERE id = %s AND is_active = TRUE AND answer IS NULL
+                """, 
+                (pick.tiebreaker_id,)
+            )
+            tiebreaker = cur.fetchone()
+            if not tiebreaker:
+                raise HTTPException(status_code=404, detail="Tiebreaker not found or is no longer active")
+            
+            # Check if user already has a pick for this tiebreaker
+            cur.execute(
+                """
+                SELECT * FROM tiebreaker_picks 
+                WHERE user_id = %s AND tiebreaker_id = %s
+                """, 
+                (current_user.id, pick.tiebreaker_id)
+            )
+            existing_pick = cur.fetchone()
+            
+            if existing_pick:
+                # Update existing pick
+                cur.execute(
+                    """
+                    UPDATE tiebreaker_picks 
+                    SET answer = %s
+                    WHERE user_id = %s AND tiebreaker_id = %s
+                    RETURNING *
+                    """,
+                    (pick.answer, current_user.id, pick.tiebreaker_id)
+                )
+            else:
+                # Create new pick
+                cur.execute(
+                    """
+                    INSERT INTO tiebreaker_picks (user_id, tiebreaker_id, answer)
+                    VALUES (%s, %s, %s)
+                    RETURNING *
+                    """,
+                    (current_user.id, pick.tiebreaker_id, pick.answer)
+                )
+            
+            new_pick = cur.fetchone()
+            return new_pick
+    except Exception as e:
+        logger.error(f"Error creating tiebreaker pick: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/my_tiebreaker_picks")
+async def get_my_tiebreaker_picks(current_user: User = Depends(get_current_user)):
+    """Get all tiebreaker picks for the current user."""
+    try:
+        with get_db_cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    t.id as tiebreaker_id,
+                    t.question,
+                    t.start_time,
+                    t.answer as correct_answer,
+                    t.is_active,
+                    tp.answer as user_answer,
+                    tp.points_awarded
+                FROM tiebreakers t
+                LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id AND tp.user_id = %s
+                ORDER BY t.start_time
+            """, (current_user.id,))
+            picks = cur.fetchall()
+            return picks
+    except Exception as e:
+        logger.error(f"Error fetching user tiebreaker picks: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Create tables on startup
 def create_tables():
@@ -693,17 +1029,17 @@ def create_tables():
         );
         """)
 
-def create_admin_user():
+def create_admin_user(username, full_name, password):
     """Create an admin user if no admin exists."""
     try:
         with get_db_cursor(commit=True) as cur:
             # Check if any admin exists
             cur.execute("SELECT id FROM users WHERE is_admin = TRUE")
-            if cur.fetchone():
-                return
+            # if cur.fetchone():
+            #     return
             
             # Create admin user
-            admin_password = "admin123"  # This is a temporary password
+            admin_password = password  # This is a temporary password
             hashed_password = get_password_hash(admin_password)
             cur.execute(
                 """
@@ -711,7 +1047,7 @@ def create_admin_user():
                 VALUES (%s, %s, %s, TRUE)
                 RETURNING id
                 """,
-                ("admin", "Administrator", hashed_password)
+                (username, full_name, hashed_password)
             )
             admin_id = cur.fetchone()["id"]
             
@@ -725,10 +1061,14 @@ def create_admin_user():
     except Exception as e:
         logger.error(f"Error creating admin user: {str(e)}")
 
+def wipe_all_admin_users():
+    with get_db_cursor(commit=True) as cur:
+        cur.execute("DELETE FROM users WHERE is_admin = TRUE")
+
 # Initialize database
 with get_db_connection() as conn:
-    drop_and_recreate_tables(conn)
-create_admin_user()
+    create_tables()
+    #create_admin_user(username, full_name, password)
 
 # Run the server
 if __name__ == "__main__":

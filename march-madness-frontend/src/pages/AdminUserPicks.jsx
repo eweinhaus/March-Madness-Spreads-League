@@ -66,7 +66,10 @@ const AdminUserPicks = () => {
     <Container className="mt-4">
       <Card className="mb-4">
         <Card.Body>
-          <Card.Title className="h3 mb-4">User Picks Status</Card.Title>
+          <Card.Title className="h3 mb-4">Upcoming Picks Status</Card.Title>
+          <Alert variant="info" className="mb-4">
+            This page shows the status of picks for upcoming games and tiebreakers only. Games and tiebreakers that have already started are not included.
+          </Alert>
           <Row>
             <Col md={4}>
               <Card className="mb-3">
@@ -79,7 +82,7 @@ const AdminUserPicks = () => {
             <Col md={4}>
               <Card className="mb-3">
                 <Card.Body className="bg-light">
-                  <Card.Title className="h5 text-success">Completed Picks</Card.Title>
+                  <Card.Title className="h5 text-success">Users with All Picks</Card.Title>
                   <Card.Text className="h2 text-success">{completedUsers}</Card.Text>
                 </Card.Body>
               </Card>
@@ -118,6 +121,7 @@ const AdminUserPicks = () => {
                           role="progressbar"
                           style={{
                             width: `${(user.picks_made / user.total_games) * 100}%`,
+                            backgroundColor: user.is_complete ? '#198754' : '#ffc107'
                           }}
                           aria-valuenow={user.picks_made}
                           aria-valuemin="0"
@@ -129,8 +133,11 @@ const AdminUserPicks = () => {
                     </div>
                   </td>
                   <td>
-                    <span className={`badge ${user.is_complete ? 'bg-success' : 'bg-warning'}`}>
-                      {user.is_complete ? 'Complete' : 'Incomplete'}
+                    <span 
+                      className={`badge ${user.is_complete ? 'bg-success' : 'bg-warning'}`}
+                      style={{ fontSize: '0.9em' }}
+                    >
+                      {user.is_complete ? 'All Picks Submitted' : 'Missing Picks'}
                     </span>
                   </td>
                 </tr>

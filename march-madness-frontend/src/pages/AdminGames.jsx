@@ -225,11 +225,11 @@ const AdminGames = () => {
 
   return (
     <Container className="py-4">
-      <h2 className="mb-4">Admin: Manage Games</h2>
+      <h2 className="mb-4">Manage Games</h2>
       
       {error && <Alert variant="danger">{error}</Alert>}
       {success && <Alert variant="success">{success}</Alert>}
-      
+
       {/* Add Game Form */}
       <Form onSubmit={handleSubmit} className="mb-5" style={{ maxWidth: '400px' }}>
         <Form.Group className="mb-3">

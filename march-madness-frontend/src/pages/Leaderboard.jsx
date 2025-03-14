@@ -7,6 +7,7 @@ export default function Leaderboard() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [error, setError] = useState(null);
   const [selectedUser, setSelectedUser] = useState(null);
+  const [selectedUserFullName, setSelectedUserFullName] = useState(null);
   const [userPicks, setUserPicks] = useState([]);
   const [showModal, setShowModal] = useState(false);
 
@@ -29,12 +30,31 @@ export default function Leaderboard() {
   const handleUserClick = async (username) => {
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get(`${API_URL}/user_picks/${username}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const [picksResponse, tiebreakersResponse] = await Promise.all([
+        axios.get(`${API_URL}/user_picks/${username}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        }),
+        axios.get(`${API_URL}/my_tiebreaker_picks`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        })
+      ]);
+      
+      const userInfo = leaderboard.find(player => player.username === username);
+      setSelectedUserFullName(userInfo?.full_name || username);
+      
+      // Filter tiebreakers to only show ones that have started
+      const activeTiebreakers = tiebreakersResponse.data.filter(
+        t => new Date(t.start_time) <= new Date()
+      );
+      
+      setUserPicks({
+        picks: picksResponse.data,
+        tiebreakers: activeTiebreakers
       });
-      setUserPicks(response.data);
       setSelectedUser(username);
       setShowModal(true);
     } catch (err) {
@@ -46,6 +66,7 @@ export default function Leaderboard() {
   const handleCloseModal = () => {
     setShowModal(false);
     setSelectedUser(null);
+    setSelectedUserFullName(null);
     setUserPicks([]);
   };
 
@@ -83,48 +104,78 @@ export default function Leaderboard() {
 
       <Modal show={showModal} onHide={handleCloseModal} size="lg" centered fullscreen="sm-down">
         <Modal.Header closeButton>
-          <Modal.Title>{selectedUser}'s Picks</Modal.Title>
+          <Modal.Title>{selectedUserFullName}'s Picks</Modal.Title>
         </Modal.Header>
         <Modal.Body className="p-2 p-md-3">
-          {userPicks.length === 0 ? (
+          {(!userPicks.picks || userPicks.picks.length === 0) && (!userPicks.tiebreakers || userPicks.tiebreakers.length === 0) ? (
             <Alert variant="info">
-              No picks available for games that have started.
+              No picks available for games or tiebreakers that have started.
             </Alert>
           ) : (
-            <div className="table-responsive">
-              <Table striped bordered hover responsive className="mb-0">
-                <thead>
-                  <tr>
-                    <th>Game</th>
-                    <th>Spread</th>
-                    <th>Pick</th>
-                    <th>Result</th>
-                    <th>Points</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {userPicks.map((pick) => (
-                    <tr key={pick.game_id}>
-                      <td className="text-nowrap">{pick.away_team} @ {pick.home_team}</td>
-                      <td>
-                        {pick.spread > 0 
-                          ? `${pick.home_team} -${pick.spread}` 
-                          : `${pick.away_team} +${-pick.spread}`}
-                      </td>
-                      <td>{pick.picked_team}</td>
-                      <td>
-                        {pick.winning_team 
-                          ? pick.winning_team === "PUSH"
-                            ? "PUSH"
-                            : `Covered: ${pick.winning_team}`
-                          : "Pending"}
-                      </td>
-                      <td className="text-center">{pick.points_awarded}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </Table>
-            </div>
+            <>
+              {userPicks.picks && userPicks.picks.length > 0 && (
+                <div className="table-responsive mb-4">
+                  <Table striped bordered hover responsive className="mb-0">
+                    <thead>
+                      <tr>
+                        <th>Game</th>
+                        <th>Spread</th>
+                        <th>Pick</th>
+                        <th>Result</th>
+                        <th>Points</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userPicks.picks.map((pick) => (
+                        <tr key={pick.game_id}>
+                          <td className="text-nowrap">{pick.away_team} @ {pick.home_team}</td>
+                          <td>
+                            {pick.spread > 0 
+                              ? `${pick.home_team} -${pick.spread}` 
+                              : `${pick.away_team} +${-pick.spread}`}
+                          </td>
+                          <td>{pick.picked_team}</td>
+                          <td>
+                            {pick.winning_team 
+                              ? pick.winning_team === "PUSH"
+                                ? "PUSH"
+                                : `${pick.winning_team}`
+                              : "Pending"}
+                          </td>
+                          <td className="text-center">{pick.points_awarded}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </Table>
+                </div>
+              )}
+
+              {userPicks.tiebreakers && userPicks.tiebreakers.length > 0 && (
+                <>
+                  <h5 className="mb-3">Tiebreakers</h5>
+                  <div className="table-responsive">
+                    <Table striped bordered hover responsive className="mb-0">
+                      <thead>
+                        <tr>
+                          <th>Question</th>
+                          <th>Their Answer</th>
+                          <th>Correct Answer</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {userPicks.tiebreakers.map((tiebreaker) => (
+                          <tr key={tiebreaker.tiebreaker_id}>
+                            <td>{tiebreaker.question}</td>
+                            <td>{tiebreaker.user_answer}</td>
+                            <td>{tiebreaker.correct_answer || 'Pending'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </Table>
+                  </div>
+                </>
+              )}
+            </>
           )}
         </Modal.Body>
         <Modal.Footer>

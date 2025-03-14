@@ -5,27 +5,34 @@ import { API_URL } from "../config";
 
 export default function Live() {
   const [liveGames, setLiveGames] = useState([]);
+  const [liveTiebreakers, setLiveTiebreakers] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectedGame, setSelectedGame] = useState(null);
-  const [showModal, setShowModal] = useState(false);
+  const [selectedTiebreaker, setSelectedTiebreaker] = useState(null);
+  const [showGameModal, setShowGameModal] = useState(false);
+  const [showTiebreakerModal, setShowTiebreakerModal] = useState(false);
 
   useEffect(() => {
-    fetchLiveGames();
+    fetchLiveData();
   }, []);
 
-  const fetchLiveGames = () => {
+  const fetchLiveData = () => {
     setLoading(true);
     setError(null);
     
-    axios.get(`${API_URL}/live_games`)
-      .then(res => {
-        setLiveGames(Array.isArray(res.data) ? res.data : []);
+    Promise.all([
+      axios.get(`${API_URL}/live_games`),
+      axios.get(`${API_URL}/live_tiebreakers`)
+    ])
+      .then(([gamesRes, tiebreakersRes]) => {
+        setLiveGames(Array.isArray(gamesRes.data) ? gamesRes.data : []);
+        setLiveTiebreakers(Array.isArray(tiebreakersRes.data) ? tiebreakersRes.data : []);
         setError(null);
       })
       .catch(err => {
         console.error(err);
-        setError('Failed to load live games. Please try again.');
+        setError('Failed to load live data. Please try again.');
       })
       .finally(() => {
         setLoading(false);
@@ -46,24 +53,32 @@ export default function Live() {
 
   const handleGameClick = (game) => {
     setSelectedGame(game);
-    setShowModal(true);
+    setShowGameModal(true);
   };
 
-  const handleCloseModal = () => {
-    setShowModal(false);
+  const handleTiebreakerClick = (tiebreaker) => {
+    setSelectedTiebreaker(tiebreaker);
+    setShowTiebreakerModal(true);
+  };
+
+  const handleCloseGameModal = () => {
+    setShowGameModal(false);
     setSelectedGame(null);
+  };
+
+  const handleCloseTiebreakerModal = () => {
+    setShowTiebreakerModal(false);
+    setSelectedTiebreaker(null);
   };
 
   return (
     <Container className="my-5">
-      <h2 className="mb-4">Live Games</h2>
-      
       {loading && (
         <div className="text-center">
           <Spinner animation="border" role="status">
             <span className="visually-hidden">Loading...</span>
           </Spinner>
-          <p className="mt-2">Loading live games...</p>
+          <p className="mt-2">Loading live data...</p>
         </div>
       )}
       
@@ -73,45 +88,75 @@ export default function Live() {
         </Alert>
       )}
       
-      {!loading && !error && liveGames.length === 0 && (
+      {!loading && !error && liveGames.length === 0 && liveTiebreakers.length === 0 && (
         <Alert variant="info">
-          No live games at the moment.
+          No live games or tiebreakers at the moment.
         </Alert>
       )}
-      
+
       {!loading && !error && liveGames.length > 0 && (
-        <div className="row">
-          {liveGames.map((game) => (
-            <div key={game.game_id} className="col-12 mb-4">
-              <Card 
-                onClick={() => handleGameClick(game)}
-                style={{ cursor: 'pointer' }}
-                className="hover-shadow"
-              >
-                <Card.Header className="d-flex justify-content-between align-items-center">
-                  <span>
-                    {game.away_team} @ {game.home_team}
-                  </span>
-                  <Badge bg="primary">
-                    {game.spread > 0 
-                      ? `${game.home_team} -${game.spread}` 
-                      : `${game.away_team} +${-game.spread}`}
-                  </Badge>
-                </Card.Header>
-                <Card.Body>
-                  <Card.Text>
-                    Started: {formatGameDate(game.game_date)}
-                  </Card.Text>
-                  <small className="text-muted">Click to view picks</small>
-                </Card.Body>
-              </Card>
-            </div>
-          ))}
-        </div>
+        <>
+          <h2 className="mb-4">Live Games</h2>
+          <div className="row">
+            {liveGames.map((game) => (
+              <div key={game.game_id} className="col-12 mb-4">
+                <Card 
+                  onClick={() => handleGameClick(game)}
+                  style={{ cursor: 'pointer' }}
+                  className="hover-shadow"
+                >
+                  <Card.Header className="d-flex justify-content-between align-items-center">
+                    <span>
+                      {game.away_team} @ {game.home_team}
+                    </span>
+                    <Badge bg="primary">
+                      {game.spread > 0 
+                        ? `${game.home_team} -${game.spread}` 
+                        : `${game.away_team} +${-game.spread}`}
+                    </Badge>
+                  </Card.Header>
+                  <Card.Body>
+                    <Card.Text>
+                      Started: {formatGameDate(game.game_date)}
+                    </Card.Text>
+                    <small className="text-muted">Click to view picks</small>
+                  </Card.Body>
+                </Card>
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
-      {/* Picks Modal */}
-      <Modal show={showModal} onHide={handleCloseModal}>
+      {!loading && !error && liveTiebreakers.length > 0 && (
+        <>
+          <h2 className="mb-4 mt-5">Live Tiebreakers</h2>
+          <div className="row">
+            {liveTiebreakers.map((tiebreaker) => (
+              <div key={tiebreaker.tiebreaker_id} className="col-12 mb-4">
+                <Card 
+                  onClick={() => handleTiebreakerClick(tiebreaker)}
+                  style={{ cursor: 'pointer' }}
+                  className="hover-shadow"
+                >
+                  <Card.Header>
+                    <span>{tiebreaker.question}</span>
+                  </Card.Header>
+                  <Card.Body>
+                    <Card.Text>
+                      Started: {formatGameDate(tiebreaker.start_time)}
+                    </Card.Text>
+                    <small className="text-muted">Click to view answers</small>
+                  </Card.Body>
+                </Card>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Game Picks Modal */}
+      <Modal show={showGameModal} onHide={handleCloseGameModal}>
         <Modal.Header closeButton>
           <Modal.Title>
             {selectedGame && `${selectedGame.away_team} @ ${selectedGame.home_team}`}
@@ -134,7 +179,7 @@ export default function Live() {
                 key={index}
                 className="d-flex justify-content-between align-items-center"
               >
-                {pick.username}
+                {pick.full_name}
                 <Badge bg="secondary">
                   {pick.picked_team}
                 </Badge>
@@ -146,7 +191,43 @@ export default function Live() {
           </ListGroup>
         </Modal.Body>
         <Modal.Footer>
-          <Button variant="secondary" onClick={handleCloseModal}>
+          <Button variant="secondary" onClick={handleCloseGameModal}>
+            Close
+          </Button>
+        </Modal.Footer>
+      </Modal>
+
+      {/* Tiebreaker Modal */}
+      <Modal show={showTiebreakerModal} onHide={handleCloseTiebreakerModal}>
+        <Modal.Header closeButton>
+          <Modal.Title>
+            {selectedTiebreaker && selectedTiebreaker.question}
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <p>
+            <strong>Started:</strong> {selectedTiebreaker && formatGameDate(selectedTiebreaker.start_time)}
+          </p>
+          <h6>User Answers:</h6>
+          <ListGroup>
+            {selectedTiebreaker?.picks && selectedTiebreaker.picks.map((pick, index) => (
+              <ListGroup.Item 
+                key={index}
+                className="d-flex justify-content-between align-items-center"
+              >
+                <span>{pick.full_name}</span>
+                <Badge bg="secondary">
+                  {pick.answer}
+                </Badge>
+              </ListGroup.Item>
+            ))}
+            {selectedTiebreaker?.picks.length === 0 && (
+              <ListGroup.Item>No answers submitted yet</ListGroup.Item>
+            )}
+          </ListGroup>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={handleCloseTiebreakerModal}>
             Close
           </Button>
         </Modal.Footer>

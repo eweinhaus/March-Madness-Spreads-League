@@ -11,6 +11,7 @@ import Picks from './pages/Picks';
 import Leaderboard from './pages/Leaderboard';
 import AdminGames from './pages/AdminGames';
 import AdminUserPicks from './pages/AdminUserPicks';
+import AdminTiebreakers from './pages/AdminTiebreakers';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Live from './pages/Live';
@@ -117,6 +118,9 @@ function AppContent() {
                 <Nav.Link as={Link} to="/admin/games" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Admin: Games</Nav.Link>
               )}
               {isAuthenticated && isAdmin && (
+                <Nav.Link as={Link} to="/admin/tiebreakers" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Admin: Tiebreakers</Nav.Link>
+              )}
+              {isAuthenticated && isAdmin && (
                 <Nav.Link as={Link} to="/admin/user-picks" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Admin: User Picks</Nav.Link>
               )}
             </Nav>
@@ -157,6 +161,11 @@ function AppContent() {
           <Route path="/admin/user-picks" element={
             <ProtectedRoute adminOnly={true}>
               <AdminUserPicks />
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/tiebreakers" element={
+            <ProtectedRoute adminOnly={true}>
+              <AdminTiebreakers />
             </ProtectedRoute>
           } />
         </Routes>
