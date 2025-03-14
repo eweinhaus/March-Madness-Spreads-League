@@ -96,7 +96,7 @@ export default function Live() {
 
       {!loading && !error && liveGames.length > 0 && (
         <>
-          <h2 className="mb-4">Live Games</h2>
+          <h2 className="mb-4">Live Contests</h2>
           <div className="row">
             {liveGames.map((game) => (
               <div key={game.game_id} className="col-12 mb-4">
@@ -130,7 +130,6 @@ export default function Live() {
 
       {!loading && !error && liveTiebreakers.length > 0 && (
         <>
-          <h2 className="mb-4 mt-5">Live Tiebreakers</h2>
           <div className="row">
             {liveTiebreakers.map((tiebreaker) => (
               <div key={tiebreaker.tiebreaker_id} className="col-12 mb-4">

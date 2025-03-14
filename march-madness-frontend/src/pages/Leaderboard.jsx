@@ -152,13 +152,12 @@ export default function Leaderboard() {
 
               {userPicks.tiebreakers && userPicks.tiebreakers.length > 0 && (
                 <>
-                  <h5 className="mb-3">Tiebreakers</h5>
                   <div className="table-responsive">
                     <Table striped bordered hover responsive className="mb-0">
                       <thead>
                         <tr>
                           <th>Question</th>
-                          <th>Their Answer</th>
+                          <th>Pick</th>
                           <th>Correct Answer</th>
                         </tr>
                       </thead>

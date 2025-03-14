@@ -989,6 +989,62 @@ async def get_my_tiebreaker_picks(current_user: User = Depends(get_current_user)
         logger.error(f"Error fetching user tiebreaker picks: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/admin/user_all_picks/{username}")
+async def get_user_all_picks(
+    username: str,
+    current_user: User = Depends(get_current_admin_user)
+):
+    """Get ALL picks for a specific user (admin only), regardless of start time."""
+    try:
+        with get_db_cursor() as cur:
+            # Get user info
+            cur.execute("SELECT id, username, full_name FROM users WHERE username = %s", (username,))
+            user = cur.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Get all game picks
+            cur.execute("""
+                SELECT 
+                    g.id as game_id,
+                    g.home_team,
+                    g.away_team,
+                    g.spread,
+                    g.game_date,
+                    g.winning_team,
+                    p.picked_team,
+                    p.points_awarded
+                FROM games g
+                LEFT JOIN picks p ON g.id = p.game_id AND p.user_id = %s
+                ORDER BY g.game_date
+            """, (user['id'],))
+            game_picks = cur.fetchall()
+
+            # Get all tiebreaker picks
+            cur.execute("""
+                SELECT 
+                    t.id as tiebreaker_id,
+                    t.question,
+                    t.start_time,
+                    t.answer as correct_answer,
+                    t.is_active,
+                    tp.answer as user_answer,
+                    tp.points_awarded
+                FROM tiebreakers t
+                LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id AND tp.user_id = %s
+                ORDER BY t.start_time
+            """, (user['id'],))
+            tiebreaker_picks = cur.fetchall()
+
+            return {
+                "user": user,
+                "game_picks": game_picks,
+                "tiebreaker_picks": tiebreaker_picks
+            }
+    except Exception as e:
+        logger.error(f"Error fetching all user picks: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Create tables on startup
 def create_tables():
     with get_db_cursor(commit=True) as cur:

@@ -3,11 +3,14 @@ import { Container, Table, Alert, Card, Row, Col } from 'react-bootstrap';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from '../config';
+import UserPicksModal from '../components/UserPicksModal';
 
 const AdminUserPicks = () => {
   const [userPicksStatus, setUserPicksStatus] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selectedUserPicks, setSelectedUserPicks] = useState(null);
+  const [showModal, setShowModal] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -36,6 +39,23 @@ const AdminUserPicks = () => {
 
     fetchUserPicksStatus();
   }, [navigate]);
+
+  const handleUserClick = async (username) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.get(`${API_URL}/admin/user_all_picks/${username}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setSelectedUserPicks(response.data);
+      setShowModal(true);
+    } catch (err) {
+      if (err.response?.status === 401) {
+        navigate('/login');
+      } else {
+        setError('Failed to fetch user picks');
+      }
+    }
+  };
 
   if (loading) {
     return (
@@ -111,7 +131,12 @@ const AdminUserPicks = () => {
             </thead>
             <tbody>
               {userPicksStatus.map((user) => (
-                <tr key={user.username}>
+                <tr 
+                  key={user.username}
+                  onClick={() => handleUserClick(user.username)}
+                  style={{ cursor: 'pointer' }}
+                  className="user-row"
+                >
                   <td>{user.full_name}</td>
                   <td>
                     <div className="d-flex align-items-center">
@@ -146,6 +171,18 @@ const AdminUserPicks = () => {
           </Table>
         </Card.Body>
       </Card>
+
+      <UserPicksModal
+        show={showModal}
+        onHide={() => setShowModal(false)}
+        userPicks={selectedUserPicks}
+      />
+
+      <style jsx>{`
+        .user-row:hover {
+          background-color: rgba(0, 0, 0, 0.075) !important;
+        }
+      `}</style>
     </Container>
   );
 };

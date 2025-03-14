@@ -237,11 +237,6 @@ export default function Picks() {
           {/* Tiebreakers Section */}
           {availableTiebreakers.length > 0 && (
             <>
-              <Row className="mt-4 mb-3">
-                <Col>
-                  <h3 className="h4">Tiebreaker Questions</h3>
-                </Col>
-              </Row>
               <Row xs={1} sm={2} lg={3} className="g-3 g-md-4">
                 {availableTiebreakers.map(tiebreaker => {
                   const existingAnswer = existingTiebreakerPicks[tiebreaker.id];
