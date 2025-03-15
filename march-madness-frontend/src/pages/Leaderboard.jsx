@@ -135,6 +135,8 @@ export default function Leaderboard() {
                         let rowClass = "";
                         if (pick.winning_team && pick.winning_team !== "PUSH") {
                           rowClass = pick.winning_team === pick.picked_team ? "table-success" : "table-danger";
+                        } else if (pick.winning_team === "PUSH") {
+                          rowClass = "table-warning"; // Highlight PUSH rows in yellow
                         }
                         
                         return (
@@ -183,14 +185,9 @@ export default function Leaderboard() {
                                 {tiebreaker.user_answer !== null && tiebreaker.user_answer !== undefined 
                                   ? tiebreaker.user_answer 
                                   : <span className="text-muted">No Answer</span>}
-                                {tiebreaker.correct_answer && (
+                                {tiebreaker.correct_answer && !["N/A", "NA", "n/a", "na", "Na"].includes(tiebreaker.correct_answer) && (
                                   <span className="text-muted ms-2" style={{ fontSize: '0.8rem' }}>
                                     (Correct: {tiebreaker.correct_answer})
-                                  </span>
-                                )}
-                                {hasPoints && (
-                                  <span className="ms-2 badge bg-success" style={{ fontSize: '0.75rem', padding: '0.2em 0.4em' }}>
-                                    +{tiebreaker.points_awarded} pts
                                   </span>
                                 )}
                               </td>

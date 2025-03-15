@@ -88,14 +88,14 @@ export default function Live() {
         </Alert>
       )}
       
-      {!loading && !error && liveGames.length === 0 && liveTiebreakers.length === 0 && (
-        <Alert variant="info">
-          No live games or tiebreakers at the moment.
-        </Alert>
-      )}
       {!loading && !error && (
         <>
           <h2 className="mb-4">Live Contests</h2>
+          {!loading && !error && liveGames.length === 0 && liveTiebreakers.length === 0 && (
+            <Alert variant="info">
+              No live contests at the moment.
+            </Alert>
+          )}
           <div className="row">
             {liveGames.map((game) => (
               <div key={game.game_id} className="col-12 mb-4">
