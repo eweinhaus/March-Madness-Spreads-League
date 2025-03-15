@@ -284,43 +284,49 @@ const AdminGames = () => {
       </Form>
 
       {/* Games List */}
-      <h3>Current Games</h3>
-      <Table striped bordered hover>
+      <h3>All Games</h3>
+      <Table striped bordered hover size="sm">
         <thead>
-          <tr>
-            <th>Date</th>
-            <th>Matchup</th>
-            <th>Spread</th>
-            <th>Status</th>
-            <th>Actions</th>
+          <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
+            <th className="py-2">Date</th>
+            <th className="py-2">Matchup</th>
+            <th className="py-2">Status</th>
+            <th className="py-2">Actions</th>
           </tr>
         </thead>
-        <tbody>
-          {games.map(game => {
+        <tbody className="small">
+          {games
+            .sort((a, b) => new Date(b.game_date) - new Date(a.game_date))
+            .map(game => {
             const gameStarted = hasGameStarted(game.game_date);
             return (
-              <tr key={game.id}>
-                <td>{formatDateForDisplay(game.game_date)}</td>
-                <td>{game.away_team} @ {game.home_team}</td>
-                <td>{game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} +${-game.spread}`}</td>
-                <td>
+              <tr key={game.id} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
+                <td className="py-2">{formatDateForDisplay(game.game_date)}</td>
+                <td className="py-2 text-nowrap">
+                  {game.spread < 0 
+                    ? `${game.away_team} @ ${game.home_team} +${Math.abs(game.spread)}` 
+                    : `${game.away_team} @ ${game.home_team} -${game.spread}`}
+                </td>
+                <td className="py-2">
                   {game.winning_team ? (
-                    <span className="text-success">
+                    <span className="text-success" style={{ fontSize: '0.85rem' }}>
                       {game.winning_team === "PUSH" ? "PUSH" : `Covered: ${game.winning_team}`}
                     </span>
                   ) : gameStarted ? (
-                    <span className="text-warning">Game in progress</span>
+                    <span className="text-warning" style={{ fontSize: '0.85rem' }}>Game in progress</span>
                   ) : (
-                    <span className="text-info">Not started</span>
+                    <span className="text-info" style={{ fontSize: '0.85rem' }}>Not started</span>
                   )}
                 </td>
-                <td>
-                  <div className="d-flex gap-2">
+                <td className="py-2">
+                  <div className="d-flex gap-1">
                     {gameStarted && !game.winning_team && (
                       <div className="btn-group" role="group">
                         <Button
                           variant="outline-success"
                           size="sm"
+                          className="py-0 px-2"
+                          style={{ fontSize: '0.75rem' }}
                           onClick={() => handleWinnerSelect(game.id, game.away_team)}
                         >
                           {game.away_team} Covered
@@ -328,6 +334,8 @@ const AdminGames = () => {
                         <Button
                           variant="outline-warning"
                           size="sm"
+                          className="py-0 px-2"
+                          style={{ fontSize: '0.75rem' }}
                           onClick={() => handleWinnerSelect(game.id, "PUSH")}
                         >
                           Push
@@ -335,6 +343,8 @@ const AdminGames = () => {
                         <Button
                           variant="outline-success"
                           size="sm"
+                          className="py-0 px-2"
+                          style={{ fontSize: '0.75rem' }}
                           onClick={() => handleWinnerSelect(game.id, game.home_team)}
                         >
                           {game.home_team} Covered
@@ -344,6 +354,8 @@ const AdminGames = () => {
                     <Button
                       variant="outline-primary"
                       size="sm"
+                      className="py-0 px-2"
+                      style={{ fontSize: '0.75rem' }}
                       onClick={() => handleEditClick(game)}
                     >
                       Edit
@@ -351,6 +363,8 @@ const AdminGames = () => {
                     <Button
                       variant="outline-danger"
                       size="sm"
+                      className="py-0 px-2"
+                      style={{ fontSize: '0.75rem' }}
                       onClick={() => handleDeleteClick(game)}
                     >
                       Delete

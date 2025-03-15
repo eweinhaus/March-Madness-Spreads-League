@@ -274,30 +274,38 @@ const AdminTiebreakers = () => {
       </Form>
 
       {/* Tiebreakers List */}
-      <h3>Current Tiebreakers</h3>
-      <Table striped bordered hover>
+      <h3>All Questions</h3>
+      <Table striped bordered hover size="sm">
         <thead>
-          <tr>
-            <th>Start Time</th>
-            <th>Question</th>
-            <th>Status</th>
-            <th>Answer</th>
-            <th>Actions</th>
+          <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
+            <th className="py-2">Start Time</th>
+            <th className="py-2">Question</th>
+            <th className="py-2">Status</th>
+            <th className="py-2">Answer</th>
+            <th className="py-2">Actions</th>
           </tr>
         </thead>
-        <tbody>
-          {tiebreakers.map(tiebreaker => (
-            <tr key={tiebreaker.id}>
-              <td>{formatDateForDisplay(tiebreaker.start_time)}</td>
-              <td>{tiebreaker.question}</td>
-              <td>{tiebreaker.is_active ? 'Active' : 'Inactive'}</td>
-              <td>{tiebreaker.answer !== null ? tiebreaker.answer : '-'}</td>
-              <td>
-                <div className="d-flex gap-2">
+        <tbody className="small">
+          {tiebreakers
+            .sort((a, b) => new Date(b.start_time) - new Date(a.start_time))
+            .map(tiebreaker => (
+            <tr key={tiebreaker.id} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
+              <td className="py-2">{formatDateForDisplay(tiebreaker.start_time)}</td>
+              <td className="py-2">{tiebreaker.question}</td>
+              <td className="py-2">
+                <span className={`text-${tiebreaker.is_active ? 'info' : 'success'}`} style={{ fontSize: '0.85rem' }}>
+                  {tiebreaker.is_active ? 'Active' : 'Inactive'}
+                </span>
+              </td>
+              <td className="py-2">{tiebreaker.answer !== null ? tiebreaker.answer : '-'}</td>
+              <td className="py-2">
+                <div className="d-flex gap-1">
                   {tiebreaker.is_active && (
                     <Button
                       variant="outline-success"
                       size="sm"
+                      className="py-0 px-2"
+                      style={{ fontSize: '0.75rem' }}
                       onClick={() => handleFinishClick(tiebreaker)}
                     >
                       Finish
@@ -306,6 +314,8 @@ const AdminTiebreakers = () => {
                   <Button
                     variant="outline-primary"
                     size="sm"
+                    className="py-0 px-2"
+                    style={{ fontSize: '0.75rem' }}
                     onClick={() => handleEditClick(tiebreaker)}
                   >
                     Edit
@@ -313,6 +323,8 @@ const AdminTiebreakers = () => {
                   <Button
                     variant="outline-danger"
                     size="sm"
+                    className="py-0 px-2"
+                    style={{ fontSize: '0.75rem' }}
                     onClick={() => handleDeleteClick(tiebreaker)}
                   >
                     Delete

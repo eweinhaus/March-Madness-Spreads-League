@@ -99,7 +99,7 @@ const AdminUserPicks = () => {
             <Col md={4}>
               <Card className="mb-3">
                 <Card.Body className="bg-light">
-                  <Card.Title className="h5 text-success">Users without Outstanding Picks</Card.Title>
+                  <Card.Title className="h5 text-success">Users With All Picks Submitted</Card.Title>
                   <Card.Text className="h2 text-success">{completedUsers}</Card.Text>
                 </Card.Body>
               </Card>
@@ -118,32 +118,42 @@ const AdminUserPicks = () => {
 
       <Card>
         <Card.Body>
-          <Table striped bordered hover responsive>
+          <Table striped bordered hover responsive size="sm">
             <thead>
-              <tr>
-                <th>Name</th>
-                <th>Progress</th>
-                <th>Status</th>
+              <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
+                <th className="py-2">Name</th>
+                <th className="py-2">Progress</th>
+                <th className="py-2">Status</th>
               </tr>
             </thead>
-            <tbody>
-              {userPicksStatus.map((user) => (
+            <tbody className="small">
+              {userPicksStatus
+                .sort((a, b) => {
+                  // First sort by completion status (incomplete first)
+                  if (a.is_complete !== b.is_complete) {
+                    return a.is_complete ? 1 : -1;
+                  }
+                  // Then sort by name alphabetically
+                  return a.full_name.localeCompare(b.full_name);
+                })
+                .map((user) => (
                 <tr 
                   key={user.username}
                   onClick={() => handleUserClick(user.username)}
-                  style={{ cursor: 'pointer' }}
+                  style={{ cursor: 'pointer', fontSize: '0.85rem', lineHeight: '1.2' }}
                   className="user-row"
                 >
-                  <td>{user.full_name}</td>
-                  <td>
+                  <td className="py-2">{user.full_name}</td>
+                  <td className="py-2">
                     <div className="d-flex align-items-center">
-                      <div className="progress flex-grow-1 me-2" style={{ height: '20px' }}>
+                      <div className="progress flex-grow-1 me-2" style={{ height: '18px' }}>
                         <div
                           className="progress-bar"
                           role="progressbar"
                           style={{
                             width: `${(user.picks_made / user.total_games) * 100}%`,
-                            backgroundColor: user.is_complete ? '#198754' : '#ffc107'
+                            backgroundColor: user.is_complete ? '#198754' : '#ffc107',
+                            fontSize: '0.75rem'
                           }}
                           aria-valuenow={user.picks_made}
                           aria-valuemin="0"
@@ -154,10 +164,10 @@ const AdminUserPicks = () => {
                       </div>
                     </div>
                   </td>
-                  <td>
+                  <td className="py-2">
                     <span 
                       className={`badge ${user.is_complete ? 'bg-success' : 'bg-warning'}`}
-                      style={{ fontSize: '0.9em' }}
+                      style={{ fontSize: '0.75rem', padding: '0.25em 0.5em' }}
                     >
                       {user.is_complete ? 'All Picks Submitted' : 'Missing Picks'}
                     </span>

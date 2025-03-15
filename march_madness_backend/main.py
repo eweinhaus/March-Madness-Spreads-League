@@ -342,12 +342,47 @@ def update_score(result: GameResult):
 def get_leaderboard():
     try:
         with get_db_cursor() as cur:
+            # Get the most recent numerical tiebreaker with an answer
             cur.execute("""
-                SELECT u.username, u.full_name, l.total_points 
-                FROM leaderboard l 
-                JOIN users u ON l.user_id = u.id
-                ORDER BY l.total_points DESC
+                SELECT id, answer::numeric
+                FROM tiebreakers 
+                WHERE answer ~ '^[0-9]+\.?[0-9]*$'
+                AND answer IS NOT NULL
+                ORDER BY start_time DESC 
+                LIMIT 1
             """)
+            latest_tiebreaker = cur.fetchone()
+            
+            if latest_tiebreaker:
+                # If we have a numerical tiebreaker, sort by points and then by answer closeness
+                cur.execute("""
+                    WITH tiebreaker_diffs AS (
+                        SELECT 
+                            tp.user_id,
+                            ABS(tp.answer::numeric - %s) as answer_diff
+                        FROM tiebreaker_picks tp
+                        WHERE tp.tiebreaker_id = %s
+                        AND tp.answer ~ '^[0-9]+\.?[0-9]*$'
+                    )
+                    SELECT 
+                        u.username, 
+                        u.full_name, 
+                        l.total_points,
+                        COALESCE(td.answer_diff, float8 'infinity') as tiebreaker_diff
+                    FROM leaderboard l 
+                    JOIN users u ON l.user_id = u.id
+                    LEFT JOIN tiebreaker_diffs td ON l.user_id = td.user_id
+                    ORDER BY l.total_points DESC, td.answer_diff ASC NULLS LAST
+                """, (latest_tiebreaker['answer'], latest_tiebreaker['id']))
+            else:
+                # If no numerical tiebreaker exists, just sort by points
+                cur.execute("""
+                    SELECT u.username, u.full_name, l.total_points, NULL as tiebreaker_diff
+                    FROM leaderboard l 
+                    JOIN users u ON l.user_id = u.id
+                    ORDER BY l.total_points DESC
+                """)
+            
             leaderboard = cur.fetchall()
             return leaderboard
     except Exception as e:

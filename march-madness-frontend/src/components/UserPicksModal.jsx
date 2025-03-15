@@ -89,26 +89,30 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
         
         <Tabs defaultActiveKey="games" className="mb-3">
           <Tab eventKey="games" title="Game Picks">
-            <Table striped bordered hover responsive>
+            <Table striped bordered hover responsive size="sm">
               <thead>
-                <tr>
-                  <th>Game Date</th>
-                  <th>Matchup</th>
-                  <th>Spread</th>
-                  <th>Pick</th>
-                  <th>Status</th>
+                <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
+                  <th className="py-2">Game Date</th>
+                  <th className="py-2">Matchup</th>
+                  <th className="py-2">Pick</th>
+                  <th className="py-2">Status</th>
                 </tr>
               </thead>
-              <tbody>
-                {game_picks?.map((game) => (
-                  <tr key={game.game_id}>
-                    <td>{formatDate(game.game_date)}</td>
-                    <td>{game.away_team} @ {game.home_team}</td>
-                    <td>{game.spread}</td>
-                    <td>
+              <tbody className="small">
+                {game_picks
+                  ?.sort((a, b) => new Date(b.game_date) - new Date(a.game_date))
+                  .map((game) => (
+                  <tr key={game.game_id} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
+                    <td className="py-2">{formatDate(game.game_date)}</td>
+                    <td className="py-2 text-nowrap">
+                      {game.spread < 0 
+                        ? `${game.away_team} @ ${game.home_team} +${Math.abs(game.spread)}` 
+                        : `${game.away_team} @ ${game.home_team} -${game.spread}`}
+                    </td>
+                    <td className="py-2">
                       {game.picked_team || <span className="text-muted">-</span>}
                     </td>
-                    <td>
+                    <td className="py-2">
                       {getStatusBadge(game.picked_team, game)}
                     </td>
                   </tr>
@@ -117,30 +121,32 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
             </Table>
           </Tab>
           <Tab eventKey="tiebreakers" title="Question Picks">
-            <Table striped bordered hover responsive>
+            <Table striped bordered hover responsive size="sm">
               <thead>
-                <tr>
-                  <th>Start Time</th>
-                  <th>Question</th>
-                  <th>Answer</th>
-                  {isAdmin && <th>Points</th>}
+                <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
+                  <th className="py-2">Start Time</th>
+                  <th className="py-2">Question</th>
+                  <th className="py-2">Answer</th>
+                  {isAdmin && <th className="py-2">Points</th>}
                 </tr>
               </thead>
-              <tbody>
-                {tiebreaker_picks?.map((tiebreaker) => (
-                  <tr key={tiebreaker.tiebreaker_id}>
-                    <td>{formatDate(tiebreaker.start_time)}</td>
-                    <td>{tiebreaker.question}</td>
-                    <td>
+              <tbody className="small">
+                {tiebreaker_picks
+                  ?.sort((a, b) => new Date(b.start_time) - new Date(a.start_time))
+                  .map((tiebreaker) => (
+                  <tr key={tiebreaker.tiebreaker_id} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
+                    <td className="py-2">{formatDate(tiebreaker.start_time)}</td>
+                    <td className="py-2">{tiebreaker.question}</td>
+                    <td className="py-2">
                       {tiebreaker.user_answer || <span className="text-muted">-</span>}
                       {tiebreaker.correct_answer && (
-                        <span className="text-muted ms-2">
+                        <span className="text-muted ms-2" style={{ fontSize: '0.8rem' }}>
                           (Correct: {tiebreaker.correct_answer})
                         </span>
                       )}
                     </td>
                     {isAdmin && (
-                      <td>
+                      <td className="py-2">
                         <div className="d-flex align-items-center">
                           <Form.Control
                             type="number"

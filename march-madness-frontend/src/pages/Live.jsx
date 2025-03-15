@@ -111,7 +111,7 @@ export default function Live() {
                     <Badge bg="primary">
                       Spread: {game.spread > 0 
                         ? `${game.home_team} -${game.spread}` 
-                        : `${game.away_team} +${-game.spread}`}
+                        : `${game.away_team} -${-game.spread}`}
                     </Badge>
                   </Card.Header>
                   <Card.Body>
