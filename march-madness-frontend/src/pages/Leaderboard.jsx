@@ -29,33 +29,15 @@ export default function Leaderboard() {
 
   const handleUserClick = async (username) => {
     try {
-      const token = localStorage.getItem('token');
-      
-      // Use the admin endpoint to get all picks for the selected user
-      const response = await axios.get(`${API_URL}/admin/user_all_picks/${username}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      // Use the new endpoint that only shows picks for games that have started
+      const response = await axios.get(`${API_URL}/user_all_past_picks/${username}`);
       
       const userInfo = leaderboard.find(player => player.username === username);
       setSelectedUserFullName(userInfo?.full_name || username);
       
-      // Filter tiebreakers to only show ones that have started
-      const activeTiebreakers = response.data.tiebreaker_picks.filter(
-        t => new Date(t.start_time) <= new Date()
-      );
-      
-      // Debug logging for Ethan Weinhaus2
-      if (username === "Ethan Weinhaus2" || username.includes("Weinhaus")) {
-        console.log("User:", username);
-        console.log("Response data:", JSON.stringify(response.data, null, 2));
-        console.log("Tiebreakers data:", JSON.stringify(activeTiebreakers, null, 2));
-      }
-      
       setUserPicks({
-        picks: response.data.game_picks.filter(game => new Date(game.game_date) <= new Date()),
-        tiebreakers: activeTiebreakers
+        picks: response.data.game_picks,
+        tiebreakers: response.data.tiebreaker_picks
       });
       setSelectedUser(username);
       setShowModal(true);

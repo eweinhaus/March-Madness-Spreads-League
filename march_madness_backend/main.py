@@ -1128,6 +1128,63 @@ with get_db_connection() as conn:
     db.create_tables(conn)
     #create_admin_user(username, full_name, password)
 
+@app.get("/user_all_past_picks/{username}")
+async def get_user_all_past_picks(username: str):
+    """Get all past picks (games and tiebreakers that have started) for a specific user."""
+    try:
+        with get_db_cursor() as cur:
+            current_time = datetime.now()
+            
+            # Get user info
+            cur.execute("SELECT id, username, full_name FROM users WHERE username = %s", (username,))
+            user = cur.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Get all game picks for games that have started
+            cur.execute("""
+                SELECT 
+                    g.id as game_id,
+                    g.home_team,
+                    g.away_team,
+                    g.spread,
+                    g.game_date,
+                    g.winning_team,
+                    p.picked_team,
+                    p.points_awarded
+                FROM games g
+                LEFT JOIN picks p ON g.id = p.game_id AND p.user_id = %s
+                WHERE g.game_date <= %s
+                ORDER BY g.game_date DESC
+            """, (user['id'], current_time))
+            game_picks = cur.fetchall()
+
+            # Get all tiebreaker picks for tiebreakers that have started
+            cur.execute("""
+                SELECT 
+                    t.id as tiebreaker_id,
+                    t.question,
+                    t.start_time,
+                    t.answer as correct_answer,
+                    t.is_active,
+                    tp.answer as user_answer,
+                    tp.points_awarded
+                FROM tiebreakers t
+                LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id AND tp.user_id = %s
+                WHERE t.start_time <= %s
+                ORDER BY t.start_time DESC
+            """, (user['id'], current_time))
+            tiebreaker_picks = cur.fetchall()
+
+            return {
+                "user": user,
+                "game_picks": game_picks,
+                "tiebreaker_picks": tiebreaker_picks
+            }
+    except Exception as e:
+        logger.error(f"Error fetching user past picks: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Run the server
 if __name__ == "__main__":
     import uvicorn
