@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
-import psycopg2
+import psycopg2 
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 import os
