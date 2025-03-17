@@ -20,6 +20,7 @@ export default function Live() {
   const fetchLiveData = () => {
     setLoading(true);
     setError(null);
+    console.log("Current User Time: ", new Date().toLocaleString());
     
     Promise.all([
       axios.get(`${API_URL}/live_games`),

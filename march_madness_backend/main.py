@@ -485,6 +485,8 @@ def get_user_picks(username: str):
 @app.get("/live_games")
 def get_live_games():
     """Get all live games (games that have started but don't have a winner yet) and their picks."""
+    #log the current time
+    logger.info(f"Backend time: {datetime.now()}")
     try:
         with get_db_cursor() as cur:
             current_time = datetime.now()
