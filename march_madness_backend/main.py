@@ -252,7 +252,7 @@ async def submit_pick(
                 raise HTTPException(status_code=404, detail="Game not found")
             
             # Check if game has already started
-            current_time = datetime.now()
+            current_time = datetime.now() - timedelta(hours=4)
             if current_time >= game["game_date"]:
                 raise HTTPException(
                     status_code=400,
@@ -473,7 +473,7 @@ def get_user_picks(username: str):
     """Get a user's picks for games that have already started."""
     try:
         with get_db_cursor() as cur:
-            current_time = datetime.now()
+            current_time = datetime.now() - timedelta(hours=4)
             cur.execute("""
                 SELECT 
                     g.id as game_id,
@@ -500,7 +500,6 @@ def get_user_picks(username: str):
 def get_live_games():
     """Get all live games (games that have started but don't have a winner yet) and their picks."""
     current_time = get_current_utc_time()
-    #subtract 4 hours from the current time
     current_time = current_time - timedelta(hours=4)
 
     logger.info(f"Backend UTC time: {current_time}")
@@ -695,7 +694,7 @@ async def get_my_picks(current_user: User = Depends(get_current_user)):
 async def get_user_picks_status(current_user: User = Depends(get_current_admin_user)):
     """Get the picks status for all users."""
     with get_db_cursor() as cur:
-        current_time = datetime.now()
+        current_time = datetime.now() - timedelta(hours=4)
         
         # Get total number of upcoming games
         cur.execute("""
@@ -821,7 +820,7 @@ def get_live_tiebreakers():
     """Get all live tiebreakers (tiebreakers that have started but don't have an answer yet)."""
     try:
         with get_db_cursor() as cur:
-            current_time = datetime.now()
+            current_time = datetime.now() - timedelta(hours=4)
             logger.info(f"Checking live tiebreakers at {current_time}")
             
             cur.execute("""
@@ -1165,7 +1164,7 @@ async def get_user_all_past_picks(username: str):
     """Get all past picks (games and tiebreakers that have started) for a specific user."""
     try:
         with get_db_cursor() as cur:
-            current_time = datetime.now()
+            current_time = datetime.now() - timedelta(hours=4)
             
             # Get user info
             cur.execute("SELECT id, username, full_name FROM users WHERE username = %s", (username,))
