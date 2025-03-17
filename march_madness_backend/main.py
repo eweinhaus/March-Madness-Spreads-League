@@ -1159,6 +1159,7 @@ with get_db_connection() as conn:
     db.create_tables(conn)
     #create_admin_user(username, full_name, password)
 
+
 @app.get("/user_all_past_picks/{username}")
 async def get_user_all_past_picks(username: str):
     """Get all past picks (games and tiebreakers that have started) for a specific user."""
