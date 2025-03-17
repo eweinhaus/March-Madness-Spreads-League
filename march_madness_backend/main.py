@@ -7,7 +7,7 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 import os
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from contextlib import contextmanager
 from auth import (
@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
+
+def get_current_utc_time():
+    """Get current time in UTC."""
+    return datetime.now(timezone.utc)
 
 # Parse database URL and handle port
 database_url = os.getenv("DATABASE_URL")
@@ -205,6 +209,9 @@ class Game(BaseModel):
 
     def __init__(self, **data):
         super().__init__(**data)
+        # Ensure game_date is timezone-aware
+        if self.game_date.tzinfo is None:
+            self.game_date = self.game_date.replace(tzinfo=timezone.utc)
         # Truncate seconds from game_date
         self.game_date = self.game_date.replace(second=0, microsecond=0)
 
@@ -217,6 +224,9 @@ class GameUpdate(BaseModel):
 
     def __init__(self, **data):
         super().__init__(**data)
+        # Ensure game_date is timezone-aware
+        if self.game_date.tzinfo is None:
+            self.game_date = self.game_date.replace(tzinfo=timezone.utc)
         # Truncate seconds from game_date
         self.game_date = self.game_date.replace(second=0, microsecond=0)
 
@@ -397,7 +407,10 @@ async def create_game(
     """Create a new game (admin only)."""
     try:
         with get_db_cursor(commit=True) as cur:
-            logger.info(f"Creating new game: {game}")
+            logger.info(f"Creating new game with data: {game}")
+            logger.info(f"Game date before DB insert: {game.game_date}")
+            logger.info(f"Game date timezone info: {game.game_date.tzinfo}")
+            
             cur.execute(
                 """
                 INSERT INTO games (home_team, away_team, spread, game_date)
@@ -408,6 +421,7 @@ async def create_game(
             )
             new_game = cur.fetchone()
             logger.info(f"Game created successfully: {new_game}")
+            logger.info(f"Game date after DB insert: {new_game['game_date']}")
             return new_game
     except Exception as e:
         logger.error(f"Error creating game: {str(e)}")
@@ -485,18 +499,32 @@ def get_user_picks(username: str):
 @app.get("/live_games")
 def get_live_games():
     """Get all live games (games that have started but don't have a winner yet) and their picks."""
-    #log the current time
-    logger.info(f"Backend time: {datetime.now()}")
+    current_time = get_current_utc_time()
+    #subtract 4 hours from the current time
+    current_time = current_time - timedelta(hours=4)
+
+    logger.info(f"Backend UTC time: {current_time}")
+    logger.info(f"Current time timezone info: {current_time.tzinfo}")
     try:
         with get_db_cursor() as cur:
-            current_time = datetime.now()
             logger.info(f"Checking live games at {current_time}")
             
             # First get all games to log their dates
             cur.execute("SELECT id, game_date, winning_team FROM games")
             all_games = cur.fetchall()
             for game in all_games:
-                logger.info(f"Game {game['id']}: date={game['game_date']}, winner={game['winning_team']}, is_live={game['game_date'] <= current_time and (game['winning_team'] is None or game['winning_team'] == '')}")
+                # Ensure game_date is timezone-aware
+                game_date = game['game_date']
+                logger.info(f"Game {game['id']} date from DB: {game_date}")
+                logger.info(f"Game {game['id']} date timezone info: {game_date.tzinfo if hasattr(game_date, 'tzinfo') else 'None'}")
+                
+                if game_date.tzinfo is None:
+                    game_date = game_date.replace(tzinfo=timezone.utc)
+                    logger.info(f"Game {game['id']} date after timezone conversion: {game_date}")
+                
+                is_live = game_date <= current_time and (game['winning_team'] is None or game['winning_team'] == '')
+                logger.info(f"Game {game['id']}: date={game_date}, winner={game['winning_team']}, is_live={is_live}")
+                logger.info(f"Game {game['id']} comparison: {game_date} <= {current_time} = {game_date <= current_time}")
             
             cur.execute("""
                 SELECT 
@@ -526,6 +554,8 @@ def get_live_games():
             """, (current_time,))
             games = cur.fetchall()
             logger.info(f"Found {len(games)} live games")
+            for game in games:
+                logger.info(f"Live game {game['game_id']}: date={game['game_date']}, winner={game['winning_team']}")
             return games
     except Exception as e:
         logger.error(f"Error fetching live games: {str(e)}")

@@ -18,6 +18,9 @@ def get_db_connection():
     try:
         logger.info("Creating database connection...")
         conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        # Set timezone to UTC for this connection
+        with conn.cursor() as cur:
+            cur.execute("SET timezone TO 'UTC'")
         logger.info("Database connection successful")
         return conn
     except Exception as e:

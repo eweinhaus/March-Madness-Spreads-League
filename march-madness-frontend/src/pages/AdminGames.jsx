@@ -84,10 +84,18 @@ const AdminGames = () => {
     try {
       // Create a date object from the input
       const localDate = new Date(newGame.game_date);
+      console.log('Original input date:', newGame.game_date);
+      console.log('Local date object:', localDate.toISOString());
+      console.log('Local date string:', localDate.toString());
+      
       // Get the local timezone offset in minutes
       const offset = localDate.getTimezoneOffset();
-      // Adjust the date to account for the timezone offset
+      console.log('Timezone offset (minutes):', offset);
+      
+      // Add the offset to convert to UTC
       const adjustedDate = new Date(localDate.getTime() - (offset * 60 * 1000));
+      console.log('Adjusted date (UTC):', adjustedDate.toISOString());
+      console.log('Adjusted date string:', adjustedDate.toString());
       
       const gameData = {
         ...newGame,
@@ -95,9 +103,13 @@ const AdminGames = () => {
         game_date: adjustedDate.toISOString(),
       };
       
+      console.log('Final game data being sent:', gameData);
+      
       const response = await axios.post(`${API_URL}/games`, gameData, {
         headers: getAuthHeaders()
       });
+      
+      console.log('Server response:', response.data);
       
       await fetchGames();
       setNewGame({
