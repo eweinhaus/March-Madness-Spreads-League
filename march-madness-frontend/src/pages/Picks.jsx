@@ -41,7 +41,16 @@ export default function Picks() {
       axios.get(`${API_URL}/my_tiebreaker_picks`, { headers })
     ])
       .then(([gamesRes, picksRes, tiebreakersRes, tiebreakerPicksRes]) => {
-        setGames(gamesRes.data);
+        console.log('Games data from server:', gamesRes.data);
+        
+        // Verify game IDs are properly formatted
+        const games = gamesRes.data;
+        games.forEach(game => {
+          console.log(`Game ID type: ${typeof game.id}, value: ${game.id}`);
+        });
+        
+        setGames(games);
+        
         // Convert picks array to object for easier lookup
         const picksObj = {};
         picksRes.data.forEach(pick => {
@@ -63,20 +72,29 @@ export default function Picks() {
         setIsLoading(false);
       })
       .catch(err => {
-        console.error(err);
+        console.error('Error loading data:', err);
+        if (err.response) {
+          console.error('Response data:', err.response.data);
+          console.error('Response status:', err.response.status);
+        }
         setError('Failed to load games, picks, and tiebreakers');
         setIsLoading(false);
       });
   }, []);
 
   const handlePick = (gameId, team) => {
-    setPicks({ ...picks, [gameId]: team });
+    // Ensure gameId is stored as a string for consistency
+    const gameIdStr = String(gameId);
+    console.log(`Setting pick for game ID: ${gameIdStr}, team: ${team}`);
+    setPicks({ ...picks, [gameIdStr]: team });
   };
 
   const handleTiebreakerPick = (tiebreakerId, answer, isNumeric = true) => {
+    // Ensure tiebreakerId is stored as a string for consistency
+    const tiebreakerIdStr = String(tiebreakerId);
     setTiebreakerPicks({ 
       ...tiebreakerPicks, 
-      [tiebreakerId]: isNumeric ? parseFloat(answer) : answer 
+      [tiebreakerIdStr]: isNumeric ? parseFloat(answer) : answer 
     });
   };
 
@@ -84,12 +102,31 @@ export default function Picks() {
     const token = localStorage.getItem('token');
     
     try {
+      // Validate game picks before submitting
+      for (const [gameId, pickedTeam] of Object.entries(picks)) {
+        const game_id = Number(gameId);
+        if (isNaN(game_id)) {
+          throw new Error(`Invalid game ID format: ${gameId}`);
+        }
+        
+        if (!pickedTeam || typeof pickedTeam !== 'string') {
+          throw new Error(`Invalid team selection for game ${gameId}: ${pickedTeam}`);
+        }
+      }
+      
       // Submit game picks
       const gamePickResponses = await Promise.all(
-        Object.entries(picks).map(([gameId, pickedTeam]) => 
-          axios.post(`${API_URL}/submit_pick`, 
+        Object.entries(picks).map(([gameId, pickedTeam]) => {
+          // Ensure game_id is a valid integer
+          const game_id = Number(gameId);
+          
+          if (isNaN(game_id)) {
+            throw new Error(`Invalid game ID: ${gameId}`);
+          }
+          
+          return axios.post(`${API_URL}/submit_pick`, 
             {
-              game_id: parseInt(gameId),
+              game_id: game_id,
               picked_team: pickedTeam
             },
             {
@@ -97,16 +134,23 @@ export default function Picks() {
                 'Authorization': `Bearer ${token}`
               }
             }
-          )
-        )
+          );
+        })
       );
 
       // Submit tiebreaker picks
       const tiebreakerPickResponses = await Promise.all(
-        Object.entries(tiebreakerPicks).map(([tiebreakerId, answer]) =>
-          axios.post(`${API_URL}/tiebreaker_picks`,
+        Object.entries(tiebreakerPicks).map(([tiebreakerId, answer]) => {
+          // Ensure tiebreaker_id is a valid integer
+          const tiebreaker_id = Number(tiebreakerId);
+          
+          if (isNaN(tiebreaker_id)) {
+            throw new Error(`Invalid tiebreaker ID: ${tiebreakerId}`);
+          }
+          
+          return axios.post(`${API_URL}/tiebreaker_picks`,
             {
-              tiebreaker_id: parseInt(tiebreakerId),
+              tiebreaker_id: tiebreaker_id,
               answer: answer
             },
             {
@@ -114,8 +158,8 @@ export default function Picks() {
                 'Authorization': `Bearer ${token}`
               }
             }
-          )
-        )
+          );
+        })
       );
       
       // Get all success messages
@@ -136,7 +180,14 @@ export default function Picks() {
       setTiebreakerPicks({});
     } catch (err) {
       console.error(err);
-      setError('Failed to submit picks. Please try again.');
+      // Display more detailed error message if available
+      if (err.response && err.response.data && err.response.data.detail) {
+        setError(`Error: ${err.response.data.detail}`);
+      } else if (err.message) {
+        setError(`Error: ${err.message}`);
+      } else {
+        setError('Failed to submit picks. Please try again.');
+      }
     }
   };
 
@@ -144,10 +195,23 @@ export default function Picks() {
     return new Date() >= new Date(gameDate);
   };
 
-  const availableGames = games.filter(game => !hasGameStarted(game.game_date));
-  const availableTiebreakers = tiebreakers.filter(tiebreaker => 
-    !hasGameStarted(tiebreaker.start_time) && tiebreaker.is_active
-  );
+  const availableGames = games.filter(game => {
+    // Ensure game data is valid
+    if (!game || !game.game_date) {
+      console.warn('Invalid game data:', game);
+      return false;
+    }
+    return !hasGameStarted(game.game_date);
+  });
+
+  const availableTiebreakers = tiebreakers.filter(tiebreaker => {
+    // Ensure tiebreaker data is valid
+    if (!tiebreaker || !tiebreaker.start_time) {
+      console.warn('Invalid tiebreaker data:', tiebreaker);
+      return false;
+    }
+    return !hasGameStarted(tiebreaker.start_time) && tiebreaker.is_active;
+  });
 
   return (
     <Container fluid="md" className="px-2 px-md-3">
