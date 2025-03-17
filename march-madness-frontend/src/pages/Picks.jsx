@@ -244,19 +244,20 @@ export default function Picks() {
         </Row>
       ) : (
         <>
-          {/* Games Section */}
-          {availableGames.length > 0 && (
+          {/* Combined Games & Tiebreakers Section */}
+          {(availableGames.length > 0 || availableTiebreakers.length > 0) && (
             <>
               <Row className="mb-3">
               </Row>
               <Row xs={1} sm={2} lg={3} className="g-3 g-md-4">
+                {/* Render game cards */}
                 {availableGames.map(game => {
                   const existingPick = existingPicks[game.id];
                   const currentPick = picks[game.id];
                   const selectedTeam = currentPick || existingPick;
 
                   return (
-                    <Col key={game.id}>
+                    <Col key={`game-${game.id}`}>
                       <Card className="h-100 shadow-sm">
                         <Card.Body className="d-flex flex-column">
                           <Card.Title className="d-flex justify-content-between align-items-center mb-3">
@@ -294,14 +295,8 @@ export default function Picks() {
                     </Col>
                   );
                 })}
-              </Row>
-            </>
-          )}
 
-          {/* Tiebreakers Section */}
-          {availableTiebreakers.length > 0 && (
-            <>
-              <Row xs={1} sm={2} lg={3} className="g-3 g-md-4">
+                {/* Render tiebreaker cards */}
                 {availableTiebreakers.map(tiebreaker => {
                   const existingAnswer = existingTiebreakerPicks[tiebreaker.id];
                   const currentAnswer = tiebreakerPicks[tiebreaker.id];
@@ -314,10 +309,12 @@ export default function Picks() {
                                            tiebreaker.question.toLowerCase().includes('total');
 
                   return (
-                    <Col key={tiebreaker.id}>
+                    <Col key={`tiebreaker-${tiebreaker.id}`}>
                       <Card className="h-100 shadow-sm">
                         <Card.Body className="d-flex flex-column">
-                          <Card.Title className="mb-3">{tiebreaker.question}</Card.Title>
+                          <Card.Title className="mb-3">
+                            {tiebreaker.question}
+                          </Card.Title>
                           <Card.Text className="mb-3">
                             <div className="mb-1"><strong>Deadline:</strong> {formatDateForDisplay(tiebreaker.start_time)}</div>
                             {existingAnswer !== undefined && (
