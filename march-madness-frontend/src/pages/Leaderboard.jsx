@@ -154,6 +154,15 @@ export default function Leaderboard() {
                       </thead>
                       <tbody className="small">
                         {userPicks.tiebreakers
+                          .filter(tiebreaker => {
+                            // Get the start time of the tiebreaker
+                            const tiebreakerDate = new Date(tiebreaker.start_time);
+                            // Get 10:10 PM of the same day
+                            const revealTime = new Date(tiebreakerDate);
+                            revealTime.setHours(22, 10, 0, 0);
+                            // Compare with current time
+                            return new Date() >= revealTime;
+                          })
                           .sort((a, b) => new Date(b.start_time) - new Date(a.start_time))
                           .map((tiebreaker) => {
                           // Color code based on points awarded instead of answer correctness
