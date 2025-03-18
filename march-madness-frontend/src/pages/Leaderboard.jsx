@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
-import { Alert, Modal, Button, Table } from "react-bootstrap";
+import { Alert, Modal, Button, Table, Form } from "react-bootstrap";
 import { API_URL } from "../config";
 
 export default function Leaderboard() {
@@ -10,13 +10,14 @@ export default function Leaderboard() {
   const [selectedUserFullName, setSelectedUserFullName] = useState(null);
   const [userPicks, setUserPicks] = useState([]);
   const [showModal, setShowModal] = useState(false);
+  const [filter, setFilter] = useState('overall');
 
   useEffect(() => {
     fetchLeaderboard();
-  }, []);
+  }, [filter]);
 
   const fetchLeaderboard = () => {
-    axios.get(`${API_URL}/leaderboard`)
+    axios.get(`${API_URL}/leaderboard?filter=${filter}`)
       .then(res => {
         setLeaderboard(res.data);
         setError(null);
@@ -29,8 +30,7 @@ export default function Leaderboard() {
 
   const handleUserClick = async (username) => {
     try {
-      // Use the new endpoint that only shows picks for games that have started
-      const response = await axios.get(`${API_URL}/user_all_past_picks/${username}`);
+      const response = await axios.get(`${API_URL}/user_all_past_picks/${username}?filter=${filter}`);
       
       const userInfo = leaderboard.find(player => player.username === username);
       setSelectedUserFullName(userInfo?.full_name || username);
@@ -43,7 +43,6 @@ export default function Leaderboard() {
       setShowModal(true);
     } catch (err) {
       console.error(err);
-      //Log error in console
       console.log(err.response?.data || err.message);
     }
   };
@@ -57,7 +56,19 @@ export default function Leaderboard() {
 
   return (
     <div className="container my-3 my-md-5 px-2 px-md-3">
-      <h2 className="mb-3 mb-md-4 text-center text-md-start">Leaderboard</h2>
+      <div className="d-flex justify-content-between align-items-center mb-3 mb-md-4">
+        <h2 className="mb-0 text-center text-md-start">Leaderboard</h2>
+        <Form.Select 
+          className="w-auto" 
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        >
+          <option value="overall">Overall</option>
+          <option value="first_half">First Half</option>
+          <option value="second_half">Second Half</option>
+          <option value="andrew">Andrew</option>
+        </Form.Select>
+      </div>
       
       {error && (
         <Alert variant="danger" className="mb-3 mb-md-4">

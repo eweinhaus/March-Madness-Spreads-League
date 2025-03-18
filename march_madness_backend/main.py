@@ -349,7 +349,7 @@ def update_score(result: GameResult):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/leaderboard")
-def get_leaderboard():
+def get_leaderboard(filter: str = "overall"):
     try:
         with get_db_cursor() as cur:
             # Get the most recent numerical tiebreaker with an answer
@@ -363,36 +363,63 @@ def get_leaderboard():
             """)
             latest_tiebreaker = cur.fetchone()
             
-            if latest_tiebreaker:
-                # If we have a numerical tiebreaker, sort by points and then by answer closeness
-                cur.execute("""
-                    WITH tiebreaker_diffs AS (
-                        SELECT 
-                            tp.user_id,
-                            ABS(tp.answer::numeric - %s) as answer_diff
-                        FROM tiebreaker_picks tp
-                        WHERE tp.tiebreaker_id = %s
-                        AND tp.answer ~ '^[0-9]+\.?[0-9]*$'
-                    )
-                    SELECT 
-                        u.username, 
-                        u.full_name, 
-                        l.total_points,
-                        COALESCE(td.answer_diff, float8 'infinity') as tiebreaker_diff
-                    FROM leaderboard l 
-                    JOIN users u ON l.user_id = u.id
-                    LEFT JOIN tiebreaker_diffs td ON l.user_id = td.user_id
-                    ORDER BY l.total_points DESC, td.answer_diff ASC NULLS LAST
-                """, (latest_tiebreaker['answer'], latest_tiebreaker['id']))
-            else:
-                # If no numerical tiebreaker exists, just sort by points
-                cur.execute("""
-                    SELECT u.username, u.full_name, l.total_points, NULL as tiebreaker_diff
-                    FROM leaderboard l 
-                    JOIN users u ON l.user_id = u.id
-                    ORDER BY l.total_points DESC
-                """)
+            # Base query for points calculation
+            points_query = """
+                WITH filtered_users AS (
+                    SELECT id, username, full_name
+                    FROM users
+                    WHERE 1=1
+            """
             
+            # Add filter for Andrew users
+            if filter == "andrew":
+                points_query += " AND LOWER(full_name) LIKE '%drew%'"
+            
+            points_query += """
+                ),
+                game_points AS (
+                    SELECT user_id, SUM(points_awarded) as game_points
+                    FROM picks p
+                    JOIN games g ON p.game_id = g.id
+                    WHERE 1=1
+            """
+            
+            # Add time filter for games
+            if filter == "first_half":
+                points_query += " AND g.game_date < '2025-03-24'"
+            elif filter == "second_half":
+                points_query += " AND g.game_date >= '2025-03-24'"
+            
+            points_query += """
+                    GROUP BY user_id
+                ),
+                tiebreaker_points AS (
+                    SELECT user_id, SUM(points_awarded) as tiebreaker_points
+                    FROM tiebreaker_picks tp
+                    JOIN tiebreakers t ON tp.tiebreaker_id = t.id
+                    WHERE 1=1
+            """
+            
+            # Add time filter for tiebreakers
+            if filter == "first_half":
+                points_query += " AND t.start_time < '2025-03-24'"
+            elif filter == "second_half":
+                points_query += " AND t.start_time >= '2025-03-24'"
+            
+            points_query += """
+                    GROUP BY user_id
+                )
+                SELECT 
+                    u.username, 
+                    u.full_name,
+                    COALESCE(gp.game_points, 0) + COALESCE(tp.tiebreaker_points, 0) as total_points
+                FROM filtered_users u
+                LEFT JOIN game_points gp ON u.id = gp.user_id
+                LEFT JOIN tiebreaker_points tp ON u.id = tp.user_id
+                ORDER BY total_points DESC
+            """
+            
+            cur.execute(points_query)
             leaderboard = cur.fetchall()
             return leaderboard
     except Exception as e:
@@ -1162,7 +1189,7 @@ with get_db_connection() as conn:
 
 
 @app.get("/user_all_past_picks/{username}")
-async def get_user_all_past_picks(username: str):
+async def get_user_all_past_picks(username: str, filter: str = "overall"):
     """Get all past picks (games and tiebreakers that have started) for a specific user."""
     try:
         with get_db_cursor() as cur:
@@ -1176,7 +1203,7 @@ async def get_user_all_past_picks(username: str):
                 raise HTTPException(status_code=404, detail="User not found")
 
             # Get all game picks for games that have started
-            cur.execute("""
+            game_query = """
                 SELECT 
                     g.id as game_id,
                     g.home_team,
@@ -1189,12 +1216,20 @@ async def get_user_all_past_picks(username: str):
                 FROM games g
                 LEFT JOIN picks p ON g.id = p.game_id AND p.user_id = %s
                 WHERE g.game_date <= %s
-                ORDER BY g.game_date DESC
-            """, (user['id'], current_time))
+            """
+            
+            if filter == "first_half":
+                game_query += " AND g.game_date < '2025-03-24'"
+            elif filter == "second_half":
+                game_query += " AND g.game_date >= '2025-03-24'"
+                
+            game_query += " ORDER BY g.game_date DESC"
+            
+            cur.execute(game_query, (user['id'], current_time))
             game_picks = cur.fetchall()
 
             # Get all tiebreaker picks for tiebreakers that have started
-            cur.execute("""
+            tiebreaker_query = """
                 SELECT 
                     t.id as tiebreaker_id,
                     t.question,
@@ -1206,8 +1241,16 @@ async def get_user_all_past_picks(username: str):
                 FROM tiebreakers t
                 LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id AND tp.user_id = %s
                 WHERE t.start_time <= %s
-                ORDER BY t.start_time DESC
-            """, (user['id'], current_time))
+            """
+            
+            if filter == "first_half":
+                tiebreaker_query += " AND t.start_time < '2025-03-24'"
+            elif filter == "second_half":
+                tiebreaker_query += " AND t.start_time >= '2025-03-24'"
+                
+            tiebreaker_query += " ORDER BY t.start_time DESC"
+            
+            cur.execute(tiebreaker_query, (user['id'], current_time))
             tiebreaker_picks = cur.fetchall()
 
             return {
