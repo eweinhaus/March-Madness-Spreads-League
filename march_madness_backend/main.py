@@ -854,18 +854,6 @@ def get_live_tiebreakers():
             logger.info(f"Checking live tiebreakers at {current_time}")
             
             cur.execute("""
-                WITH latest_game_times AS (
-                    -- Get the latest game time for each day
-                    SELECT 
-                        DATE(game_date AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') as game_day,
-                        MAX(game_date AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') as latest_game_time
-                    FROM games
-                    GROUP BY DATE(game_date AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')
-                ),
-                current_et_time AS (
-                    -- Get current time in ET
-                    SELECT (NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') as et_time
-                )
                 SELECT 
                     t.id as tiebreaker_id,
                     t.question,
@@ -884,21 +872,18 @@ def get_live_tiebreakers():
                 FROM tiebreakers t
                 LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id
                 LEFT JOIN users u ON tp.user_id = u.id
-                LEFT JOIN latest_game_times lgt ON 
-                    DATE(t.start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = lgt.game_day
-                CROSS JOIN current_et_time cet
                 WHERE t.start_time <= %s 
                 AND t.is_active = TRUE
                 AND t.answer IS NULL
                 AND (
-                    -- If it's the same day as start_time, only show after the latest game time
-                    (DATE(t.start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = DATE(cet.et_time)
-                    AND cet.et_time >= lgt.latest_game_time)
+                    -- If it's the same day as start_time, only show after 10:10 PM ET
+                    (DATE(t.start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = CURRENT_DATE AT TIME ZONE 'America/New_York'
+                    AND CURRENT_TIME AT TIME ZONE 'America/New_York' >= '22:10:00')
                     OR
                     -- If it's a previous day, always show
-                    DATE(t.start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') < DATE(cet.et_time)
+                    DATE(t.start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') < CURRENT_DATE AT TIME ZONE 'America/New_York'
                 )
-                GROUP BY t.id, lgt.latest_game_time
+                GROUP BY t.id
                 ORDER BY t.start_time DESC
             """, (current_time,))
             tiebreakers = cur.fetchall()

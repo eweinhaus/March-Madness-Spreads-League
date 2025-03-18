@@ -168,9 +168,9 @@ export default function Leaderboard() {
                           .filter(tiebreaker => {
                             // Get the start time of the tiebreaker
                             const tiebreakerDate = new Date(tiebreaker.start_time);
-                            // Get 10:10 PM of the same day
+                            // Get 9:30 PM of the same day
                             const revealTime = new Date(tiebreakerDate);
-                            revealTime.setHours(22, 10, 0, 0);
+                            revealTime.setHours(21, 30, 0, 0);
                             // Compare with current time
                             return new Date() >= revealTime;
                           })
