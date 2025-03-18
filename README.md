@@ -1,6 +1,10 @@
 # March Madness Spreads
 
-A web application for managing and tracking March Madness basketball game spreads and user picks.
+This web application is currently being utilized by 15+ active users to track and score a college basketball spread picking pool for the 2025 March Madness season.
+
+You can view the live site here: 
+https://march-madness-spreads-league.onrender.com/leaderboard
+
 
 ## Features
 
@@ -22,6 +26,11 @@ A web application for managing and tracking March Madness basketball game spread
 - Python 3.9+
 - Node.js 16+
 - PostgreSQL
+
+## Future Plans:
+- Implement ESPN Live CBB Game API to handle all scores and updates automatically
+- Handle payment processing for users through the webapp directly
+- Create functionality for multiple leagues, allowing additional groups to participate
 
 ## Setup
 
@@ -78,11 +87,3 @@ npm run dev
 Once the backend server is running, visit:
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request 
