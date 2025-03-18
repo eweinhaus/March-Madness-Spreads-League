@@ -1,6 +1,6 @@
 # March Madness Spreads
 
-This web application is currently being utilized by 15+ active users to track and score a college basketball spread picking pool for the 2025 March Madness season.
+This web application is currently being utilized by 35+ active users to track and score a college basketball spread picking pool for the 2025 March Madness season.
 
 You can view the live site here: 
 https://march-madness-spreads-league.onrender.com/leaderboard

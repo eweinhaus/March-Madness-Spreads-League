@@ -1166,7 +1166,8 @@ async def get_user_all_past_picks(username: str):
     """Get all past picks (games and tiebreakers that have started) for a specific user."""
     try:
         with get_db_cursor() as cur:
-            current_time = datetime.now()
+            current_time = get_current_utc_time()
+            current_time = current_time - timedelta(hours=4)
             print(f"Current time: {current_time}")
             # Get user info
             cur.execute("SELECT id, username, full_name FROM users WHERE username = %s", (username,))
