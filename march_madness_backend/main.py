@@ -848,7 +848,9 @@ def get_live_tiebreakers():
     """Get all live tiebreakers (tiebreakers that have started but don't have an answer yet)."""
     try:
         with get_db_cursor() as cur:
-            current_time = datetime.now() - timedelta(hours=4)
+            current_time = get_current_utc_time()
+            current_time = current_time - timedelta(hours=4)  # Convert to ET
+            
             logger.info(f"Checking live tiebreakers at {current_time}")
             
             cur.execute("""
@@ -873,6 +875,14 @@ def get_live_tiebreakers():
                 WHERE t.start_time <= %s 
                 AND t.is_active = TRUE
                 AND t.answer IS NULL
+                AND (
+                    -- If it's the same day as start_time, only show after 10:10 PM ET
+                    (DATE(t.start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = CURRENT_DATE AT TIME ZONE 'America/New_York'
+                    AND CURRENT_TIME AT TIME ZONE 'America/New_York' >= '22:10:00')
+                    OR
+                    -- If it's a previous day, always show
+                    DATE(t.start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') < CURRENT_DATE AT TIME ZONE 'America/New_York'
+                )
                 GROUP BY t.id
                 ORDER BY t.start_time DESC
             """, (current_time,))
