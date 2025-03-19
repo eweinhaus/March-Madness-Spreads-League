@@ -40,13 +40,10 @@ export default function Picks() {
       axios.get(`${API_URL}/tiebreakers`, { headers }),
       axios.get(`${API_URL}/my_tiebreaker_picks`, { headers })
     ])
-      .then(([gamesRes, picksRes, tiebreakersRes, tiebreakerPicksRes]) => {
-        console.log('Games data from server:', gamesRes.data);
-        
+      .then(([gamesRes, picksRes, tiebreakersRes, tiebreakerPicksRes]) => {        
         // Verify game IDs are properly formatted
         const games = gamesRes.data;
         games.forEach(game => {
-          console.log(`Game ID type: ${typeof game.id}, value: ${game.id}`);
         });
         
         setGames(games);
@@ -303,10 +300,10 @@ export default function Picks() {
 
           {/* Tiebreakers Section */}
           {availableTiebreakers.length > 0 && (
-            <>
+            <><br></br>
               <Row className="mb-3">
                 <Col>
-                  <h3 className="text-center text-md-start">Tiebreakers</h3>
+                  <h3 className="text-center text-md-start">Questions</h3>
                 </Col>
               </Row>
               <Row xs={1} sm={2} lg={3} className="g-3 g-md-4">
