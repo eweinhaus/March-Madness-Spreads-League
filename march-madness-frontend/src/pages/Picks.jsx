@@ -202,7 +202,7 @@ export default function Picks() {
       return false;
     }
     return !hasGameStarted(game.game_date);
-  });
+  }).sort((a, b) => new Date(a.game_date) - new Date(b.game_date));
 
   const availableTiebreakers = tiebreakers.filter(tiebreaker => {
     // Ensure tiebreaker data is valid
@@ -211,7 +211,7 @@ export default function Picks() {
       return false;
     }
     return !hasGameStarted(tiebreaker.start_time) && tiebreaker.is_active;
-  });
+  }).sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
 
   return (
     <Container fluid="md" className="px-2 px-md-3">
@@ -244,13 +244,15 @@ export default function Picks() {
         </Row>
       ) : (
         <>
-          {/* Combined Games & Tiebreakers Section */}
-          {(availableGames.length > 0 || availableTiebreakers.length > 0) && (
+          {/* Games Section */}
+          {availableGames.length > 0 && (
             <>
               <Row className="mb-3">
+                <Col>
+                  <h3 className="text-center text-md-start">Games</h3>
+                </Col>
               </Row>
-              <Row xs={1} sm={2} lg={3} className="g-3 g-md-4">
-                {/* Render game cards */}
+              <Row xs={1} sm={2} lg={3} className="g-3 g-md-4 mb-4">
                 {availableGames.map(game => {
                   const existingPick = existingPicks[game.id];
                   const currentPick = picks[game.id];
@@ -295,8 +297,19 @@ export default function Picks() {
                     </Col>
                   );
                 })}
+              </Row>
+            </>
+          )}
 
-                {/* Render tiebreaker cards */}
+          {/* Tiebreakers Section */}
+          {availableTiebreakers.length > 0 && (
+            <>
+              <Row className="mb-3">
+                <Col>
+                  <h3 className="text-center text-md-start">Tiebreakers</h3>
+                </Col>
+              </Row>
+              <Row xs={1} sm={2} lg={3} className="g-3 g-md-4">
                 {availableTiebreakers.map(tiebreaker => {
                   const existingAnswer = existingTiebreakerPicks[tiebreaker.id];
                   const currentAnswer = tiebreakerPicks[tiebreaker.id];
