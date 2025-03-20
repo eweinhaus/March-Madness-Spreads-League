@@ -1272,6 +1272,26 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
         logger.error(f"Error fetching user past picks: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/admin/delete_user/{user_id}", response_model=dict)
+async def delete_user(user_id: int, current_user: User = Depends(get_current_admin_user)):
+    """Delete a user and their associated picks (admin only)."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Check if user exists
+            cur.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+            user = cur.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            
+            # Delete user (picks will be deleted automatically due to CASCADE)
+            cur.execute("DELETE FROM users WHERE id = %s RETURNING *", (user_id,))
+            deleted_user = cur.fetchone()
+            
+            return {"message": "User deleted successfully", "user": deleted_user}
+    except Exception as e:
+        logger.error(f"Error deleting user: {str(e)}")
+        raise HTTPException(status_code=500, detail="An error occurred while deleting the user")
+
 # Run the server
 if __name__ == "__main__":
     import uvicorn

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Container, Table, Alert, Card, Row, Col } from 'react-bootstrap';
+import { Container, Table, Alert, Card, Row, Col, Button, Modal } from 'react-bootstrap';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from '../config';
@@ -11,6 +11,8 @@ const AdminUserPicks = () => {
   const [error, setError] = useState(null);
   const [selectedUserPicks, setSelectedUserPicks] = useState(null);
   const [showModal, setShowModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [userToDelete, setUserToDelete] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -53,6 +55,35 @@ const AdminUserPicks = () => {
         navigate('/login');
       } else {
         setError('Failed to fetch user picks');
+      }
+    }
+  };
+
+  const handleDeleteClick = (e, user) => {
+    e.stopPropagation(); // Prevent row click event
+    setUserToDelete(user);
+    setShowDeleteModal(true);
+  };
+
+  const handleDeleteUser = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      await axios.delete(`${API_URL}/admin/delete_user/${userToDelete.username}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      // Remove user from the list
+      setUserPicksStatus(prevStatus => 
+        prevStatus.filter(user => user.username !== userToDelete.username)
+      );
+      
+      setShowDeleteModal(false);
+      setUserToDelete(null);
+    } catch (err) {
+      if (err.response?.status === 401) {
+        navigate('/login');
+      } else {
+        setError('Failed to delete user');
       }
     }
   };
@@ -124,6 +155,7 @@ const AdminUserPicks = () => {
                 <th className="py-2">Name</th>
                 <th className="py-2">Progress</th>
                 <th className="py-2">Status</th>
+                <th className="py-2">Actions</th>
               </tr>
             </thead>
             <tbody className="small">
@@ -172,6 +204,16 @@ const AdminUserPicks = () => {
                       {user.is_complete ? 'All Picks Submitted' : 'Missing Picks'}
                     </span>
                   </td>
+                  <td className="py-2">
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={(e) => handleDeleteClick(e, user)}
+                      className="btn-sm"
+                    >
+                      Delete
+                    </Button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -185,6 +227,24 @@ const AdminUserPicks = () => {
         userPicks={selectedUserPicks}
         isAdmin={true}
       />
+
+      {/* Delete Confirmation Modal */}
+      <Modal show={showDeleteModal} onHide={() => setShowDeleteModal(false)}>
+        <Modal.Header closeButton>
+          <Modal.Title>Confirm Delete</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          Are you sure you want to delete {userToDelete?.full_name}? This action cannot be undone and will remove all their picks and tiebreaker selections.
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowDeleteModal(false)}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={handleDeleteUser}>
+            Delete User
+          </Button>
+        </Modal.Footer>
+      </Modal>
 
       <style jsx>{`
         .user-row:hover {
