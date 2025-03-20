@@ -169,10 +169,24 @@ export default function Live() {
             <strong>Game Time:</strong> {selectedGame && formatGameDate(selectedGame.game_date)}
           </p>
           <p>
-            <strong>Spread:</strong>{' '}
-            {selectedGame && (selectedGame.spread > 0 
-              ? `${selectedGame.home_team} -${selectedGame.spread}` 
-              : `${selectedGame.away_team} +${-selectedGame.spread}`)}
+            {selectedGame && selectedGame.picks ? (
+              (() => {
+                const totalPicks = selectedGame.picks.length;
+                const homePicks = selectedGame.picks.filter(pick => pick.picked_team === selectedGame.home_team).length;
+                const awayPicks = selectedGame.picks.filter(pick => pick.picked_team === selectedGame.away_team).length;
+                const homePercentage = totalPicks > 0 ? ((homePicks / totalPicks) * 100).toFixed(0) : 0;
+                const awayPercentage = totalPicks > 0 ? ((awayPicks / totalPicks) * 100).toFixed(0) : 0;
+
+                return (
+                  <>
+                    <strong>{selectedGame.home_team} -{selectedGame.spread}</strong>: {homePicks} picked ({homePercentage}%)<br />
+                    <strong>{selectedGame.away_team} +{selectedGame.spread}</strong>: {awayPicks} picked ({awayPercentage}%)
+                  </>
+                );
+              })()
+            ) : (
+              "No picks yet"
+            )}
           </p>
           <h6>User Picks:</h6>
           <ListGroup>
