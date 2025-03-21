@@ -21,6 +21,7 @@ from flask import Flask, jsonify
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
+import ipdb
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -534,11 +535,8 @@ def get_live_games():
     current_time = get_current_utc_time()
     current_time = current_time - timedelta(hours=4)
 
-    logger.info(f"Backend UTC time: {current_time}")
-    logger.info(f"Current time timezone info: {current_time.tzinfo}")
     try:
         with get_db_cursor() as cur:
-            logger.info(f"Checking live games at {current_time}")
             
             # First get all games to log their dates
             cur.execute("SELECT id, game_date, winning_team FROM games")
@@ -546,16 +544,11 @@ def get_live_games():
             for game in all_games:
                 # Ensure game_date is timezone-aware
                 game_date = game['game_date']
-                logger.info(f"Game {game['id']} date from DB: {game_date}")
-                logger.info(f"Game {game['id']} date timezone info: {game_date.tzinfo if hasattr(game_date, 'tzinfo') else 'None'}")
                 
                 if game_date.tzinfo is None:
                     game_date = game_date.replace(tzinfo=timezone.utc)
-                    logger.info(f"Game {game['id']} date after timezone conversion: {game_date}")
                 
                 is_live = game_date <= current_time and (game['winning_team'] is None or game['winning_team'] == '')
-                logger.info(f"Game {game['id']}: date={game_date}, winner={game['winning_team']}, is_live={is_live}")
-                logger.info(f"Game {game['id']} comparison: {game_date} <= {current_time} = {game_date <= current_time}")
             
             cur.execute("""
                 SELECT 
@@ -1301,47 +1294,84 @@ async def get_game_scores(request: Request):
     # URL to crawl
     url = 'https://www.cbssports.com/college-basketball/scoreboard/?layout=compact'
     try:
+        # Log the start of the request
+        logger.info("Starting to fetch game scores from CBS Sports")
+        
         # Fetching the webpage content
         response = requests.get(url)
         response.raise_for_status()  # Raise an error for bad responses
+        
+        # Log the response status
+        logger.info(f"Response status code: {response.status_code}")
+        
         html_content = response.text
+        logger.info("Successfully retrieved HTML content")
 
         soup = BeautifulSoup(html_content, 'html.parser')
+        logger.info("Successfully parsed HTML with BeautifulSoup")
 
         # Finding all game cards
         game_cards = soup.find_all('div', class_='single-score-card')
+        logger.info(f"Found {len(game_cards)} game cards")
 
         # List to hold game data
         games_data = []
 
         for game in game_cards:
-            # Extracting the scores and teams
-            away_team = game.find_all('td', class_='team--collegebasketball')[0].find('a', class_='team-name-link').text
-            away_score = game.find_all('td', class_='total')[0].text
-            home_team = game.find_all('td', class_='team--collegebasketball')[1].find('a', class_='team-name-link').text
-            home_score = game.find_all('td', class_='total')[1].text
+            try:
+                # Debug: Print the HTML structure of the game card
+                logger.info(f"Game card HTML: {game.prettify()}")
+                
+                # Try different selectors to find the teams and scores
+                team_cells = game.find_all('td', class_='team--collegebasketball')
+                score_cells = game.find_all('td', class_='total')
+                
+                if len(team_cells) < 2 or len(score_cells) < 2:
+                    logger.error(f"Not enough cells found. Team cells: {len(team_cells)}, Score cells: {len(score_cells)}")
+                    continue
+                
+                # Get team names
+                away_team = team_cells[0].find('a', class_='team-name-link')
+                home_team = team_cells[1].find('a', class_='team-name-link')
+                
+                if not away_team or not home_team:
+                    logger.error("Could not find team name links")
+                    continue
+                
+                away_team = away_team.text.strip()
+                home_team = home_team.text.strip()
+                
+                # Get scores
+                away_score = score_cells[0].text.strip()
+                home_score = score_cells[1].text.strip()
+                
+                # Get game status
+                game_status = game.find('div', class_='game-status emphasis')
+                time_left = game_status.text.strip() if game_status else 'FINAL'
+                
+                # Append the game data to the list
+                games_data.append({
+                    'AwayTeam': away_team,
+                    'HomeTeam': home_team,
+                    'AwayScore': away_score,
+                    'HomeScore': home_score,
+                    'Time': time_left
+                })
+                logger.info(f"Successfully processed game: {away_team} @ {home_team}")
+            except Exception as e:
+                logger.error(f"Error processing individual game: {str(e)}")
+                logger.error(f"Game card HTML: {game.prettify()}")
+                continue
 
-            # Extracting the game status (time)
-            game_status = game.find('div', class_='game-status emphasis')
-            time_left = game_status.text if game_status else 'FINAL'
-
-            # Append the game data to the list
-            games_data.append({
-                'AwayTeam': away_team,
-                'HomeTeam': home_team,
-                'AwayScore': away_score,
-                'HomeScore': home_score,
-                'Time': time_left
-            })
-
-        return games_data  # Return the game data as JSON
+        logger.info(f"Successfully processed {len(games_data)} games")
+        return games_data
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching data: {e}")
-        raise HTTPException(status_code=500, detail="Error fetching data from CBS Sports.")
+        logger.error(f"Error fetching data from CBS Sports: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching data from CBS Sports: {str(e)}")
     except Exception as e:
-        logger.error(f"An error occurred: {e}")
-        raise HTTPException(status_code=500, detail="An internal server error occurred.")
+        logger.error(f"An unexpected error occurred: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 # Run the server
 if __name__ == "__main__":

@@ -268,7 +268,7 @@ export default function Live() {
                           onClick={() => setShowAwayPicks(!showAwayPicks)} 
                           className="d-flex justify-content-between align-items-center py-3"
                         >
-                          <strong className="text-secondary">{selectedGame.away_team} +{selectedGame.spread}</strong>
+                          <strong className="text-secondary">{selectedGame.away_team} {selectedGame.spread}</strong>
                           <Badge bg="secondary" className="py-2 px-3">
                             {awayPicks} picked ({awayPercentage}%)
                           </Badge>
@@ -287,7 +287,7 @@ export default function Live() {
                           onClick={() => setShowHomePicks(!showHomePicks)} 
                           className="d-flex justify-content-between align-items-center py-3"
                         >
-                          <strong className="text-secondary">{selectedGame.home_team} -{selectedGame.spread}</strong>
+                          <strong className="text-secondary">{selectedGame.home_team} {-1 * selectedGame.spread}</strong>
                           <Badge bg="secondary" className="py-2 px-3">
                             {homePicks} picked ({homePercentage}%)
                           </Badge>
