@@ -1323,7 +1323,7 @@ async def get_game_scores(request: Request):
 
             # Extracting the game status (time)
             game_status = game.find('div', class_='game-status emphasis')
-            time_left = game_status.text if game_status else 'final'
+            time_left = game_status.text if game_status else 'FINAL'
 
             # Append the game data to the list
             games_data.append({
