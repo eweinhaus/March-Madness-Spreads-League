@@ -243,17 +243,24 @@ export default function Live() {
           </p>
           <h6>User Answers:</h6>
           <ListGroup>
-            {selectedTiebreaker?.picks && selectedTiebreaker.picks.map((pick, index) => (
-              <ListGroup.Item 
-                key={index}
-                className="d-flex justify-content-between align-items-center"
-              >
-                <span>{pick.full_name}</span>
-                <Badge bg="secondary">
-                  {pick.answer}
-                </Badge>
-              </ListGroup.Item>
-            ))}
+            {selectedTiebreaker?.picks && selectedTiebreaker.picks
+              .sort((a, b) => {
+                // Sort by answer text alphabetically
+                const answerA = isNaN(a.answer) ? a.answer : (Number.isInteger(a.answer) ? a.answer : Math.floor(a.answer)).toString();
+                const answerB = isNaN(b.answer) ? b.answer : (Number.isInteger(b.answer) ? b.answer : Math.floor(b.answer)).toString();
+                return answerA.localeCompare(answerB);
+              })
+              .map((pick, index) => (
+                <ListGroup.Item 
+                  key={index}
+                  className="d-flex justify-content-between align-items-center p-2"
+                >
+                  <span className="text-truncate">{pick.full_name}</span>
+                  <Badge bg="secondary" className="p-2">
+                    {isNaN(pick.answer) ? pick.answer : (Number.isInteger(pick.answer) ? pick.answer : Math.floor(pick.answer))}
+                  </Badge>
+                </ListGroup.Item>
+              ))}
             {selectedTiebreaker?.picks.length === 0 && (
               <ListGroup.Item>No answers submitted yet</ListGroup.Item>
             )}
