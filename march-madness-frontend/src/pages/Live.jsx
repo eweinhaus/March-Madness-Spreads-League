@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
-import { Alert, Card, ListGroup, Badge, Container, Spinner, Modal, Button } from "react-bootstrap";
+import { Alert, Card, ListGroup, Badge, Container, Spinner, Modal, Button, Row, Col, Pagination, Form } from "react-bootstrap";
 import { API_URL } from "../config";
 
 export default function Live() {
@@ -15,6 +15,10 @@ export default function Live() {
   const [showTiebreakerModal, setShowTiebreakerModal] = useState(false);
   const [showAwayPicks, setShowAwayPicks] = useState(false);
   const [showHomePicks, setShowHomePicks] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sortOption, setSortOption] = useState("answer"); // "answer" or "name"
+  const picksPerPage = 12; // Show more picks per page
 
   useEffect(() => {
     fetchLiveData();
@@ -75,6 +79,8 @@ export default function Live() {
   const handleTiebreakerClick = (tiebreaker) => {
     setSelectedTiebreaker(tiebreaker);
     setShowTiebreakerModal(true);
+    setCurrentPage(1);
+    setSearchTerm("");
   };
 
   const handleCloseGameModal = () => {
@@ -332,30 +338,148 @@ export default function Live() {
         <Modal.Body className="py-4">
           {selectedTiebreaker && (
             <>
-              <ListGroup>
-                {selectedTiebreaker?.picks && selectedTiebreaker.picks.length > 0 ? (
-                  selectedTiebreaker.picks
-                    .sort((a, b) => {
-                      // Sort by answer text alphabetically
-                      const answerA = isNaN(a.answer) ? a.answer : (Number.isInteger(a.answer) ? a.answer : Math.floor(a.answer)).toString();
-                      const answerB = isNaN(b.answer) ? b.answer : (Number.isInteger(b.answer) ? b.answer : Math.floor(b.answer)).toString();
-                      return answerA.localeCompare(answerB);
-                    })
-                    .map((pick, index) => (
-                      <ListGroup.Item 
-                        key={index}
-                        className="d-flex justify-content-between align-items-center py-3"
-                      >
-                        <span className="text-truncate fw-bold text-secondary">{pick.full_name}</span>
-                        <Badge bg="secondary" className="py-2 px-3">
-                          {isNaN(pick.answer) ? pick.answer : (Number.isInteger(pick.answer) ? pick.answer : Math.floor(pick.answer))}
+              {selectedTiebreaker?.picks && selectedTiebreaker.picks.length > 0 ? (
+                <>
+                  <div className="mb-4">
+                    <Row className="align-items-center">
+                      <Col md={5}>
+                        <Form.Control
+                          type="text"
+                          placeholder="Search by name..."
+                          value={searchTerm}
+                          onChange={(e) => {
+                            setSearchTerm(e.target.value);
+                            setCurrentPage(1);
+                          }}
+                          className="mb-2 mb-md-0"
+                        />
+                      </Col>
+                      <Col md={4}>
+                        <Form.Select 
+                          value={sortOption}
+                          onChange={(e) => {
+                            setSortOption(e.target.value);
+                            setCurrentPage(1);
+                          }}
+                        >
+                          <option value="answer">Sort by Answer</option>
+                          <option value="name">Sort by Name</option>
+                        </Form.Select>
+                      </Col>
+                      <Col md={3} className="text-end">
+                        <Badge bg="primary" className="py-2 px-3">
+                          {selectedTiebreaker.picks.length} responses
                         </Badge>
-                      </ListGroup.Item>
-                    ))
-                ) : (
-                  <ListGroup.Item className="text-center text-muted py-3">No answers submitted yet</ListGroup.Item>
-                )}
-              </ListGroup>
+                      </Col>
+                    </Row>
+                  </div>
+                  
+                  <Row>
+                    {(() => {
+                      // Filter picks based on search term
+                      const filteredPicks = selectedTiebreaker.picks
+                        .filter(pick => 
+                          pick.full_name.toLowerCase().includes(searchTerm.toLowerCase())
+                        );
+                      
+                      // Sort picks based on option
+                      const sortedPicks = [...filteredPicks].sort((a, b) => {
+                        if (sortOption === "name") {
+                          return a.full_name.localeCompare(b.full_name);
+                        } else {
+                          // Sort by answer
+                          const answerA = isNaN(a.answer) ? a.answer : (Number.isInteger(a.answer) ? a.answer : Math.floor(a.answer)).toString();
+                          const answerB = isNaN(b.answer) ? b.answer : (Number.isInteger(b.answer) ? b.answer : Math.floor(b.answer)).toString();
+                          return answerA.localeCompare(answerB);
+                        }
+                      });
+                      
+                      // Paginate picks
+                      const indexOfLastPick = currentPage * picksPerPage;
+                      const indexOfFirstPick = indexOfLastPick - picksPerPage;
+                      const currentPicks = sortedPicks.slice(indexOfFirstPick, indexOfLastPick);
+                      
+                      // Calculate total pages
+                      const totalPages = Math.ceil(sortedPicks.length / picksPerPage);
+                      
+                      return (
+                        <>
+                          {currentPicks.map((pick, index) => (
+                            <Col key={index} xs={12} sm={6} md={4} className="mb-3">
+                              <div className="border rounded p-2 h-100 d-flex flex-column justify-content-between">
+                                <div className="text-truncate fw-bold text-secondary mb-1" title={pick.full_name}>
+                                  {pick.full_name}
+                                </div>
+                                <Badge bg="secondary" className="py-2 px-3 align-self-end">
+                                  {isNaN(pick.answer) ? pick.answer : (Number.isInteger(pick.answer) ? pick.answer : Math.floor(pick.answer))}
+                                </Badge>
+                              </div>
+                            </Col>
+                          ))}
+                          
+                          {sortedPicks.length > picksPerPage && (
+                            <Col xs={12} className="mt-3 d-flex justify-content-center">
+                              <Pagination>
+                                <Pagination.First 
+                                  onClick={() => setCurrentPage(1)} 
+                                  disabled={currentPage === 1}
+                                />
+                                <Pagination.Prev 
+                                  onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                                  disabled={currentPage === 1}
+                                />
+                                
+                                {Array.from({ length: Math.min(5, totalPages) }).map((_, idx) => {
+                                  // Show pagination centered around current page
+                                  let pageNum;
+                                  if (totalPages <= 5) {
+                                    pageNum = idx + 1;
+                                  } else if (currentPage <= 3) {
+                                    pageNum = idx + 1;
+                                  } else if (currentPage >= totalPages - 2) {
+                                    pageNum = totalPages - 4 + idx;
+                                  } else {
+                                    pageNum = currentPage - 2 + idx;
+                                  }
+                                  
+                                  return (
+                                    <Pagination.Item
+                                      key={pageNum}
+                                      active={pageNum === currentPage}
+                                      onClick={() => setCurrentPage(pageNum)}
+                                    >
+                                      {pageNum}
+                                    </Pagination.Item>
+                                  );
+                                })}
+                                
+                                <Pagination.Next 
+                                  onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                                  disabled={currentPage === totalPages}
+                                />
+                                <Pagination.Last 
+                                  onClick={() => setCurrentPage(totalPages)}
+                                  disabled={currentPage === totalPages}
+                                />
+                              </Pagination>
+                            </Col>
+                          )}
+                          
+                          {currentPicks.length === 0 && (
+                            <Col xs={12} className="text-center py-4">
+                              <p className="text-muted">No results match your search.</p>
+                            </Col>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </Row>
+                </>
+              ) : (
+                <div className="text-center text-muted py-4">
+                  <p>No answers submitted yet</p>
+                </div>
+              )}
             </>
           )}
         </Modal.Body>
