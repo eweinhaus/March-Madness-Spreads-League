@@ -211,24 +211,10 @@ export default function Live() {
           <Modal.Title className="w-100 text-center">
             {selectedGame && (
               <div className="d-flex justify-content-between align-items-center">
-                {(() => {
-                  const score = getGameScore(selectedGame);
-                  return score ? (
-                    <Badge bg="info" className="py-2 px-3" style={{ fontSize: '1rem' }}>
-                      {score.Time}
-                    </Badge>
-                  ) : (
-                    <Badge bg="info" className="py-2 px-3" style={{ fontSize: '1rem' }}>
-                      Time not available
-                    </Badge>
-                  );
-                })()}
-                <span className="mx-3">{selectedGame.away_team} @ {selectedGame.home_team}</span>
-                <Badge bg="primary" className="py-2 px-3" style={{ fontSize: '1rem' }}>
-                  {selectedGame.spread > 0 
-                    ? `${selectedGame.home_team} -${selectedGame.spread}` 
-                    : `${selectedGame.away_team} -${-selectedGame.spread}`}
-                </Badge>
+                {/* Centered Team Names */}
+                <div className="text-center w-100">
+                  <span className="mx-3">{selectedGame.away_team} @ {selectedGame.home_team}</span>
+                </div>
               </div>
             )}
           </Modal.Title>
@@ -238,19 +224,21 @@ export default function Live() {
             <>
               {(() => {
                 const score = getGameScore(selectedGame);
-                return score 
-                  ? (
-                    <div className="text-center mb-4">
-                      <div className="d-flex justify-content-center align-items-center" style={{ fontSize: '1.5rem' }}>
-                        <span className="fw-bold text-truncate" style={{ maxWidth: '30%' }}>{score.AwayTeam}</span>
-                        <span className="mx-2 fs-2">{score.AwayScore}</span>
-                        <span className="mx-2">@</span>
-                        <span className="mx-2 fs-2">{score.HomeScore}</span>
-                        <span className="fw-bold text-truncate" style={{ maxWidth: '30%' }}>{score.HomeTeam}</span>
-                      </div>
+                return (
+                  <div className="text-center mb-4">
+                    {/* Centered Time Badge */}
+                    <Badge bg="info" className="py-2 px-3" style={{ fontSize: '1rem' }}>
+                      {score ? score.Time : "Time not available"}
+                    </Badge>
+                    <div className="d-flex justify-content-center align-items-center" style={{ fontSize: '1.5rem' }}>
+                      <span className="fw-bold text-truncate" style={{ maxWidth: '30%' }}>{score.AwayTeam}</span>
+                      <span className="mx-2 fs-2">{score.AwayScore}</span>
+                      <span className="mx-2">@</span>
+                      <span className="mx-2 fs-2">{score.HomeScore}</span>
+                      <span className="fw-bold text-truncate" style={{ maxWidth: '30%' }}>{score.HomeTeam}</span>
                     </div>
-                  )
-                  : <p className="text-center text-muted">Score not available</p>;
+                  </div>
+                );
               })()}
               <ListGroup>
                 {selectedGame?.picks ? (

@@ -21,7 +21,6 @@ from flask import Flask, jsonify
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-import ipdb
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
