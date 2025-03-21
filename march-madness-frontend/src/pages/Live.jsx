@@ -12,6 +12,8 @@ export default function Live() {
   const [selectedTiebreaker, setSelectedTiebreaker] = useState(null);
   const [showGameModal, setShowGameModal] = useState(false);
   const [showTiebreakerModal, setShowTiebreakerModal] = useState(false);
+  const [showAwayPicks, setShowAwayPicks] = useState(false);
+  const [showHomePicks, setShowHomePicks] = useState(false);
 
   useEffect(() => {
     fetchLiveData();
@@ -168,8 +170,9 @@ export default function Live() {
           <p>
             <strong>Game Time:</strong> {selectedGame && formatGameDate(selectedGame.game_date)}
           </p>
-          <p>
-            {selectedGame && selectedGame.picks ? (
+          <h6>User Picks:</h6>
+          <ListGroup>
+            {selectedGame?.picks ? (
               (() => {
                 const totalPicks = selectedGame.picks.length;
                 const homePicks = selectedGame.picks.filter(pick => pick.picked_team === selectedGame.home_team).length;
@@ -179,29 +182,43 @@ export default function Live() {
 
                 return (
                   <>
-                    <strong>{selectedGame.home_team} -{selectedGame.spread}</strong>: {homePicks} picked ({homePercentage}%)<br />
-                    <strong>{selectedGame.away_team} +{selectedGame.spread}</strong>: {awayPicks} picked ({awayPercentage}%)
+                    <ListGroup.Item 
+                      action 
+                      onClick={() => setShowAwayPicks(!showAwayPicks)} 
+                      className="d-flex justify-content-between align-items-center"
+                    >
+                      <strong>{selectedGame.away_team} +{selectedGame.spread}</strong>{awayPicks} picked ({awayPercentage}%)
+                    </ListGroup.Item>
+                    {showAwayPicks && (
+                      <div className="d-flex flex-wrap justify-content-center transition-dropdown">
+                        {selectedGame.picks.filter(pick => pick.picked_team === selectedGame.away_team).map((pick, index) => (
+                          <Badge key={index} bg="secondary" className="m-1">
+                            {pick.full_name}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                    <br></br>
+                    <ListGroup.Item 
+                      action 
+                      onClick={() => setShowHomePicks(!showHomePicks)} 
+                      className="d-flex justify-content-between align-items-center"
+                    >
+                      <strong>{selectedGame.home_team} -{selectedGame.spread}</strong>{homePicks} picked ({homePercentage}%)
+                    </ListGroup.Item>
+                    {showHomePicks && (
+                      <div className="d-flex flex-wrap justify-content-center transition-dropdown">
+                        {selectedGame.picks.filter(pick => pick.picked_team === selectedGame.home_team).map((pick, index) => (
+                          <Badge key={index} bg="secondary" className="m-1">
+                            {pick.full_name}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
                   </>
                 );
               })()
             ) : (
-              "No picks yet"
-            )}
-          </p>
-          <h6>User Picks:</h6>
-          <ListGroup>
-            {selectedGame?.picks && selectedGame.picks.map((pick, index) => (
-              <ListGroup.Item 
-                key={index}
-                className="d-flex justify-content-between align-items-center"
-              >
-                {pick.full_name}
-                <Badge bg="secondary">
-                  {pick.picked_team}
-                </Badge>
-              </ListGroup.Item>
-            ))}
-            {selectedGame?.picks.length === 0 && (
               <ListGroup.Item>No picks for this game yet</ListGroup.Item>
             )}
           </ListGroup>
