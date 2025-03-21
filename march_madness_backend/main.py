@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
@@ -17,6 +17,10 @@ from auth import (
 from typing import Optional, Union
 import urllib.parse
 import db
+from flask import Flask, jsonify
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -458,11 +462,11 @@ async def create_game(
 def get_games():
     try:
         with get_db_cursor() as cur:
-            logger.info("Fetching all games")
+            #logger.info("Fetching all games")
             cur.execute("SELECT * FROM games ORDER BY game_date")
             games = cur.fetchall()
-            logger.info(f"Found {len(games)} games")
-            logger.info(f"Games: {games}")
+            #logger.info(f"Found {len(games)} games")
+            #logger.info(f"Games: {games}")
             return games
     except Exception as e:
         logger.error(f"Error fetching games: {str(e)}")
@@ -1291,6 +1295,53 @@ async def delete_user(user_id: int, current_user: User = Depends(get_current_adm
     except Exception as e:
         logger.error(f"Error deleting user: {str(e)}")
         raise HTTPException(status_code=500, detail="An error occurred while deleting the user")
+
+@app.get("/api/gamescores")
+async def get_game_scores(request: Request):
+    # URL to crawl
+    url = 'https://www.cbssports.com/college-basketball/scoreboard/?layout=compact'
+    try:
+        # Fetching the webpage content
+        response = requests.get(url)
+        response.raise_for_status()  # Raise an error for bad responses
+        html_content = response.text
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # Finding all game cards
+        game_cards = soup.find_all('div', class_='single-score-card')
+
+        # List to hold game data
+        games_data = []
+
+        for game in game_cards:
+            # Extracting the scores and teams
+            away_team = game.find_all('td', class_='team--collegebasketball')[0].find('a', class_='team-name-link').text
+            away_score = game.find_all('td', class_='total')[0].text
+            home_team = game.find_all('td', class_='team--collegebasketball')[1].find('a', class_='team-name-link').text
+            home_score = game.find_all('td', class_='total')[1].text
+
+            # Extracting the game status (time)
+            game_status = game.find('div', class_='game-status emphasis')
+            time_left = game_status.text if game_status else 'final'
+
+            # Append the game data to the list
+            games_data.append({
+                'AwayTeam': away_team,
+                'HomeTeam': home_team,
+                'AwayScore': away_score,
+                'HomeScore': home_score,
+                'Time': time_left
+            })
+
+        return games_data  # Return the game data as JSON
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching data: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching data from CBS Sports.")
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        raise HTTPException(status_code=500, detail="An internal server error occurred.")
 
 # Run the server
 if __name__ == "__main__":
