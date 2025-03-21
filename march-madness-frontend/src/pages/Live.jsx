@@ -150,7 +150,7 @@ export default function Live() {
                     </Badge>
                   </Card.Header>
                   <Card.Body className="text-center">
-                    <Card.Text style={{ fontSize: '1.25rem' }}>
+                    <Card.Text style={{ fontSize: '1rem' }}>
                       {(() => {
                         const score = getGameScore(game);
                         return score 
@@ -230,13 +230,21 @@ export default function Live() {
                     <Badge bg="info" className="py-2 px-3" style={{ fontSize: '1rem' }}>
                       {score ? score.Time : "Time not available"}
                     </Badge>
-                    <div className="d-flex justify-content-center align-items-center" style={{ fontSize: '1.5rem' }}>
-                      <span className="fw-bold text-truncate" style={{ maxWidth: '30%' }}>{score.AwayTeam}</span>
-                      <span className="mx-2 fs-2">{score.AwayScore}</span>
-                      <span className="mx-2">@</span>
-                      <span className="mx-2 fs-2">{score.HomeScore}</span>
-                      <span className="fw-bold text-truncate" style={{ maxWidth: '30%' }}>{score.HomeTeam}</span>
-                    </div>
+                    {score ? (
+                      <div className="d-flex justify-content-center align-items-center" style={{ fontSize: '1.25rem' }}>
+                        <span className="fw-bold text-truncate" style={{ maxWidth: '30%' }}>{score.AwayTeam}</span>
+                        <span className="mx-2 fs-4">{score.AwayScore}</span>
+                        <span className="mx-2">@</span>
+                        <span className="mx-2 fs-4">{score.HomeScore}</span>
+                        <span className="fw-bold text-truncate" style={{ maxWidth: '30%' }}>{score.HomeTeam}</span>
+                      </div>
+                    ) : (
+                      <div className="d-flex justify-content-center align-items-center" style={{ fontSize: '1.25rem' }}>
+                        <span className="fw-bold text-truncate" style={{ maxWidth: '30%' }}>{selectedGame.away_team}</span>
+                        <span className="mx-2">@</span>
+                        <span className="fw-bold text-truncate" style={{ maxWidth: '30%' }}>{selectedGame.home_team}</span>
+                      </div>
+                    )}
                   </div>
                 );
               })()}
