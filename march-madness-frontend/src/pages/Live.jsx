@@ -140,7 +140,7 @@ export default function Live() {
                     <Badge bg="info" className="py-2 px-3" style={{ fontSize: '1rem' }}>
                       {(() => {
                         const score = getGameScore(game);
-                        return score ? score.Time : 'Time not available';
+                        return score ? score.Time : 'Starting soon';
                       })()}
                     </Badge>
                     <Badge bg="primary" className="py-2 px-3" style={{ fontSize: '1rem' }}>
@@ -228,7 +228,7 @@ export default function Live() {
                   <div className="text-center mb-4">
                     {/* Centered Time Badge */}
                     <Badge bg="info" className="py-2 px-3" style={{ fontSize: '1rem' }}>
-                      {score ? score.Time : "Time not available"}
+                      {score ? score.Time : "Starting soon"}
                     </Badge>
                     {score ? (
                       <div className="d-flex justify-content-center align-items-center" style={{ fontSize: '1.25rem' }}>
