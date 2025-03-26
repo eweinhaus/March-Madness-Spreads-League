@@ -1367,10 +1367,14 @@ async def get_game_scores(request: Request):
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching data from CBS Sports: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error fetching data from CBS Sports: {str(e)}")
+        print(f"ERROR fetching data from CBS Sports: {str(e)}")
+        #raise HTTPException(status_code=500, detail=f"Error fetching data from CBS Sports: {str(e)}")
+        return []
     except Exception as e:
         logger.error(f"An unexpected error occurred: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+        print(f"An unexpected ERROR occurred: {str(e)}")
+        #raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+        return []
 
 # Run the server
 if __name__ == "__main__":
