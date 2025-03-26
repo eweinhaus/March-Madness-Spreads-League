@@ -94,28 +94,41 @@ app.add_middleware(
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     """Get the current user from the token."""
+    logger.info("Attempting to authenticate user with token")
+    
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    username = verify_token(token)
-    if username is None:
+    try:
+        logger.info("Verifying token")
+        username = verify_token(token)
+        logger.info(f"Token verification result: username={username}")
+        
+        if username is None:
+            logger.warning("Token verification failed - username is None")
+            raise credentials_exception
+        
+        with get_db_cursor() as cur:
+            logger.info(f"Looking up user in database: {username}")
+            cur.execute(
+                "SELECT id, username, full_name, is_admin FROM users WHERE username = %s",
+                (username,)
+            )
+            user = cur.fetchone()
+            
+            if user is None:
+                logger.warning(f"User not found in database: {username}")
+                raise credentials_exception
+                
+            logger.info(f"Successfully authenticated user: {username}")
+            return User(**user)
+    except Exception as e:
+        logger.error(f"Authentication error: {str(e)}")
         raise credentials_exception
     
-    with get_db_cursor() as cur:
-        cur.execute(
-            "SELECT id, username, full_name, is_admin FROM users WHERE username = %s",
-            (username,)
-        )
-        user = cur.fetchone()
-        
-    if user is None:
-        raise credentials_exception
-        
-    return User(**user)
-
 async def get_current_admin_user(current_user: User = Depends(get_current_user)) -> User:
     """Check if the current user is an admin."""
     if not current_user.is_admin:
