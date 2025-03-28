@@ -25,21 +25,54 @@ function ProtectedRoute({ children, adminOnly = false }) {
   useEffect(() => {
     const checkUser = async () => {
       if (!token) {
+        console.log('ProtectedRoute - No token found, redirecting to login');
         setLoading(false);
         navigate('/login');
         return;
       }
 
+      // Log token information for debugging (without exposing the full token)
+      console.log('ProtectedRoute - Token exists:', !!token);
+      console.log('ProtectedRoute - Token length:', token.length);
+      console.log('ProtectedRoute - Token starts with:', token.substring(0, 10) + '...');
+      
       try {
+        console.log('ProtectedRoute - Validating token with /users/me endpoint');
         const response = await fetch(`${API_URL}/users/me`, {
           headers: {
             'Authorization': `Bearer ${token}`
           }
         });
+        
+        // Log response status
+        console.log('ProtectedRoute - /users/me response status:', response.status);
+        
+        if (!response.ok) {
+          // If response is not OK, try to get more details
+          try {
+            const errorData = await response.json();
+            console.error('ProtectedRoute - Error response data:', errorData);
+            
+            // Log the error message, but always redirect on 401
+            if (errorData && errorData.detail) {
+              console.log('ProtectedRoute - Error detail:', errorData.detail);
+            }
+          } catch (jsonError) {
+            console.error('ProtectedRoute - Could not parse error response:', jsonError);
+          }
+          
+          // Any 401 should redirect to login
+          console.log('ProtectedRoute - Authentication failed, redirecting to login');
+          localStorage.removeItem('token');
+          navigate('/login');
+          return;
+        }
+        
         const data = await response.json();
+        console.log('ProtectedRoute - User authenticated successfully');
         setIsAdmin(data.is_admin);
       } catch (error) {
-        console.error('Error checking user:', error);
+        console.error('ProtectedRoute - Error checking user:', error);
         localStorage.removeItem('token');
         navigate('/login');
       }
@@ -82,18 +115,44 @@ function AppContent() {
     setIsAuthenticated(!!token);
 
     if (token) {
+      console.log('AppContent - Token found, verifying with /users/me');
+      // Log token information for debugging (without exposing the full token)
+      console.log('AppContent - Token exists:', !!token);
+      console.log('AppContent - Token length:', token.length);
+      console.log('AppContent - Token starts with:', token.substring(0, 10) + '...');
+      
       fetch(`${API_URL}/users/me`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
       })
-        .then(res => res.json())
+        .then(res => {
+          console.log('AppContent - /users/me response status:', res.status);
+          
+          if (!res.ok) {
+            // If response is not OK, throw error to be caught in catch block
+            return res.json().then(errorData => {
+              console.error('AppContent - Error response data:', errorData);
+              
+              // Log error message for debugging
+              if (errorData && errorData.detail) {
+                console.log('AppContent - Error detail:', errorData.detail);
+              }
+              
+              // Always throw on 401, regardless of specific error message
+              throw new Error('Authentication failed');
+            });
+          }
+          
+          return res.json();
+        })
         .then(data => {
+          console.log('AppContent - User authenticated successfully');
           setIsAdmin(data.is_admin);
           setUser(data);
         })
         .catch(err => {
-          console.error('Error checking user:', err);
+          console.error('AppContent - Error checking user:', err);
           localStorage.removeItem('token');
           setIsAuthenticated(false);
           setIsAdmin(false);

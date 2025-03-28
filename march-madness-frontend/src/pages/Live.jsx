@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { Alert, Card, ListGroup, Badge, Container, Spinner, Modal, Button, Row, Col, Pagination, Form } from "react-bootstrap";
 import { API_URL } from "../config";
+import { useNavigate } from "react-router-dom";
 
 export default function Live() {
   const [liveGames, setLiveGames] = useState([]);
@@ -19,6 +20,52 @@ export default function Live() {
   const [searchTerm, setSearchTerm] = useState("");
   const [sortOption, setSortOption] = useState("answer"); // "answer" or "name"
   const picksPerPage = 12; // Show more picks per page
+  const navigate = useNavigate();
+
+  // Function to handle authentication errors
+  const handleAuthError = (err) => {
+    console.error('Auth check - Error:', err);
+    
+    // Log token information for debugging (without exposing the full token)
+    const token = localStorage.getItem('token');
+    console.log('Auth check - Token exists:', !!token);
+    if (token) {
+      console.log('Auth check - Token length:', token.length);
+      console.log('Auth check - Token starts with:', token.substring(0, 10) + '...');
+    }
+    
+    // Add detailed logging for debugging
+    if (err.response) {
+      console.error('Auth check - Response data:', err.response.data);
+      console.error('Auth check - Response status:', err.response.status);
+      console.error('Auth check - Response headers:', err.response.headers);
+      
+      // Handle 401 Unauthorized errors - treat ALL 401s as authentication failures
+      if (err.response.status === 401) {
+        // Check if message explicitly mentions token expiration, but handle all 401s the same way
+        const isTokenExpired = 
+          (err.response.data && 
+           typeof err.response.data === 'object' &&
+           err.response.data.detail && 
+           typeof err.response.data.detail === 'string' &&
+           err.response.data.detail.includes("Token expired"));
+
+        // Log the token expiration evaluation
+        console.log('Auth check - Is explicit token expiration message present?', isTokenExpired);
+        console.log('Auth check - Error response message:', 
+          err.response.data && err.response.data.detail ? err.response.data.detail : 'No detail message');
+        
+        // All 401 errors should redirect to login regardless of the specific message
+        console.log('Auth check - 401 error, redirecting to login');
+        localStorage.removeItem('token');
+        navigate('/login');
+        return true; // Indicate error was handled
+      }
+    } else {
+      console.error('Auth check - No response object in error');
+    }
+    return false; // Error wasn't handled as auth error
+  };
 
   useEffect(() => {
     fetchLiveData();
@@ -30,9 +77,12 @@ export default function Live() {
     setError(null);
     console.log("Current User Time: ", new Date().toLocaleString());
     
+    const token = localStorage.getItem('token');
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+    
     Promise.all([
-      axios.get(`${API_URL}/live_games`),
-      axios.get(`${API_URL}/live_tiebreakers`)
+      axios.get(`${API_URL}/live_games`, { headers }),
+      axios.get(`${API_URL}/live_tiebreakers`, { headers })
     ])
       .then(([gamesRes, tiebreakersRes]) => {
         setLiveGames(Array.isArray(gamesRes.data) ? gamesRes.data : []);
@@ -40,8 +90,11 @@ export default function Live() {
         setError(null);
       })
       .catch(err => {
-        console.error(err);
-        setError('Failed to load live data. Please try again.');
+        // Try to handle as auth error first
+        if (!handleAuthError(err)) {
+          console.error(err);
+          setError('Failed to load live data. Please try again.');
+        }
       })
       .finally(() => {
         setLoading(false);
@@ -49,13 +102,19 @@ export default function Live() {
   };
 
   const fetchGameScores = () => {
-    axios.get(`${API_URL}/api/gamescores`)
+    const token = localStorage.getItem('token');
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+    
+    axios.get(`${API_URL}/api/gamescores`, { headers })
       .then(response => {
         setGameScores(response.data); // Set the game scores
       })
       .catch(err => {
-        console.error(err);
-        setError('Failed to load game scores. Please try again.');
+        // Try to handle as auth error first
+        if (!handleAuthError(err)) {
+          console.error(err);
+          setError('Failed to load game scores. Please try again.');
+        }
       });
   };
 
