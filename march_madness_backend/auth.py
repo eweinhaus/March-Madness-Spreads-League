@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # JWT Configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-if-not-in-env")
+SECRET_KEY = os.getenv("SECRET_KEY", "secret-key-in-env")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
@@ -47,20 +47,23 @@ def get_password_hash(password: str) -> str:
     """Generate password hash."""
     return pwd_context.hash(password)
 
-def create_access_token(data: dict) -> str:
+def create_access_token(data: dict, username: str) -> str:
     """Create a JWT access token."""
     to_encode = data.copy()
     expire = datetime.now() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "sub": username})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def verify_token(token: str) -> Optional[str]:
-    """Verify a JWT token and return the username."""
+    """Verify a JWT token and return the username or a special message if expired."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         if username is None:
             return None
         return username
-    except JWTError:
+    except JWTError as e:
+        # Check if the error is due to token expiration
+        if "token is expired" in str(e):
+            return "Token expired"  # Custom message for expired token
         return None 

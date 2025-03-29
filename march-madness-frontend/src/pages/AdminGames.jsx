@@ -42,7 +42,7 @@ const AdminGames = () => {
       } else if (err.response?.status === 403) {
         setError('You do not have permission to access this page.');
       } else {
-        setError('Failed to fetch games. Please try again.');
+        setError('Failed to fetch games. Try logging out and logging back in.');
       }
       console.error('Error fetching games:', err);
     }

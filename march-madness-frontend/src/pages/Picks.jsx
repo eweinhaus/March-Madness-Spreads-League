@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { Container, Row, Col, Card, Button, Alert, Form } from "react-bootstrap";
 import { API_URL } from "../config";
+import { useNavigate } from "react-router-dom";
 
 export default function Picks() {
   const [games, setGames] = useState([]);
@@ -12,6 +13,7 @@ export default function Picks() {
   const [tiebreakers, setTiebreakers] = useState([]);
   const [tiebreakerPicks, setTiebreakerPicks] = useState({});
   const [existingTiebreakerPicks, setExistingTiebreakerPicks] = useState({});
+  const navigate = useNavigate();
 
   // Helper function to format date for display
   const formatDateForDisplay = (dateString) => {
@@ -24,6 +26,51 @@ export default function Picks() {
       minute: '2-digit',
       hour12: true
     });
+  };
+
+  // Function to handle authentication errors
+  const handleAuthError = (err) => {
+    console.error('Auth check - Error loading data:', err);
+    
+    // Log token information for debugging (without exposing the full token)
+    const token = localStorage.getItem('token');
+    console.log('Auth check - Token exists:', !!token);
+    if (token) {
+      console.log('Auth check - Token length:', token.length);
+      console.log('Auth check - Token starts with:', token.substring(0, 10) + '...');
+    }
+    
+    // Add detailed logging for debugging
+    if (err.response) {
+      console.error('Auth check - Response data:', err.response.data);
+      console.error('Auth check - Response status:', err.response.status);
+      console.error('Auth check - Response headers:', err.response.headers);
+      
+      // Handle 401 Unauthorized errors - treat ALL 401s as authentication failures
+      if (err.response.status === 401) {
+        // Check if message explicitly mentions token expiration, but handle all 401s the same way
+        const isTokenExpired = 
+          (err.response.data && 
+           typeof err.response.data === 'object' &&
+           err.response.data.detail && 
+           typeof err.response.data.detail === 'string' &&
+           err.response.data.detail.includes("Token expired"));
+
+        // Log the token expiration evaluation
+        console.log('Auth check - Is explicit token expiration message present?', isTokenExpired);
+        console.log('Auth check - Error response message:', 
+          err.response.data && err.response.data.detail ? err.response.data.detail : 'No detail message');
+        
+        // All 401 errors should redirect to login regardless of the specific message
+        console.log('Auth check - 401 error, redirecting to login');
+        localStorage.removeItem('token');
+        navigate('/login');
+        return true; // Indicate error was handled
+      }
+    } else {
+      console.error('Auth check - No response object in error');
+    }
+    return false; // Error wasn't handled as auth error
   };
 
   useEffect(() => {
@@ -69,15 +116,14 @@ export default function Picks() {
         setIsLoading(false);
       })
       .catch(err => {
-        console.error('Error loading data:', err);
-        if (err.response) {
-          console.error('Response data:', err.response.data);
-          console.error('Response status:', err.response.status);
+        // Try to handle as auth error first
+        if (!handleAuthError(err)) {
+          // If not an auth error, show the general error
+          setError('Failed to load games, picks, and tiebreakers');
         }
-        setError('Failed to load games, picks, and tiebreakers');
         setIsLoading(false);
       });
-  }, []);
+  }, [navigate]);
 
   const handlePick = (gameId, team) => {
     // Ensure gameId is stored as a string for consistency
@@ -177,13 +223,16 @@ export default function Picks() {
       setTiebreakerPicks({});
     } catch (err) {
       console.error(err);
-      // Display more detailed error message if available
-      if (err.response && err.response.data && err.response.data.detail) {
-        setError(`Error: ${err.response.data.detail}`);
-      } else if (err.message) {
-        setError(`Error: ${err.message}`);
-      } else {
-        setError('Failed to submit picks. Please try again.');
+      // Try to handle auth error first
+      if (!handleAuthError(err)) {
+        // If not an auth error, display more detailed error message if available
+        if (err.response && err.response.data && err.response.data.detail) {
+          setError(`Error: ${err.response.data.detail}`);
+        } else if (err.message) {
+          setError(`Error: ${err.message}`);
+        } else {
+          setError('Failed to submit picks. Please try again.');
+        }
       }
     }
   };
