@@ -314,7 +314,7 @@ export default function Picks() {
                             <span className="text-truncate ms-1">{game.home_team}</span>
                           </Card.Title>
                           <Card.Text className="mb-3">
-                            <div className="mb-1"><strong>Spread:</strong> {game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} +${-game.spread}`}</div>
+                            <div className="mb-1"><strong>Spread:</strong> {game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} -${Math.abs(game.spread)}`}</div>
                             <div className="mb-1"><strong>Game time:</strong> {formatDateForDisplay(game.game_date)}</div>
                             {existingPick && (
                               <div className="mt-2 text-success">
@@ -328,14 +328,14 @@ export default function Picks() {
                               onClick={() => handlePick(game.id, game.away_team)}
                               className="py-2"
                             >
-                              {game.away_team} {game.spread > 0 ? `+${game.spread}` : `+${-game.spread}`}
+                              {game.away_team} {game.spread > 0 ? `+${game.spread}` : `-${Math.abs(game.spread)}`}
                             </Button>
                             <Button
                               variant={selectedTeam === game.home_team ? "success" : "outline-primary"}
                               onClick={() => handlePick(game.id, game.home_team)}
                               className="py-2"
                             >
-                              {game.home_team} {game.spread > 0 ? `-${game.spread}` : `-${-game.spread}`}
+                              {game.home_team} {game.spread > 0 ? `-${game.spread}` : `+${Math.abs(game.spread)}`}
                             </Button>
                           </div>
                         </Card.Body>
