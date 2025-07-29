@@ -148,10 +148,10 @@ async def register(user: UserCreate):
     """Register a new user."""
     try:
         # Validate league ID
-        if user.league_id != '0727':
+        if user.league_id != LEAGUE_ID:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid league ID. Please enter a valid league ID."
+                detail=f"Invalid league ID. Please enter the valid league ID: {LEAGUE_ID}."
             )
             
         with get_db_cursor(commit=True) as cur:
