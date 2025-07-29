@@ -8,9 +8,9 @@ export default function Home() {
         <Container>
           <Row className="align-items-center">
             <Col md={8} className="text-center text-md-start">
-              <h1 className="display-4 fw-bold mb-3 mb-md-4">Welcome to March Madness Spreads!</h1>
+              <h1 className="display-4 fw-bold mb-3 mb-md-4">Welcome to Spreads!</h1>
               <p className="lead mb-3 mb-md-4">
-                Make your picks against the spread for March Madness games 
+                Make your picks against the spread for sports games 
                 and compete with others to see who can predict the most teams that cover.
               </p>
               <div className="d-flex flex-column flex-sm-row gap-2 gap-sm-3 justify-content-center justify-content-md-start">

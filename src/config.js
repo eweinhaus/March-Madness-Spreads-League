@@ -1,1 +1,1 @@
-export const API_URL = import.meta.env.VITE_API_URL || 'march-madness-backend-qyw5:10000'; 
+export const API_URL = import.meta.env.VITE_API_URL || 'spreads-backend-qyw5:10000'; 

@@ -1,9 +1,9 @@
-# March Madness Spreads
+# Spreads
 
-This web application is currently being utilized by 40+ active users to track and score a college basketball spread picking pool for the 2025 March Madness season.
+This web application is currently being utilized by 40+ active users to track and score sports spread picking pools across multiple sports and leagues.
 
 You can view the live site here: 
-https://march-madness-spreads-league.onrender.com/leaderboard
+https://spreads-league.onrender.com/leaderboard
 
 
 ## Features
@@ -27,7 +27,15 @@ https://march-madness-spreads-league.onrender.com/leaderboard
 - Node.js 16+
 - PostgreSQL
 
+## Current Features:
+- Support for multiple sports and leagues
+- User authentication and registration
+- Admin interface for managing games and spreads
+- User interface for submitting picks
+- Live leaderboard tracking
+- Real-time game updates
+
 ## Future Plans:
 - Handle payment processing for users through the webapp directly
-- Create functionality for multiple leagues, allowing additional groups to participate
-- Launch pools for additional sports
+- Enhanced league management functionality
+- Additional sports and tournament support

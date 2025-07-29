@@ -27,6 +27,8 @@ class TokenData(BaseModel):
 class UserCreate(BaseModel):
     username: str
     full_name: str
+    email: str
+    league_id: str
     password: str
 
 class UserLogin(BaseModel):
@@ -37,7 +39,13 @@ class User(BaseModel):
     id: int
     username: str
     full_name: str
+    email: str
+    league_id: str
     is_admin: bool
+
+class ForgotPasswordRequest(BaseModel):
+    username: str
+    email: str
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
