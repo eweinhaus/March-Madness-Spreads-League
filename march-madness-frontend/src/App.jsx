@@ -14,6 +14,7 @@ import AdminUserPicks from './pages/AdminUserPicks';
 import AdminTiebreakers from './pages/AdminTiebreakers';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import ForgotPassword from './pages/ForgotPassword';
 import Live from './pages/Live';
 
 function ProtectedRoute({ children, adminOnly = false }) {
@@ -165,7 +166,7 @@ function AppContent() {
     <div className="App">
       <Navbar bg="dark" variant="dark" expand="lg" className="navbar" collapseOnSelect>
         <Container>
-          <Navbar.Brand as={Link} to="/">March Madness Spreads</Navbar.Brand>
+                      <Navbar.Brand as={Link} to="/">Spreads</Navbar.Brand>
           <Navbar.Toggle aria-controls="basic-navbar-nav" />
           <Navbar.Collapse id="basic-navbar-nav">
             <Nav className="me-auto">
@@ -205,6 +206,7 @@ function AppContent() {
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login setUser={setUser} />} />
           <Route path="/register" element={<Register setUser={setUser} />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/picks" element={
             <ProtectedRoute>
               <Picks />

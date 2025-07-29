@@ -3,12 +3,14 @@ import { Form, Button, Alert, Container, Row, Col } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
 import { API_URL } from "../config";
 
-const Login = () => {
+const ForgotPassword = () => {
   const [formData, setFormData] = useState({
     username: '',
-    password: '',
+    email: '',
   });
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
   const handleChange = (e) => {
@@ -22,35 +24,39 @@ const Login = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
-    
+    setSuccess('');
+    setLoading(true);
+    console.log('Starting password reset process...');
+
     try {
-      const response = await fetch(`${API_URL}/token`, {
+      console.log('Sending password reset request...');
+      const response = await fetch(`${API_URL}/forgot-password`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Type': 'application/json',
         },
-        body: new URLSearchParams({
+        body: JSON.stringify({
           username: formData.username,
-          password: formData.password,
+          email: formData.email,
         }),
       });
 
+      console.log('Password reset response received:', response.status);
       const data = await response.json();
+      console.log('Password reset data:', data);
 
       if (!response.ok) {
-        throw new Error(data.detail || 'Login failed');
+        throw new Error(data.detail || 'Password reset failed');
       }
 
-      // Store the token
-      localStorage.setItem('token', data.access_token);
+      setSuccess(data.message || 'Password reset successful! Check your email for the new password.');
+      setFormData({ username: '', email: '' });
       
-      // Redirect to home page
-      navigate('/');
-
-      // Force a page reload to update the navigation bar
-      window.location.reload();
     } catch (err) {
+      console.error('Error during password reset:', err);
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -59,8 +65,14 @@ const Login = () => {
       <Row className="justify-content-center">
         <Col xs={12} sm={10} md={8} lg={6} xl={5}>
           <div className="bg-white p-3 p-md-4 rounded shadow-sm">
-            <h2 className="text-center mb-3 mb-md-4">Login</h2>
+            <h2 className="text-center mb-3 mb-md-4">Forgot Password</h2>
+            <p className="text-center text-muted mb-4">
+              Enter your username and email address to reset your password.
+            </p>
+            
             {error && <Alert variant="danger">{error}</Alert>}
+            {success && <Alert variant="success">{success}</Alert>}
+            
             <Form onSubmit={handleSubmit}>
               <Form.Group className="mb-3">
                 <Form.Label>Username</Form.Label>
@@ -71,38 +83,39 @@ const Login = () => {
                   onChange={handleChange}
                   required
                   className="py-2"
+                  disabled={loading}
                 />
               </Form.Group>
 
               <Form.Group className="mb-4">
-                <Form.Label>Password</Form.Label>
+                <Form.Label>Email</Form.Label>
                 <Form.Control
-                  type="password"
-                  name="password"
-                  value={formData.password}
+                  type="email"
+                  name="email"
+                  value={formData.email}
                   onChange={handleChange}
                   required
                   className="py-2"
+                  disabled={loading}
                 />
               </Form.Group>
 
               <div className="d-grid gap-2">
-                <Button variant="primary" type="submit" className="py-2">
-                  Login
+                <Button 
+                  variant="primary" 
+                  type="submit" 
+                  className="py-2"
+                  disabled={loading}
+                >
+                  {loading ? 'Processing...' : 'Reset Password'}
                 </Button>
                 <Button 
                   variant="outline-secondary" 
-                  onClick={() => navigate('/register')}
+                  onClick={() => navigate('/login')}
                   className="py-2 mt-1"
+                  disabled={loading}
                 >
-                  Don't have an account? Register
-                </Button>
-                <Button 
-                  variant="link" 
-                  onClick={() => navigate('/forgot-password')}
-                  className="py-2 mt-1"
-                >
-                  Forgot Password?
+                  Back to Login
                 </Button>
               </div>
             </Form>
@@ -113,4 +126,4 @@ const Login = () => {
   );
 };
 
-export default Login; 
+export default ForgotPassword; 

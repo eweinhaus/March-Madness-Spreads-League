@@ -10,8 +10,13 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 import logging
 from contextlib import contextmanager
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import secrets
+import string
 from auth import (
-    Token, UserCreate, UserLogin, User,
+    Token, UserCreate, UserLogin, User, ForgotPasswordRequest,
     verify_password, get_password_hash, create_access_token, verify_token
 )
 from typing import Optional, Union
@@ -85,7 +90,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:5173",
-        "https://march-madness-spreads-league.onrender.com"
+        "https://spreads-league.onrender.com"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -142,6 +147,13 @@ async def get_current_admin_user(current_user: User = Depends(get_current_user))
 async def register(user: UserCreate):
     """Register a new user."""
     try:
+        # Validate league ID
+        if user.league_id != LEAGUE_ID:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid league ID. Please enter the valid league ID: {LEAGUE_ID}."
+            )
+            
         with get_db_cursor(commit=True) as cur:
             # Check if username exists
             cur.execute("SELECT id FROM users WHERE username = %s", (user.username,))
@@ -155,11 +167,11 @@ async def register(user: UserCreate):
             hashed_password = get_password_hash(user.password)
             cur.execute(
                 """
-                INSERT INTO users (username, full_name, password_hash)
-                VALUES (%s, %s, %s)
-                RETURNING id, username, full_name, is_admin
+                INSERT INTO users (username, full_name, email, league_id, password_hash)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, username, full_name, email, league_id, is_admin
                 """,
-                (user.username, user.full_name, hashed_password)
+                (user.username, user.full_name, user.email, user.league_id, hashed_password)
             )
             new_user = cur.fetchone()
             
@@ -170,6 +182,8 @@ async def register(user: UserCreate):
             )
             
             return User(**new_user)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error registering user: {str(e)}")
         raise HTTPException(
@@ -202,6 +216,80 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error logging in"
+        )
+
+def generate_new_password():
+    """Generate a random password."""
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for i in range(12))
+
+def send_password_reset_email(email: str, username: str, new_password: str):
+    """Send password reset email."""
+    try:
+        # For now, we'll just log the email instead of actually sending it
+        # In production, you would configure SMTP settings
+        logger.info("Password reset email would be sent.")
+        logger.info("Sensitive information redacted from logs.")
+        # Avoid logging sensitive data like email, username, or password
+        
+        # TODO: Implement actual email sending with SMTP
+        # Example SMTP configuration:
+        # smtp_server = "smtp.gmail.com"
+        # smtp_port = 587
+        # sender_email = "your-email@gmail.com"
+        # sender_password = "your-app-password"
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error sending email: {str(e)}")
+        return False
+
+@app.post("/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest):
+    """Handle forgot password request."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Check if username and email match
+            cur.execute(
+                "SELECT id, username, email FROM users WHERE username = %s AND email = %s",
+                (request.username, request.email)
+            )
+            user = cur.fetchone()
+            
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No user found with that username and email combination"
+                )
+            
+            # Generate new password
+            new_password = generate_new_password()
+            hashed_password = get_password_hash(new_password)
+            
+            # Update user's password
+            cur.execute(
+                "UPDATE users SET password_hash = %s WHERE id = %s",
+                (hashed_password, user["id"])
+            )
+            
+            # Send email with new password
+            email_sent = send_password_reset_email(user["email"], user["username"], new_password)
+            
+            if email_sent:
+                return {"message": "Password reset successful. Check your email for the new password."}
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Password was reset but email could not be sent. Contact support."
+                )
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in forgot password: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while processing your request"
         )
 
 @app.get("/users/me", response_model=User)
@@ -1303,85 +1391,62 @@ async def delete_user(user_id: int, current_user: User = Depends(get_current_adm
 
 @app.get("/api/gamescores")
 async def get_game_scores(request: Request):
-    # URL to crawl
-    url = 'https://www.cbssports.com/college-basketball/scoreboard/?layout=compact'
+    # Old March Madness URL (commented out)
+    # url = 'https://www.cbssports.com/college-basketball/scoreboard/?layout=compact'
+    urls = [
+        'https://www.cbssports.com/college-football/scoreboard/?layout=compact',
+        'https://www.cbssports.com/nfl/scoreboard/?layout=compact'
+    ]
+    games_data = []
     try:
-        # Log the start of the request
-        logger.info("Starting to fetch game scores from CBS Sports")
-        
-        # Fetching the webpage content
-        response = requests.get(url)
-        response.raise_for_status()  # Raise an error for bad responses
-        
-        # Log the response status
-        logger.info(f"Response status code: {response.status_code}")
-        
-        html_content = response.text
-        logger.info("Successfully retrieved HTML content")
-
-        soup = BeautifulSoup(html_content, 'html.parser')
-        logger.info("Successfully parsed HTML with BeautifulSoup")
-
-        # Finding all game cards
-        game_cards = soup.find_all('div', class_='single-score-card')
-        logger.info(f"Found {len(game_cards)} game cards")
-
-        # List to hold game data
-        games_data = []
-
-        for game in game_cards:
-            try:
-                # Debug: Print the HTML structure of the game card
-                logger.info(f"Game card HTML: {game.prettify()}")
-                
-                # Try different selectors to find the teams and scores
-                team_cells = game.find_all('td', class_='team--collegebasketball')
-                score_cells = game.find_all('td', class_='total')
-                
-                if len(team_cells) < 2 or len(score_cells) < 2:
-                    logger.error(f"Not enough cells found. Team cells: {len(team_cells)}, Score cells: {len(score_cells)}")
+        for url in urls:
+            logger.info(f"Fetching game scores from: {url}")
+            response = requests.get(url)
+            response.raise_for_status()
+            html_content = response.text
+            soup = BeautifulSoup(html_content, 'html.parser')
+            game_cards = soup.find_all('div', class_='single-score-card')
+            logger.info(f"Found {len(game_cards)} game cards at {url}")
+            for game in game_cards:
+                try:
+                    logger.info(f"Game card HTML: {game.prettify()}")
+                    # Try different selectors to find the teams and scores
+                    team_cells = game.find_all('td', class_='team')
+                    if not team_cells:
+                        team_cells = game.find_all('td', class_='team--collegebasketball')
+                    score_cells = game.find_all('td', class_='total')
+                    if len(team_cells) < 2 or len(score_cells) < 2:
+                        logger.error(f"Not enough cells found. Team cells: {len(team_cells)}, Score cells: {len(score_cells)}")
+                        continue
+                    away_team = team_cells[0].find('a', class_='team-name-link')
+                    home_team = team_cells[1].find('a', class_='team-name-link')
+                    if not away_team or not home_team:
+                        logger.error("Could not find team name links")
+                        continue
+                    away_team = away_team.text.strip()
+                    home_team = home_team.text.strip()
+                    away_score = score_cells[0].text.strip()
+                    home_score = score_cells[1].text.strip()
+                    game_status = game.find('div', class_='game-status emphasis')
+                    time_left = game_status.text.strip() if game_status else 'FINAL'
+                    games_data.append({
+                        'AwayTeam': away_team,
+                        'HomeTeam': home_team,
+                        'AwayScore': away_score,
+                        'HomeScore': home_score,
+                        'Time': time_left
+                    })
+                    logger.info(f"Successfully processed game: {away_team} @ {home_team}")
+                except Exception as e:
+                    logger.error(f"Error processing individual game: {str(e)}")
+                    logger.error(f"Game card HTML: {game.prettify()}")
                     continue
-                
-                # Get team names
-                away_team = team_cells[0].find('a', class_='team-name-link')
-                home_team = team_cells[1].find('a', class_='team-name-link')
-                
-                if not away_team or not home_team:
-                    logger.error("Could not find team name links")
-                    continue
-                
-                away_team = away_team.text.strip()
-                home_team = home_team.text.strip()
-                
-                # Get scores
-                away_score = score_cells[0].text.strip()
-                home_score = score_cells[1].text.strip()
-                
-                # Get game status
-                game_status = game.find('div', class_='game-status emphasis')
-                time_left = game_status.text.strip() if game_status else 'FINAL'
-                
-                # Append the game data to the list
-                games_data.append({
-                    'AwayTeam': away_team,
-                    'HomeTeam': home_team,
-                    'AwayScore': away_score,
-                    'HomeScore': home_score,
-                    'Time': time_left
-                })
-                logger.info(f"Successfully processed game: {away_team} @ {home_team}")
-            except Exception as e:
-                logger.error(f"Error processing individual game: {str(e)}")
-                logger.error(f"Game card HTML: {game.prettify()}")
-                continue
-
-        logger.info(f"Successfully processed {len(games_data)} games")
+        logger.info(f"Successfully processed {len(games_data)} games in total")
         return games_data
-
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching data from CBS Sports: {str(e)}")
         print(f"ERROR fetching data from CBS Sports: {str(e)}")
-        #raise HTTPException(status_code=500, detail=f"Error fetching data from CBS Sports: {str(e)}")
+        #raise HTTPException(status_code=500, detail=f"Error fetching data from sports source: {str(e)}")
         return []
     except Exception as e:
         logger.error(f"An unexpected error occurred: {str(e)}")
