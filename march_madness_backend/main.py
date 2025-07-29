@@ -228,9 +228,9 @@ def send_password_reset_email(email: str, username: str, new_password: str):
     try:
         # For now, we'll just log the email instead of actually sending it
         # In production, you would configure SMTP settings
-        logger.info(f"Password reset email would be sent to {email}")
-        logger.info(f"Username: {username}")
-        logger.info(f"New password: {new_password}")
+        logger.info("Password reset email would be sent.")
+        logger.info("Sensitive information redacted from logs.")
+        # Avoid logging sensitive data like email, username, or password
         
         # TODO: Implement actual email sending with SMTP
         # Example SMTP configuration:
