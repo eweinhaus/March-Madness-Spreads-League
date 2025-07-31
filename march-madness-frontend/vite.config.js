@@ -16,6 +16,6 @@ export default defineConfig({
     }
   },
   preview: {
-    allowedHosts: ['spreads-league.onrender.com', 'march-madness-spreads-league.onrender.com']
+    allowedHosts: ['spreads-league.onrender.com', 'march-madness-spreads-league.onrender.com', 'www.spreadpools.com']
   }
 })
