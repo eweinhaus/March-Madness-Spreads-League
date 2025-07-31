@@ -60,6 +60,7 @@ def create_tables(conn):
                     game_id INT REFERENCES games(id) ON DELETE CASCADE,
                     picked_team VARCHAR(50) NOT NULL,
                     points_awarded INT DEFAULT 0,
+                    lock BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, game_id)
                 );

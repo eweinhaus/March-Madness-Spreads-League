@@ -84,6 +84,10 @@ def get_db_cursor(commit=False):
 
 app = FastAPI()
 
+@app.get("/debug-token")
+def debug_token(token: str = Depends(oauth2_scheme)):
+    return {"token": token}
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -119,7 +123,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
         with get_db_cursor() as cur:
             logger.info(f"Looking up user in database: {username}")
             cur.execute(
-                "SELECT id, username, full_name, is_admin FROM users WHERE username = %s",
+                "SELECT id, username, full_name, email, league_id, is_admin FROM users WHERE username = %s",
                 (username,)
             )
             user = cur.fetchone()
@@ -301,6 +305,7 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
 class PickSubmission(BaseModel):
     game_id: int
     picked_team: str
+    lock: bool = False
 
 class GameResult(BaseModel):
     game_id: int
@@ -376,11 +381,11 @@ async def submit_pick(
                 cur.execute(
                     """
                     UPDATE picks 
-                    SET picked_team = %s 
+                    SET picked_team = %s, lock = %s
                     WHERE user_id = %s AND game_id = %s
                     RETURNING *
                     """,
-                    (pick.picked_team, current_user.id, pick.game_id)
+                    (pick.picked_team, pick.lock, current_user.id, pick.game_id)
                 )
                 updated_pick = cur.fetchone()
                 return {"message": "Pick updated successfully", "pick": updated_pick}
@@ -388,10 +393,10 @@ async def submit_pick(
                 # Insert new pick
                 cur.execute(
                     """
-                    INSERT INTO picks (user_id, game_id, picked_team)
-                    VALUES (%s, %s, %s) RETURNING *
+                    INSERT INTO picks (user_id, game_id, picked_team, lock)
+                    VALUES (%s, %s, %s, %s) RETURNING *
                     """,
-                    (current_user.id, pick.game_id, pick.picked_team),
+                    (current_user.id, pick.game_id, pick.picked_team, pick.lock),
                 )
                 new_pick = cur.fetchone()
                 return {"message": "Pick submitted successfully", "pick": new_pick}

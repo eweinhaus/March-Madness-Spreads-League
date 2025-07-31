@@ -3,11 +3,14 @@ import axios from "axios";
 import { Container, Row, Col, Card, Button, Alert, Form } from "react-bootstrap";
 import { API_URL } from "../config";
 import { useNavigate } from "react-router-dom";
+import { FaLock, FaUnlock } from "react-icons/fa";
 
 export default function Picks() {
   const [games, setGames] = useState([]);
   const [picks, setPicks] = useState({});
   const [existingPicks, setExistingPicks] = useState({});
+  const [locks, setLocks] = useState({});
+  const [existingLocks, setExistingLocks] = useState({});
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [tiebreakers, setTiebreakers] = useState([]);
@@ -97,12 +100,17 @@ export default function Picks() {
         
         // Convert picks array to object for easier lookup
         const picksObj = {};
+        const locksObj = {};
         picksRes.data.forEach(pick => {
           if (pick.picked_team) {
             picksObj[pick.game_id] = pick.picked_team;
           }
+          if (pick.lock) {
+            locksObj[pick.game_id] = pick.lock;
+          }
         });
         setExistingPicks(picksObj);
+        setExistingLocks(locksObj);
 
         // Set tiebreakers and convert tiebreaker picks to object for easier lookup
         setTiebreakers(tiebreakersRes.data);
@@ -141,6 +149,30 @@ export default function Picks() {
     });
   };
 
+  const handleLockToggle = (gameId) => {
+    // Ensure gameId is stored as a string for consistency
+    const gameIdStr = String(gameId);
+    const currentLock = locks[gameIdStr] || existingLocks[gameIdStr];
+    
+    if (currentLock) {
+      // If this pick is currently locked, unlock it
+      setLocks(prevLocks => ({
+        ...prevLocks,
+        [gameIdStr]: false
+      }));
+    } else {
+      // If this pick is not locked, lock it and unlock all others
+      const newLocks = {};
+      // Unlock all picks
+      Object.keys(locks).forEach(id => {
+        newLocks[id] = false;
+      });
+      // Lock only this pick
+      newLocks[gameIdStr] = true;
+      setLocks(newLocks);
+    }
+  };
+
   const submitPicks = async () => {
     const token = localStorage.getItem('token');
     
@@ -167,10 +199,14 @@ export default function Picks() {
             throw new Error(`Invalid game ID: ${gameId}`);
           }
           
+          // Check if this pick is locked (include both current locks and existing locks)
+          const isLocked = locks[gameId] !== undefined ? locks[gameId] : (existingLocks[gameId] || false);
+          
           return axios.post(`${API_URL}/submit_pick`, 
             {
               game_id: game_id,
-              picked_team: pickedTeam
+              picked_team: pickedTeam,
+              lock: isLocked
             },
             {
               headers: {
@@ -218,9 +254,12 @@ export default function Picks() {
       // Update existing picks with new picks
       setExistingPicks({ ...existingPicks, ...picks });
       setExistingTiebreakerPicks({ ...existingTiebreakerPicks, ...tiebreakerPicks });
-      // Clear picks after successful submission
+      // Update existing locks with new locks
+      setExistingLocks({ ...existingLocks, ...locks });
+      // Clear picks and locks after successful submission
       setPicks({});
       setTiebreakerPicks({});
+      setLocks({});
     } catch (err) {
       console.error(err);
       // Try to handle auth error first
@@ -303,15 +342,29 @@ export default function Picks() {
                   const existingPick = existingPicks[game.id];
                   const currentPick = picks[game.id];
                   const selectedTeam = currentPick || existingPick;
+                  const existingLock = existingLocks[game.id];
+                  const currentLock = locks[game.id];
+                  const isLocked = currentLock !== undefined ? currentLock : (existingLock || false);
 
                   return (
                     <Col key={`game-${game.id}`}>
-                      <Card className="h-100 shadow-sm">
+                      <Card className={`h-100 shadow-sm ${isLocked ? 'border-warning border-3' : 'border-3'}`} style={isLocked ? {} : {borderColor: 'transparent'}}>
                         <Card.Body className="d-flex flex-column">
                           <Card.Title className="d-flex justify-content-between align-items-center mb-3">
-                            <span className="text-truncate me-1">{game.away_team}</span>
-                            <small className="text-muted mx-1">@</small>
-                            <span className="text-truncate ms-1">{game.home_team}</span>
+                            <div className="d-flex align-items-center">
+                              <span className="text-truncate me-1">{game.away_team}</span>
+                              <small className="text-muted mx-1">@</small>
+                              <span className="text-truncate ms-1">{game.home_team}</span>
+                            </div>
+                            <Button
+                              variant="outline-secondary"
+                              size="sm"
+                              onClick={() => handleLockToggle(game.id)}
+                              className="p-2"
+                              title={isLocked ? "Unlock pick" : "Lock pick"}
+                            >
+                              {isLocked ? <FaLock className="text-warning" size={16} /> : <FaUnlock className="text-muted" size={16} />}
+                            </Button>
                           </Card.Title>
                           <Card.Text className="mb-3">
                             <div className="mb-1"><strong>Spread:</strong> {game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} +${-game.spread}`}</div>
@@ -319,6 +372,7 @@ export default function Picks() {
                             {existingPick && (
                               <div className="mt-2 text-success">
                                 <strong>Your pick: {existingPick}</strong>
+                                {isLocked && <span className="ms-2 text-warning"><FaLock /> Lock of the week</span>}
                               </div>
                             )}
                           </Card.Text>
@@ -411,7 +465,7 @@ export default function Picks() {
             </>
           )}
 
-          {(Object.keys(picks).length > 0 || Object.keys(tiebreakerPicks).length > 0) && (
+          {(Object.keys(picks).length > 0 || Object.keys(tiebreakerPicks).length > 0 || Object.keys(locks).length > 0) && (
             <Row className="mt-4">
               <Col className="d-flex justify-content-center">
                 <Button variant="success" size="lg" onClick={submitPicks} className="px-4 py-2">
