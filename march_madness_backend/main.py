@@ -398,7 +398,7 @@ async def submit_pick(
             )
             existing_pick = cur.fetchone()
 
-            current_time = datetime.now() - timedelta(hours=4)
+            current_time = datetime.now(ZoneInfo("America/New_York"))
             game_has_started = current_time >= game["game_date"]
 
             # Only prevent changes to started games
