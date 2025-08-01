@@ -124,7 +124,8 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:5173",
         os.getenv("DEV_IP_ADDRESS", ""),
-        "https://spreads-league.onrender.com"
+        "https://spreads-league.onrender.com",
+        "https://march-madness-spreads-league.onrender.com"
     ],
     allow_credentials=True,
     allow_methods=["*"],
