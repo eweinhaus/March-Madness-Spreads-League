@@ -108,6 +108,24 @@ def get_db_cursor(commit=False):
 
 app = FastAPI()
 
+# Add CORS middleware - must be added before routes
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        os.getenv("DEV_IP_ADDRESS", ""),
+        "https://spreads-league.onrender.com",
+        "https://march-madness-spreads-league.onrender.com",
+        "https://march-madness-spreads-league.onrender.com/",
+        "https://spreads-backend-qyw5.onrender.com",
+        "https://spreads-backend-qyw5.onrender.com/"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.get("/debug-token")
 def debug_token(token: str = Depends(oauth2_scheme)):
     if not os.getenv("DEBUG_MODE", "false").lower() in ["true", "1"]:
@@ -117,20 +135,10 @@ def debug_token(token: str = Depends(oauth2_scheme)):
         )
     return {"token": token}
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        os.getenv("DEV_IP_ADDRESS", ""),
-        "https://spreads-league.onrender.com",
-        "https://march-madness-spreads-league.onrender.com"
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@app.get("/test-cors")
+def test_cors():
+    """Test endpoint to verify CORS is working."""
+    return {"message": "CORS is working!", "timestamp": datetime.now().isoformat()}
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     """Get the current user from the token."""
