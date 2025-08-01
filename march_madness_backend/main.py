@@ -77,11 +77,17 @@ if database_url:
     database_url = database_url.replace(f":{parsed.port}", f":{port}")
 
 # Create connection pool
-pool = SimpleConnectionPool(
-    minconn=1,
-    maxconn=10,
-    dsn=database_url
-)
+try:
+    pool = SimpleConnectionPool(
+        minconn=1,
+        maxconn=10,
+        dsn=database_url
+    )
+    logger.info("Database connection pool created successfully")
+except Exception as e:
+    logger.error(f"Failed to create database connection pool: {str(e)}")
+    # Create a dummy pool for testing
+    pool = None
 
 # OAuth2 scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token", auto_error=False)
@@ -112,6 +118,12 @@ def get_db_cursor(commit=False):
 
 app = FastAPI()
 
+@app.on_event("startup")
+async def startup_event():
+    logger.info("FastAPI application starting up...")
+    logger.info(f"Database URL configured: {'Yes' if database_url else 'No'}")
+    logger.info(f"Pool created: {'Yes' if pool else 'No'}")
+
 # Add request logging middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -133,6 +145,8 @@ app.add_middleware(
         "https://march-madness-spreads-league.onrender.com/",
         "https://spreads-backend-qyw5.onrender.com",
         "https://spreads-backend-qyw5.onrender.com/",
+        "https://www.spreadpools.com",
+        "https://spreadpools.com",
         "https://*.onrender.com"  # Allow all onrender.com subdomains
     ],
     allow_credentials=True,
@@ -1549,4 +1563,5 @@ async def get_game_scores(request: Request):
 # Run the server
 if __name__ == "__main__":
     import uvicorn
+    logger.info("Starting FastAPI server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
