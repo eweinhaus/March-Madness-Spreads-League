@@ -64,20 +64,15 @@ export default function Leaderboard() {
   }, [filter]);
 
   const fetchLeaderboard = () => {
-    const token = localStorage.getItem('token');
-    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-    
-    axios.get(`${API_URL}/leaderboard?filter=${filter}`, { headers })
+    // Leaderboard endpoint doesn't require authentication
+    axios.get(`${API_URL}/leaderboard?filter=${filter}`)
       .then(res => {
         setLeaderboard(res.data);
         setError(null);
       })
       .catch(err => {
-        // Try to handle as auth error first
-        if (!handleAuthError(err)) {
-          console.error(err);
-          setError('Failed to load leaderboard. Please try again.');
-        }
+        console.error(err);
+        setError('Failed to load leaderboard. Please try again.');
       });
   };
 

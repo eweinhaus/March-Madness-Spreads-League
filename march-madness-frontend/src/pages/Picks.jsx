@@ -3,11 +3,14 @@ import axios from "axios";
 import { Container, Row, Col, Card, Button, Alert, Form } from "react-bootstrap";
 import { API_URL } from "../config";
 import { useNavigate } from "react-router-dom";
+import { FaLock, FaUnlock } from "react-icons/fa";
 
 export default function Picks() {
   const [games, setGames] = useState([]);
   const [picks, setPicks] = useState({});
   const [existingPicks, setExistingPicks] = useState({});
+  const [locks, setLocks] = useState({});
+  const [existingLocks, setExistingLocks] = useState({});
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [tiebreakers, setTiebreakers] = useState([]);
@@ -26,6 +29,32 @@ export default function Picks() {
       minute: '2-digit',
       hour12: true
     });
+  };
+
+  // Helper function to get game week bounds (Wednesday 12:00 AM to Tuesday 11:59 PM EST)
+  const getGameWeekBounds = (gameDate) => {
+    const gameDateObj = new Date(gameDate);
+    
+    // Work directly with the date as provided (assuming it's already in the correct timezone)
+    // If the game date is "2025-08-06T00:36:00", treat it as August 6th at 12:36 AM
+    
+    // Find the Wednesday that starts the week containing this game
+    // Wednesday is 2 (backend convention), so we calculate days since Wednesday
+    let daysSinceWednesday = (gameDateObj.getDay() - 2 + 7) % 7;
+    
+    // If it's Wednesday at exactly midnight (12:00 AM), it's the start of the new week
+    // No adjustment needed - Wednesday 12:00 AM starts the week
+    
+    const weekStart = new Date(gameDateObj);
+    weekStart.setDate(gameDateObj.getDate() - daysSinceWednesday);
+    weekStart.setHours(0, 0, 0, 0);
+    
+    // Week ends Tuesday 11:59 PM (6 days later, not 7)
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 7);
+    weekEnd.setMinutes(weekEnd.getMinutes() - 1);
+    
+    return { weekStart, weekEnd };
   };
 
   // Function to handle authentication errors
@@ -95,14 +124,22 @@ export default function Picks() {
         
         setGames(games);
         
+        // Handle the picks response (back to simple format)
+        const picks = picksRes.data;
+        
         // Convert picks array to object for easier lookup
         const picksObj = {};
-        picksRes.data.forEach(pick => {
+        const locksObj = {};
+        picks.forEach(pick => {
           if (pick.picked_team) {
             picksObj[pick.game_id] = pick.picked_team;
           }
+          if (pick.lock) {
+            locksObj[pick.game_id] = pick.lock;
+          }
         });
         setExistingPicks(picksObj);
+        setExistingLocks(locksObj);
 
         // Set tiebreakers and convert tiebreaker picks to object for easier lookup
         setTiebreakers(tiebreakersRes.data);
@@ -141,6 +178,120 @@ export default function Picks() {
     });
   };
 
+  const handleLockToggle = (gameId) => {
+    // Ensure gameId is stored as a string for consistency
+    const gameIdStr = String(gameId);
+    
+    // Check if this game is currently locked (either in current locks or existing locks)
+    const isCurrentlyLocked = locks[gameIdStr] !== undefined ? locks[gameIdStr] : (existingLocks[gameIdStr] || false);
+    
+    console.log('Lock toggle for game', gameIdStr, {
+      currentLocks: locks,
+      existingLocks: existingLocks,
+      isCurrentlyLocked
+    });
+    
+    if (isCurrentlyLocked) {
+      // If this pick is currently locked, unlock it
+      console.log('Unlocking game', gameIdStr);
+      setLocks(prevLocks => ({
+        ...prevLocks,
+        [gameIdStr]: false
+      }));
+    } else {
+      // Check if user already has a started locked game in the SAME WEEK as this game
+      const targetGame = games.find(g => g.id === Number(gameIdStr));
+      if (targetGame) {
+        const { weekStart, weekEnd } = getGameWeekBounds(targetGame.game_date);
+        const currentTime = new Date();
+        
+        // Find any existing locked games in the same week that have started
+        const allLocks = { ...existingLocks, ...locks };
+        let startedLockedGameInSameWeek = null;
+        
+        console.log('Week calculation for target game:', {
+          targetGameId: gameIdStr,
+          targetGameDate: targetGame.game_date,
+          weekStart: weekStart.toISOString(),
+          weekEnd: weekEnd.toISOString(),
+          dayOfWeek: new Date(targetGame.game_date).getDay(), // 0=Sunday, 3=Wednesday
+          dayName: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date(targetGame.game_date).getDay()]
+        });
+        
+        for (const [lockGameIdStr, isLocked] of Object.entries(allLocks)) {
+          if (isLocked) {
+            const lockGame = games.find(g => g.id === Number(lockGameIdStr));
+            if (lockGame) {
+              const lockGameDate = new Date(lockGame.game_date);
+              const isInSameWeek = lockGameDate >= weekStart && lockGameDate <= weekEnd;
+              const hasStarted = currentTime >= lockGameDate;
+              
+              console.log(`Checking locked game ${lockGameIdStr}:`, {
+                gameDate: lockGame.game_date,
+                dayOfWeek: lockGameDate.getDay(),
+                dayName: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][lockGameDate.getDay()],
+                isInSameWeek,
+                hasStarted
+              });
+              
+              // Check if this locked game is in the same week and has started
+              if (isInSameWeek && hasStarted) {
+                startedLockedGameInSameWeek = lockGame;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (startedLockedGameInSameWeek) {
+          const gameInfo = `${startedLockedGameInSameWeek.away_team} @ ${startedLockedGameInSameWeek.home_team}`;
+          alert(`Your locked game (${gameInfo}) has already started and cannot be changed.`);
+          return; // Don't allow the lock
+        }
+      }
+      
+      // If this pick is not locked, lock it and unlock all others IN THE SAME WEEK
+      console.log('Locking game', gameIdStr, 'and unlocking others in same week');
+      const newLocks = {};
+      
+      // Find the target game's week bounds
+      const targetGameForWeek = games.find(g => g.id === Number(gameIdStr));
+      if (targetGameForWeek) {
+        const { weekStart, weekEnd } = getGameWeekBounds(targetGameForWeek.game_date);
+        
+        // Only unlock locks that are in the same week as the target game
+        Object.keys(locks).forEach(id => {
+          const game = games.find(g => g.id === Number(id));
+          if (game) {
+            const gameDate = new Date(game.game_date);
+            if (gameDate >= weekStart && gameDate <= weekEnd) {
+              // This game is in the same week, so unlock it
+              newLocks[id] = false;
+            }
+            // If game is in a different week, don't touch it (don't add to newLocks)
+          }
+        });
+        
+        // Only unlock existing locks from database that are in the same week
+        Object.keys(existingLocks).forEach(id => {
+          const game = games.find(g => g.id === Number(id));
+          if (game) {
+            const gameDate = new Date(game.game_date);
+            if (gameDate >= weekStart && gameDate <= weekEnd) {
+              // This game is in the same week, so unlock it
+              newLocks[id] = false;
+            }
+            // If game is in a different week, don't touch it (don't add to newLocks)
+          }
+        });
+      }
+      
+      // Lock only this pick
+      newLocks[gameIdStr] = true;
+      setLocks(newLocks);
+    }
+  };
+
   const submitPicks = async () => {
     const token = localStorage.getItem('token');
     
@@ -158,8 +309,19 @@ export default function Picks() {
       }
       
       // Submit game picks
+      const gamesToSubmit = new Set([
+        ...Object.keys(picks),
+        ...Object.keys(locks)
+      ]);
+      
+      console.log('Submitting games:', {
+        picks: Object.keys(picks),
+        locks: Object.keys(locks),
+        gamesToSubmit: Array.from(gamesToSubmit)
+      });
+      
       const gamePickResponses = await Promise.all(
-        Object.entries(picks).map(([gameId, pickedTeam]) => {
+        Array.from(gamesToSubmit).map(gameId => {
           // Ensure game_id is a valid integer
           const game_id = Number(gameId);
           
@@ -167,11 +329,40 @@ export default function Picks() {
             throw new Error(`Invalid game ID: ${gameId}`);
           }
           
+          // Get the picked team (either new pick or existing pick)
+          const pickedTeam = picks[gameId] || existingPicks[gameId];
+          
+          if (!pickedTeam) {
+            throw new Error(`No pick found for game ${gameId}`);
+          }
+          
+          // Check if this pick is locked (only send lock changes, not current status)
+          const gameIdStr = String(gameId);
+          const hasLockChange = locks[gameIdStr] !== undefined;
+          const isLocked = hasLockChange ? locks[gameIdStr] : (existingLocks[gameIdStr] || false);
+          
+          console.log(`Submitting pick for game ${gameId}:`, {
+            game_id,
+            picked_team: pickedTeam,
+            lock: isLocked,
+            isNewPick: !!picks[gameId],
+            isLockChange: hasLockChange,
+            existingLock: existingLocks[gameIdStr]
+          });
+          
+          // Only send lock information if there's a lock change
+          const requestData = {
+            game_id: game_id,
+            picked_team: pickedTeam
+          };
+          
+          // Only include lock field if there's a lock change
+          if (hasLockChange) {
+            requestData.lock = isLocked;
+          }
+          
           return axios.post(`${API_URL}/submit_pick`, 
-            {
-              game_id: game_id,
-              picked_team: pickedTeam
-            },
+            requestData,
             {
               headers: {
                 'Authorization': `Bearer ${token}`
@@ -206,28 +397,73 @@ export default function Picks() {
       );
       
       // Get all success messages
-      const messages = [
-        ...gamePickResponses.map(res => res.data.message),
-        ...tiebreakerPickResponses.map(res => res.data.message)
-      ].filter(Boolean).join('\n');
+      const gameMessages = gamePickResponses.map(res => res.data.message).filter(Boolean);
+      const tiebreakerMessages = tiebreakerPickResponses.map(res => res.data.message).filter(Boolean);
       
-      if (messages) {
-        alert(messages);
+      console.log('Success messages:', { gameMessages, tiebreakerMessages });
+      
+      // Create a single consolidated message
+      let consolidatedMessage = '';
+      
+      if (gameMessages.length > 0) {
+        // If all game messages are the same, just show one
+        const uniqueGameMessages = [...new Set(gameMessages)];
+        if (uniqueGameMessages.length === 1) {
+          consolidatedMessage = uniqueGameMessages[0];
+        } else {
+          consolidatedMessage = `Updated ${gameMessages.length} picks successfully`;
+        }
       }
+      
+      if (tiebreakerMessages.length > 0) {
+        if (consolidatedMessage) {
+          consolidatedMessage += '\n';
+        }
+        // If all tiebreaker messages are the same, just show one
+        const uniqueTiebreakerMessages = [...new Set(tiebreakerMessages)];
+        if (uniqueTiebreakerMessages.length === 1) {
+          consolidatedMessage += uniqueTiebreakerMessages[0];
+        } else {
+          consolidatedMessage += `Updated ${tiebreakerMessages.length} tiebreakers successfully`;
+        }
+      }
+      
+      if (consolidatedMessage) {
+        alert(consolidatedMessage);
+      }
+      
+      // Clear error message on successful submission
+      setError(null);
       
       // Update existing picks with new picks
       setExistingPicks({ ...existingPicks, ...picks });
       setExistingTiebreakerPicks({ ...existingTiebreakerPicks, ...tiebreakerPicks });
-      // Clear picks after successful submission
+      // Update existing locks with new locks
+      setExistingLocks({ ...existingLocks, ...locks });
+      // Clear picks and locks after successful submission
       setPicks({});
       setTiebreakerPicks({});
+      setLocks({});
     } catch (err) {
       console.error(err);
       // Try to handle auth error first
       if (!handleAuthError(err)) {
         // If not an auth error, display more detailed error message if available
         if (err.response && err.response.data && err.response.data.detail) {
-          setError(`Error: ${err.response.data.detail}`);
+          const errorMessage = err.response.data.detail;
+          
+          // Check if it's a lock-specific error
+          if (errorMessage.includes("Cannot change lock") || errorMessage.includes("Your Locked game")) {
+            setError(errorMessage); // Show the full lock error message without "Error:" prefix
+            setLocks({}); // Clear lock state
+            console.log('Lock error detected, cleared lock state. Current state:', {
+              picks: Object.keys(picks),
+              locks: {},
+              tiebreakerPicks: Object.keys(tiebreakerPicks)
+            });
+          } else {
+            setError(`Error: ${errorMessage}`);
+          }
         } else if (err.message) {
           setError(`Error: ${err.message}`);
         } else {
@@ -303,15 +539,29 @@ export default function Picks() {
                   const existingPick = existingPicks[game.id];
                   const currentPick = picks[game.id];
                   const selectedTeam = currentPick || existingPick;
+                  const existingLock = existingLocks[game.id];
+                  const currentLock = locks[game.id];
+                  const isLocked = currentLock !== undefined ? currentLock : (existingLock || false);
 
                   return (
                     <Col key={`game-${game.id}`}>
-                      <Card className="h-100 shadow-sm">
+                      <Card className={`h-100 shadow-sm ${isLocked ? 'border-warning border-3' : 'border-3'}`} style={isLocked ? {} : {borderColor: 'transparent'}}>
                         <Card.Body className="d-flex flex-column">
                           <Card.Title className="d-flex justify-content-between align-items-center mb-3">
-                            <span className="text-truncate me-1">{game.away_team}</span>
-                            <small className="text-muted mx-1">@</small>
-                            <span className="text-truncate ms-1">{game.home_team}</span>
+                            <div className="d-flex align-items-center">
+                              <span className="text-truncate me-1">{game.away_team}</span>
+                              <small className="text-muted mx-1">@</small>
+                              <span className="text-truncate ms-1">{game.home_team}</span>
+                            </div>
+                            <Button
+                              variant="outline-secondary"
+                              size="sm"
+                              onClick={() => handleLockToggle(game.id)}
+                              className="p-2"
+                              title={isLocked ? "Unlock pick" : "Lock pick"}
+                            >
+                              {isLocked ? <FaLock className="text-warning" size={16} /> : <FaUnlock className="text-muted" size={16} />}
+                            </Button>
                           </Card.Title>
                           <Card.Text className="mb-3">
                             <div className="mb-1"><strong>Spread:</strong> {game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} -${Math.abs(game.spread)}`}</div>
@@ -319,6 +569,7 @@ export default function Picks() {
                             {existingPick && (
                               <div className="mt-2 text-success">
                                 <strong>Your pick: {existingPick}</strong>
+                                {isLocked && <span className="ms-2 text-warning"><FaLock /> Lock of the week</span>}
                               </div>
                             )}
                           </Card.Text>
@@ -411,7 +662,7 @@ export default function Picks() {
             </>
           )}
 
-          {(Object.keys(picks).length > 0 || Object.keys(tiebreakerPicks).length > 0) && (
+          {(Object.keys(picks).length > 0 || Object.keys(tiebreakerPicks).length > 0 || Object.keys(locks).length > 0) && (
             <Row className="mt-4">
               <Col className="d-flex justify-content-center">
                 <Button variant="success" size="lg" onClick={submitPicks} className="px-4 py-2">

@@ -38,6 +38,30 @@ def get_current_utc_time():
     """Get current time in UTC."""
     return datetime.now(timezone.utc)
 
+def get_game_week_bounds(game_date):
+    """Get the start and end of the week for a given game date (Wednesday 12:00 AM to Tuesday 11:59 PM EST)."""
+    # Convert game_date to EST if it's not already
+    if game_date.tzinfo is None:
+        game_date = game_date.replace(tzinfo=timezone.utc)
+    
+    # Convert to EST
+    est = timezone(timedelta(hours=-5))
+    game_date_est = game_date.astimezone(est)
+    
+    # Find the Wednesday that starts the week containing this game
+    days_since_wednesday = (game_date_est.weekday() - 2) % 7  # Wednesday is 2 (0-indexed)
+    if days_since_wednesday == 0 and game_date_est.hour == 0:
+        # If it's Wednesday but exactly at 12 AM, go back to the previous Wednesday
+        days_since_wednesday = 7
+    
+    week_start = game_date_est - timedelta(days=days_since_wednesday)
+    week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Week ends Tuesday 11:59 PM (7 days later, minus 1 minute)
+    week_end = week_start + timedelta(days=7) - timedelta(minutes=1)
+    
+    return week_start, week_end
+
 # Parse database URL and handle port
 database_url = os.getenv("DATABASE_URL")
 if database_url:
@@ -84,12 +108,22 @@ def get_db_cursor(commit=False):
 
 app = FastAPI()
 
+@app.get("/debug-token")
+def debug_token(token: str = Depends(oauth2_scheme)):
+    if not os.getenv("DEBUG_MODE", "false").lower() in ["true", "1"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Debug mode is not enabled"
+        )
+    return {"token": token}
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:5173",
+        os.getenv("DEV_IP_ADDRESS", ""),
         "https://spreads-league.onrender.com"
     ],
     allow_credentials=True,
@@ -119,7 +153,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
         with get_db_cursor() as cur:
             logger.info(f"Looking up user in database: {username}")
             cur.execute(
-                "SELECT id, username, full_name, is_admin FROM users WHERE username = %s",
+                "SELECT id, username, full_name, email, league_id, is_admin FROM users WHERE username = %s",
                 (username,)
             )
             user = cur.fetchone()
@@ -301,6 +335,7 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
 class PickSubmission(BaseModel):
     game_id: int
     picked_team: str
+    lock: Optional[bool] = None
 
 class GameResult(BaseModel):
     game_id: int
@@ -350,58 +385,72 @@ async def submit_pick(
     """Submit a pick for a game."""
     try:
         with get_db_cursor(commit=True) as cur:
-            # Check if game exists
+            # Get game details
             cur.execute("SELECT * FROM games WHERE id = %s", (pick.game_id,))
             game = cur.fetchone()
             if not game:
                 raise HTTPException(status_code=404, detail="Game not found")
-            
-            # Check if game has already started
-            current_time = datetime.now() - timedelta(hours=4)
-            if current_time >= game["game_date"]:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot submit pick: game has already started"
-                )
 
-            # Check if user has already submitted a pick for this game
+            # Get existing pick, if any
             cur.execute(
                 "SELECT * FROM picks WHERE user_id = %s AND game_id = %s",
-                (current_user.id, pick.game_id)
+                (current_user.id, pick.game_id),
             )
             existing_pick = cur.fetchone()
-            
+
+            current_time = datetime.now(ZoneInfo("America/New_York"))
+            game_has_started = current_time >= game["game_date"]
+
+            # Only prevent changes to started games
+            if game_has_started:
+                is_new_pick = existing_pick is None
+                if is_new_pick:
+                    raise HTTPException(status_code=400, detail="Cannot submit a new pick for a game that has already started.")
+
+                # Check for attempted changes
+                team_changed = pick.picked_team != existing_pick["picked_team"]
+                lock_status_changed = pick.lock is not None and pick.lock != existing_pick["lock"]
+
+                if lock_status_changed:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Your locked game has already started and cannot be changed."
+                    )
+                
+                if team_changed:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Your pick for this game cannot be changed because the game has already started."
+                    )
+
+                # If no changes, just return.
+                return {"message": "No changes made for a started game.", "pick": existing_pick}
+
+            # Perform the database update/insert
             if existing_pick:
-                # Update existing pick
+                lock_value = pick.lock if pick.lock is not None else existing_pick["lock"]
                 cur.execute(
-                    """
-                    UPDATE picks 
-                    SET picked_team = %s 
-                    WHERE user_id = %s AND game_id = %s
-                    RETURNING *
-                    """,
-                    (pick.picked_team, current_user.id, pick.game_id)
+                    "UPDATE picks SET picked_team = %s, lock = %s WHERE user_id = %s AND game_id = %s RETURNING *",
+                    (pick.picked_team, lock_value, current_user.id, pick.game_id),
                 )
                 updated_pick = cur.fetchone()
                 return {"message": "Pick updated successfully", "pick": updated_pick}
             else:
-                # Insert new pick
+                # New pick
+                lock_value = pick.lock if pick.lock is not None else False
                 cur.execute(
-                    """
-                    INSERT INTO picks (user_id, game_id, picked_team)
-                    VALUES (%s, %s, %s) RETURNING *
-                    """,
-                    (current_user.id, pick.game_id, pick.picked_team),
+                    "INSERT INTO picks (user_id, game_id, picked_team, lock) VALUES (%s, %s, %s, %s) RETURNING *",
+                    (current_user.id, pick.game_id, pick.picked_team, lock_value),
                 )
                 new_pick = cur.fetchone()
                 return {"message": "Pick submitted successfully", "pick": new_pick}
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error submitting pick: {str(e)}")
         raise HTTPException(
-            status_code=500,
-            detail="An error occurred while submitting your pick"
+            status_code=500, detail="An error occurred while submitting your pick"
         )
 
 @app.post("/update_score")
@@ -425,13 +474,16 @@ def update_score(result: GameResult):
             if result.winning_team == "PUSH":
                 return {"message": "Game marked as a push", "winning_team": "PUSH"}
 
-            # Update points for correct picks
+            # Update points for correct picks (2 points for locked picks, 1 point for regular picks)
             cur.execute(
                 """
                 UPDATE picks 
-                SET points_awarded = 1
+                SET points_awarded = CASE 
+                    WHEN lock = TRUE THEN 2 
+                    ELSE 1 
+                END
                 WHERE game_id = %s AND picked_team = %s
-                RETURNING user_id;
+                RETURNING user_id, points_awarded;
                 """,
                 (result.game_id, result.winning_team),
             )
@@ -442,10 +494,10 @@ def update_score(result: GameResult):
                 cur.execute(
                     """
                     UPDATE leaderboard 
-                    SET total_points = total_points + 1 
+                    SET total_points = total_points + %s 
                     WHERE user_id = %s
                     """,
-                    (pick["user_id"],),
+                    (pick["points_awarded"], pick["user_id"]),
                 )
 
             return {"message": "Scores updated successfully", "winning_team": result.winning_team}
@@ -721,18 +773,19 @@ async def update_game(
                         (game_id,)
                     )
                 else:
-                    # Update points for correct picks
+                    # Update points for correct picks (2 points for locked picks, 1 point for regular picks)
                     cur.execute(
                         """
                         UPDATE picks 
                         SET points_awarded = CASE 
-                            WHEN picked_team = %s THEN 1 
+                            WHEN picked_team = %s AND lock = TRUE THEN 2 
+                            WHEN picked_team = %s AND lock = FALSE THEN 1 
                             ELSE 0 
                         END
                         WHERE game_id = %s
                         RETURNING user_id, points_awarded
                         """,
-                        (game.winning_team, game_id)
+                        (game.winning_team, game.winning_team, game_id)
                     )
                     pick_updates = cur.fetchall()
                     
@@ -804,7 +857,8 @@ async def get_my_picks(current_user: User = Depends(get_current_user)):
                     g.game_date,
                     g.winning_team,
                     p.picked_team,
-                    p.points_awarded
+                    p.points_awarded,
+                    p.lock
                 FROM games g
                 LEFT JOIN picks p ON g.id = p.game_id AND p.user_id = %s
                 ORDER BY g.game_date

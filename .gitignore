@@ -50,3 +50,6 @@ yarn-error.log*
 # Logs
 *.log
 logs/ 
+
+#Any file starting with "test_"
+test_*
