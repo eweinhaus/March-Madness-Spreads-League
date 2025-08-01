@@ -51,8 +51,8 @@ def normalize_datetime(dt):
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc)
     
-    # If it's naive, reject it (this should only happen for user input)
-    raise ValueError("Attempted to use a naive datetime. All datetimes must be timezone-aware.")
+    # If it's naive, assume it's UTC (from database)
+    return dt.replace(tzinfo=timezone.utc)
 
 def get_game_week_bounds(game_date):
     """Get the start and end of the week for a given game date (3:00 AM Wednesday EST/EDT through 2:59 AM Wednesday EST/EDT)."""
@@ -467,10 +467,17 @@ class Game(BaseModel):
     @validator('game_date', pre=True, always=True)
     def normalize_game_date(cls, v):
         if isinstance(v, str):
-            # Ensure the string has timezone info
-            if '+' not in v and '-' not in v[10:] and 'Z' not in v:
+            # Handle ISO format strings with 'Z' (UTC) or timezone offsets
+            if 'Z' in v:
+                # Replace 'Z' with '+00:00' for proper parsing
+                v = v.replace('Z', '+00:00')
+            elif '+' not in v and '-' not in v[10:]:
                 raise ValueError("Datetime string must include timezone information")
-            v = datetime.fromisoformat(v)
+            
+            try:
+                v = datetime.fromisoformat(v)
+            except ValueError as e:
+                raise ValueError(f"Invalid datetime format: {e}")
         
         if not isinstance(v, datetime):
             raise ValueError("Invalid datetime format")
@@ -491,10 +498,17 @@ class GameUpdate(BaseModel):
     @validator('game_date', pre=True, always=True)
     def normalize_game_date(cls, v):
         if isinstance(v, str):
-            # Ensure the string has timezone info
-            if '+' not in v and '-' not in v[10:] and 'Z' not in v:
+            # Handle ISO format strings with 'Z' (UTC) or timezone offsets
+            if 'Z' in v:
+                # Replace 'Z' with '+00:00' for proper parsing
+                v = v.replace('Z', '+00:00')
+            elif '+' not in v and '-' not in v[10:]:
                 raise ValueError("Datetime string must include timezone information")
-            v = datetime.fromisoformat(v)
+            
+            try:
+                v = datetime.fromisoformat(v)
+            except ValueError as e:
+                raise ValueError(f"Invalid datetime format: {e}")
         
         if not isinstance(v, datetime):
             raise ValueError("Invalid datetime format")
@@ -554,24 +568,30 @@ async def submit_pick(
                 if pick.lock:
                     # Check if this game is in the same week as any existing locked game
                     target_week_start, target_week_end = get_game_week_bounds(game_date)
+                    logger.info(f"Locking game {pick.game_id}, week bounds: {target_week_start} to {target_week_end}")
                     
                     for lock in existing_locks:
                         if lock["game_id"] != pick.game_id:  # Skip the current game
                             lock_game_date = normalize_datetime(lock["game_date"])
                             
                             lock_week_start, lock_week_end = get_game_week_bounds(lock_game_date)
+                            logger.info(f"Checking against locked game {lock['game_id']}, week bounds: {lock_week_start} to {lock_week_end}")
                             
                             # Check if games are in the same week (weeks are [start, end))
                             if not (target_week_start >= lock_week_end or target_week_end <= lock_week_start):
+                                # Games are in the same week
+                                logger.info(f"Games {pick.game_id} and {lock['game_id']} are in the same week")
                                 
                                 # Check if the existing locked game has started
                                 if current_time >= lock_game_date:
+                                    logger.info(f"Locked game {lock['game_id']} has started, cannot lock new game")
                                     raise HTTPException(
                                         status_code=400,
                                         detail="Cannot lock this game because you already have a locked game that has started in the same week."
                                     )
                                 
                                 # Unlock the existing game in the same week
+                                logger.info(f"Unlocking existing game {lock['game_id']} to lock new game {pick.game_id}")
                                 cur.execute(
                                     "UPDATE picks SET lock = FALSE WHERE user_id = %s AND game_id = %s",
                                     (current_user.id, lock["game_id"])
@@ -945,21 +965,31 @@ async def update_game(
             
             # Validate game date is not in the past (only if it's being changed)
             existing_game_date = normalize_datetime(existing_game["game_date"])
-            if game.game_date != existing_game_date:
+            
+            # Compare dates with tolerance for small differences (within 1 minute)
+            date_difference = abs((game.game_date - existing_game_date).total_seconds())
+            logger.info(f"Game update - existing date: {existing_game_date}, new date: {game.game_date}, difference: {date_difference} seconds")
+            
+            if date_difference > 60:  # More than 1 minute difference
                 current_time = get_current_utc_time()
+                logger.info(f"Game date changed significantly, validating. Current time: {current_time}")
+                
+                # Check if the new date is in the past
                 if game.game_date <= current_time:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail="Game date must be in the future"
-                    )
+                    logger.warning(f"Admin is setting game date to past: {game.game_date} (current: {current_time})")
+                    # Allow past dates for admin updates, but log a warning
+                    # This allows admins to correct game times or handle rescheduled games
                 
                 # Validate game date is reasonable (not more than 1 year in the future)
                 max_future_date = current_time + timedelta(days=365)
                 if game.game_date > max_future_date:
+                    logger.error(f"Game date validation failed - game date {game.game_date} is too far in the future")
                     raise HTTPException(
                         status_code=400,
                         detail="Game date cannot be more than 1 year in the future"
                     )
+            else:
+                logger.info("Game date unchanged or changed by less than 1 minute, skipping date validation")
             
             # Update game
             cur.execute(
@@ -1153,10 +1183,17 @@ class Tiebreaker(BaseModel):
     @validator('start_time', pre=True, always=True)
     def normalize_start_time(cls, v):
         if isinstance(v, str):
-            # Ensure the string has timezone info
-            if '+' not in v and '-' not in v[10:] and 'Z' not in v:
+            # Handle ISO format strings with 'Z' (UTC) or timezone offsets
+            if 'Z' in v:
+                # Replace 'Z' with '+00:00' for proper parsing
+                v = v.replace('Z', '+00:00')
+            elif '+' not in v and '-' not in v[10:]:
                 raise ValueError("Datetime string must include timezone information")
-            v = datetime.fromisoformat(v)
+            
+            try:
+                v = datetime.fromisoformat(v)
+            except ValueError as e:
+                raise ValueError(f"Invalid datetime format: {e}")
         
         if not isinstance(v, datetime):
             raise ValueError("Invalid datetime format")
@@ -1176,10 +1213,17 @@ class TiebreakerUpdate(BaseModel):
     @validator('start_time', pre=True, always=True)
     def normalize_start_time(cls, v):
         if isinstance(v, str):
-            # Ensure the string has timezone info
-            if '+' not in v and '-' not in v[10:] and 'Z' not in v:
+            # Handle ISO format strings with 'Z' (UTC) or timezone offsets
+            if 'Z' in v:
+                # Replace 'Z' with '+00:00' for proper parsing
+                v = v.replace('Z', '+00:00')
+            elif '+' not in v and '-' not in v[10:]:
                 raise ValueError("Datetime string must include timezone information")
-            v = datetime.fromisoformat(v)
+            
+            try:
+                v = datetime.fromisoformat(v)
+            except ValueError as e:
+                raise ValueError(f"Invalid datetime format: {e}")
         
         if not isinstance(v, datetime):
             raise ValueError("Invalid datetime format")
@@ -1313,21 +1357,31 @@ async def update_tiebreaker(
             
             # Validate start time is not in the past (only if it's being changed)
             existing_start_time = normalize_datetime(existing_tiebreaker["start_time"])
-            if tiebreaker.start_time != existing_start_time:
+            
+            # Compare dates with tolerance for small differences (within 1 minute)
+            date_difference = abs((tiebreaker.start_time - existing_start_time).total_seconds())
+            logger.info(f"Tiebreaker update - existing start time: {existing_start_time}, new start time: {tiebreaker.start_time}, difference: {date_difference} seconds")
+            
+            if date_difference > 60:  # More than 1 minute difference
                 current_time = get_current_utc_time()
+                logger.info(f"Tiebreaker start time changed significantly, validating. Current time: {current_time}")
+                
+                # Check if the new date is in the past
                 if tiebreaker.start_time <= current_time:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail="Tiebreaker start time must be in the future"
-                    )
+                    logger.warning(f"Admin is setting tiebreaker start time to past: {tiebreaker.start_time} (current: {current_time})")
+                    # Allow past dates for admin updates, but log a warning
+                    # This allows admins to correct tiebreaker times or handle rescheduled events
                 
                 # Validate start time is reasonable (not more than 1 year in the future)
                 max_future_date = current_time + timedelta(days=365)
                 if tiebreaker.start_time > max_future_date:
+                    logger.error(f"Tiebreaker start time validation failed - start time {tiebreaker.start_time} is too far in the future")
                     raise HTTPException(
                         status_code=400,
                         detail="Tiebreaker start time cannot be more than 1 year in the future"
                     )
+            else:
+                logger.info("Tiebreaker start time unchanged or changed by less than 1 minute, skipping validation")
             
             # Update tiebreaker
             cur.execute(
