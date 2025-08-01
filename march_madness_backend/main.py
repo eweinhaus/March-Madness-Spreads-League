@@ -118,7 +118,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:5173",
-        "http://192.168.4.38:5173",
+        os.getenv("DEV_IP_ADDRESS", ""),
         "https://spreads-league.onrender.com"
     ],
     allow_credentials=True,
