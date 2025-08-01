@@ -51,8 +51,8 @@ export default function Picks() {
     
     // Week ends Tuesday 11:59 PM (6 days later, not 7)
     const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6);
-    weekEnd.setHours(23, 59, 59, 999);
+    weekEnd.setDate(weekStart.getDate() + 7);
+    weekEnd.setMinutes(weekEnd.getMinutes() - 1);
     
     return { weekStart, weekEnd };
   };
