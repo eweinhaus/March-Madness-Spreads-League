@@ -39,8 +39,8 @@ export default function Picks() {
     // If the game date is "2025-08-06T00:36:00", treat it as August 6th at 12:36 AM
     
     // Find the Wednesday that starts the week containing this game
-    // Wednesday is 3 (0-indexed), so we calculate days since Wednesday
-    let daysSinceWednesday = (gameDateObj.getDay() - 3 + 7) % 7;
+    // Wednesday is 2 (backend convention), so we calculate days since Wednesday
+    let daysSinceWednesday = (gameDateObj.getDay() - 2 + 7) % 7;
     
     // If it's Wednesday at exactly midnight (12:00 AM), it's the start of the new week
     // No adjustment needed - Wednesday 12:00 AM starts the week
