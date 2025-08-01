@@ -121,8 +121,27 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup_event():
     logger.info("FastAPI application starting up...")
+    logger.info(f"Current working directory: {os.getcwd()}")
+    logger.info(f"Python executable: {os.sys.executable}")
+    logger.info(f"Python version: {os.sys.version}")
+    logger.info(f"Environment variables: PORT={os.getenv('PORT', 'Not set')}")
     logger.info(f"Database URL configured: {'Yes' if database_url else 'No'}")
     logger.info(f"Pool created: {'Yes' if pool else 'No'}")
+    
+    # Test database connection
+    if pool:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    result = cur.fetchone()
+                    logger.info("Database connection test: SUCCESS")
+        except Exception as e:
+            logger.error(f"Database connection test: FAILED - {str(e)}")
+    else:
+        logger.warning("No database pool available for testing")
+    
+    logger.info("Startup complete!")
 
 # Add request logging middleware
 @app.middleware("http")
@@ -156,6 +175,16 @@ app.add_middleware(
     max_age=86400,  # Cache preflight requests for 24 hours
 )
 
+@app.get("/")
+def read_root():
+    """Root endpoint to check if API is running."""
+    logger.info("Root endpoint accessed")
+    logger.info(f"Current working directory: {os.getcwd()}")
+    logger.info(f"Python path: {os.environ.get('PYTHONPATH', 'Not set')}")
+    logger.info(f"Database URL configured: {'Yes' if database_url else 'No'}")
+    logger.info(f"Pool status: {'Active' if pool else 'None'}")
+    return {"message": "Welcome to the Spreads League API", "status": "running", "timestamp": datetime.now().isoformat()}
+
 @app.get("/debug-token")
 def debug_token(token: str = Depends(oauth2_scheme)):
     if not os.getenv("DEBUG_MODE", "false").lower() in ["true", "1"]:
@@ -173,7 +202,31 @@ def test_cors():
 @app.get("/health")
 def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    logger.info("Health check endpoint accessed")
+    
+    # Check database connectivity
+    db_status = "unknown"
+    if pool:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    db_status = "connected"
+        except Exception as e:
+            logger.error(f"Health check database error: {str(e)}")
+            db_status = "disconnected"
+    else:
+        db_status = "no_pool"
+    
+    health_data = {
+        "status": "healthy", 
+        "timestamp": datetime.now().isoformat(),
+        "database": db_status,
+        "working_directory": os.getcwd()
+    }
+    
+    logger.info(f"Health check result: {health_data}")
+    return health_data
 
 @app.options("/token")
 async def options_token():
