@@ -110,6 +110,11 @@ app = FastAPI()
 
 @app.get("/debug-token")
 def debug_token(token: str = Depends(oauth2_scheme)):
+    if not os.getenv("DEBUG_MODE", "false").lower() in ["true", "1"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Debug mode is not enabled"
+        )
     return {"token": token}
 
 # Add CORS middleware
