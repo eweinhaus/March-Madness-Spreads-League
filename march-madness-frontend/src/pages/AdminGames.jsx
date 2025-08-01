@@ -71,9 +71,10 @@ const AdminGames = () => {
 
   // Helper function to check if a game has started
   const hasGameStarted = (dateString) => {
+    // Use UTC comparison for consistency with backend
     const now = new Date();
     const gameTime = new Date(dateString);
-    return now >= gameTime;
+    return now.getTime() >= gameTime.getTime();
   };
 
   const handleSubmit = async (e) => {
@@ -82,25 +83,22 @@ const AdminGames = () => {
     setSuccess(null);
     
     try {
-      // Create a date object from the input
+      // The datetime-local input is in the user's local timezone
+      // We need to convert it to UTC for storage
       const localDate = new Date(newGame.game_date);
       console.log('Original input date:', newGame.game_date);
       console.log('Local date object:', localDate.toISOString());
       console.log('Local date string:', localDate.toString());
       
-      // Get the local timezone offset in minutes
-      const offset = localDate.getTimezoneOffset();
-      console.log('Timezone offset (minutes):', offset);
-      
-      // Add the offset to convert to UTC
-      const adjustedDate = new Date(localDate.getTime() - (offset * 60 * 1000));
-      console.log('Adjusted date (UTC):', adjustedDate.toISOString());
-      console.log('Adjusted date string:', adjustedDate.toString());
+      // The toISOString() method automatically converts to UTC
+      // This is the correct way to convert local time to UTC
+      const utcDateString = localDate.toISOString();
+      console.log('UTC date string:', utcDateString);
       
       const gameData = {
         ...newGame,
         spread: parseFloat(newGame.spread),
-        game_date: adjustedDate.toISOString(),
+        game_date: utcDateString,
       };
       
       console.log('Final game data being sent:', gameData);
@@ -160,9 +158,18 @@ const AdminGames = () => {
   };
 
   const handleEditClick = (game) => {
+    // Convert UTC game_date to local time for datetime-local input
+    const utcDate = new Date(game.game_date);
+    
+    // Create a new Date object in local timezone
+    const localDate = new Date(utcDate.getTime() - (utcDate.getTimezoneOffset() * 60000));
+    
+    // Format as YYYY-MM-DDTHH:MM for datetime-local input
+    const localDateString = localDate.toISOString().slice(0, 16);
+    
     setEditingGame({
       ...game,
-      game_date: game.game_date
+      game_date: localDateString
     });
     setShowEditModal(true);
   };
@@ -173,10 +180,14 @@ const AdminGames = () => {
     setSuccess(null);
     
     try {
+      // Convert local time back to UTC for storage
+      const localDate = new Date(editingGame.game_date);
+      const utcDateString = localDate.toISOString();
+      
       const gameData = {
         ...editingGame,
         spread: parseFloat(editingGame.spread),
-        game_date: editingGame.game_date,
+        game_date: utcDateString,
       };
       
       await axios.put(`${API_URL}/games/${editingGame.id}`, gameData, {

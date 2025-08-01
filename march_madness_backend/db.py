@@ -21,6 +21,8 @@ def get_db_connection():
         # Set timezone to UTC for this connection
         with conn.cursor() as cur:
             cur.execute("SET timezone TO 'UTC'")
+            # Ensure timestamps are handled as UTC
+            cur.execute("SET timezone_abbreviations TO 'Default'")
         logger.info("Database connection successful")
         return conn
     except Exception as e:
@@ -46,12 +48,12 @@ def create_tables(conn):
 
                 CREATE TABLE IF NOT EXISTS games (
                     id SERIAL PRIMARY KEY,
-                    home_team VARCHAR(50) NOT NULL,
-                    away_team VARCHAR(50) NOT NULL,
-                    spread NUMERIC(4,1) NOT NULL,
-                    game_date TIMESTAMP NOT NULL,
-                    winning_team VARCHAR(50) NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    home_team VARCHAR(255) NOT NULL,
+                    away_team VARCHAR(255) NOT NULL,
+                    spread REAL NOT NULL,
+                    game_date TIMESTAMP WITH TIME ZONE NOT NULL,
+                    winning_team VARCHAR(255),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                 );
 
                 CREATE TABLE IF NOT EXISTS picks (
@@ -74,10 +76,10 @@ def create_tables(conn):
                 CREATE TABLE IF NOT EXISTS tiebreakers (
                     id SERIAL PRIMARY KEY,
                     question TEXT NOT NULL,
-                    start_time TIMESTAMP NOT NULL,
-                    answer TEXT NULL,
+                    start_time TIMESTAMP WITH TIME ZONE NOT NULL,
+                    answer VARCHAR(255),
                     is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
                 
                 CREATE TABLE IF NOT EXISTS tiebreaker_picks (

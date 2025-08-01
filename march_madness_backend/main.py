@@ -1,8 +1,8 @@
 from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel
-import psycopg2 
+from pydantic import BaseModel, validator
+import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 import os
@@ -42,29 +42,41 @@ def get_current_utc_time():
     """Get current time in UTC."""
     return datetime.now(timezone.utc)
 
-def get_game_week_bounds(game_date):
-    """Get the start and end of the week for a given game date (Wednesday 12:00 AM to Tuesday 11:59 PM EST)."""
-    # Convert game_date to EST if it's not already
-    if game_date.tzinfo is None:
-        game_date = game_date.replace(tzinfo=timezone.utc)
+def normalize_datetime(dt):
+    """Ensure datetime is timezone-aware and in UTC."""
+    if dt is None:
+        return None
     
-    # Convert to EST
-    est = timezone(timedelta(hours=-5))
-    game_date_est = game_date.astimezone(est)
+    # If it's already timezone-aware, convert to UTC
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc)
+    
+    # If it's naive, reject it (this should only happen for user input)
+    raise ValueError("Attempted to use a naive datetime. All datetimes must be timezone-aware.")
+
+def get_game_week_bounds(game_date):
+    """Get the start and end of the week for a given game date (3:00 AM Wednesday EST/EDT through 2:59 AM Wednesday EST/EDT)."""
+    # Ensure game_date is in UTC
+    game_date = normalize_datetime(game_date)
+
+    # Convert to America/New_York time to handle EST/EDT correctly
+    ny_tz = ZoneInfo("America/New_York")
+    game_date_ny = game_date.astimezone(ny_tz)
     
     # Find the Wednesday that starts the week containing this game
-    days_since_wednesday = (game_date_est.weekday() - 2) % 7  # Wednesday is 2 (0-indexed)
-    if days_since_wednesday == 0 and game_date_est.hour == 0:
-        # If it's Wednesday but exactly at 12 AM, go back to the previous Wednesday
+    days_since_wednesday = (game_date_ny.weekday() - 2) % 7  # Wednesday is 2 (0-indexed)
+    if game_date_ny.weekday() == 2 and game_date_ny.hour < 3:
+        # If it's Wednesday but before 3:00 AM, it belongs to the previous week
         days_since_wednesday = 7
     
-    week_start = game_date_est - timedelta(days=days_since_wednesday)
-    week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start_ny = game_date_ny - timedelta(days=days_since_wednesday)
+    week_start_ny = week_start_ny.replace(hour=3, minute=0, second=0, microsecond=0)
     
-    # Week ends Tuesday 11:59 PM (7 days later, minus 1 minute)
-    week_end = week_start + timedelta(days=7) - timedelta(minutes=1)
+    # Week ends at the start of the next week. The range is [start, end).
+    week_end_ny = week_start_ny + timedelta(days=7)
     
-    return week_start, week_end
+    return week_start_ny.astimezone(timezone.utc), week_end_ny.astimezone(timezone.utc)
+
 
 # Parse database URL and handle port
 database_url = os.getenv("DATABASE_URL")
@@ -183,7 +195,7 @@ def read_root():
     logger.info(f"Python path: {os.environ.get('PYTHONPATH', 'Not set')}")
     logger.info(f"Database URL configured: {'Yes' if database_url else 'No'}")
     logger.info(f"Pool status: {'Active' if pool else 'None'}")
-    return {"message": "Welcome to the Spreads League API", "status": "running", "timestamp": datetime.now().isoformat()}
+    return {"message": "Welcome to the Spreads League API", "status": "running", "timestamp": get_current_utc_time().isoformat()}
 
 @app.get("/debug-token")
 def debug_token(token: str = Depends(oauth2_scheme)):
@@ -197,7 +209,7 @@ def debug_token(token: str = Depends(oauth2_scheme)):
 @app.get("/test-cors")
 def test_cors():
     """Test endpoint to verify CORS is working."""
-    return {"message": "CORS is working!", "timestamp": datetime.now().isoformat()}
+    return {"message": "CORS is working!", "timestamp": get_current_utc_time().isoformat()}
 
 @app.get("/health")
 def health_check():
@@ -220,7 +232,7 @@ def health_check():
     
     health_data = {
         "status": "healthy", 
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": get_current_utc_time().isoformat(),
         "database": db_status,
         "working_directory": os.getcwd()
     }
@@ -452,13 +464,22 @@ class Game(BaseModel):
     spread: float
     game_date: datetime
 
-    def __init__(self, **data):
-        super().__init__(**data)
-        # Ensure game_date is timezone-aware
-        if self.game_date.tzinfo is None:
-            self.game_date = self.game_date.replace(tzinfo=timezone.utc)
-        # Truncate seconds from game_date
-        self.game_date = self.game_date.replace(second=0, microsecond=0)
+    @validator('game_date', pre=True, always=True)
+    def normalize_game_date(cls, v):
+        if isinstance(v, str):
+            # Ensure the string has timezone info
+            if '+' not in v and '-' not in v[10:] and 'Z' not in v:
+                raise ValueError("Datetime string must include timezone information")
+            v = datetime.fromisoformat(v)
+        
+        if not isinstance(v, datetime):
+            raise ValueError("Invalid datetime format")
+
+        if v.tzinfo is None:
+            raise ValueError("Datetime must be timezone-aware")
+            
+        dt = normalize_datetime(v)
+        return dt.replace(second=0, microsecond=0)
 
 class GameUpdate(BaseModel):
     home_team: str
@@ -467,13 +488,22 @@ class GameUpdate(BaseModel):
     game_date: datetime
     winning_team: Optional[str] = None
 
-    def __init__(self, **data):
-        super().__init__(**data)
-        # Ensure game_date is timezone-aware
-        if self.game_date.tzinfo is None:
-            self.game_date = self.game_date.replace(tzinfo=timezone.utc)
-        # Truncate seconds from game_date
-        self.game_date = self.game_date.replace(second=0, microsecond=0)
+    @validator('game_date', pre=True, always=True)
+    def normalize_game_date(cls, v):
+        if isinstance(v, str):
+            # Ensure the string has timezone info
+            if '+' not in v and '-' not in v[10:] and 'Z' not in v:
+                raise ValueError("Datetime string must include timezone information")
+            v = datetime.fromisoformat(v)
+        
+        if not isinstance(v, datetime):
+            raise ValueError("Invalid datetime format")
+
+        if v.tzinfo is None:
+            raise ValueError("Datetime must be timezone-aware")
+            
+        dt = normalize_datetime(v)
+        return dt.replace(second=0, microsecond=0)
 
 class UserPicksStatus(BaseModel):
     username: str
@@ -503,8 +533,58 @@ async def submit_pick(
             )
             existing_pick = cur.fetchone()
 
-            current_time = datetime.now(ZoneInfo("America/New_York"))
-            game_has_started = current_time >= game["game_date"]
+            current_time = get_current_utc_time()
+            
+            # Ensure game_date is timezone-aware for comparison
+            game_date = normalize_datetime(game["game_date"])
+            
+            # Use UTC comparison for consistency across all timezones
+            game_has_started = current_time >= game_date
+
+            # Handle lock logic if lock status is being changed
+            if pick.lock is not None:
+                # Get all user's picks to check lock constraints
+                cur.execute(
+                    "SELECT p.*, g.game_date FROM picks p JOIN games g ON p.game_id = g.id WHERE p.user_id = %s AND p.lock = TRUE",
+                    (current_user.id,)
+                )
+                existing_locks = cur.fetchall()
+                
+                # If trying to lock a pick
+                if pick.lock:
+                    # Check if this game is in the same week as any existing locked game
+                    target_week_start, target_week_end = get_game_week_bounds(game_date)
+                    
+                    for lock in existing_locks:
+                        if lock["game_id"] != pick.game_id:  # Skip the current game
+                            lock_game_date = normalize_datetime(lock["game_date"])
+                            
+                            lock_week_start, lock_week_end = get_game_week_bounds(lock_game_date)
+                            
+                            # Check if games are in the same week (weeks are [start, end))
+                            if not (target_week_start >= lock_week_end or target_week_end <= lock_week_start):
+                                
+                                # Check if the existing locked game has started
+                                if current_time >= lock_game_date:
+                                    raise HTTPException(
+                                        status_code=400,
+                                        detail="Cannot lock this game because you already have a locked game that has started in the same week."
+                                    )
+                                
+                                # Unlock the existing game in the same week
+                                cur.execute(
+                                    "UPDATE picks SET lock = FALSE WHERE user_id = %s AND game_id = %s",
+                                    (current_user.id, lock["game_id"])
+                                )
+                
+                # If trying to unlock a pick
+                elif not pick.lock and existing_pick and existing_pick["lock"]:
+                    # Check if the game has started
+                    if game_has_started:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Cannot unlock a game that has already started."
+                        )
 
             # Only prevent changes to started games
             if game_has_started:
@@ -648,9 +728,9 @@ def get_leaderboard(filter: str = "overall"):
             
             # Add time filter for games
             if filter == "first_half":
-                points_query += " AND g.game_date < '2025-03-24'"
+                points_query += " AND g.game_date < '2025-03-24T00:00:00Z'"
             elif filter == "second_half":
-                points_query += " AND g.game_date >= '2025-03-24'"
+                points_query += " AND g.game_date >= '2025-03-24T00:00:00Z'"
             
             points_query += """
                     GROUP BY user_id
@@ -664,9 +744,9 @@ def get_leaderboard(filter: str = "overall"):
             
             # Add time filter for tiebreakers
             if filter == "first_half":
-                points_query += " AND t.start_time < '2025-03-24'"
+                points_query += " AND t.start_time < '2025-03-24T00:00:00Z'"
             elif filter == "second_half":
-                points_query += " AND t.start_time >= '2025-03-24'"
+                points_query += " AND t.start_time >= '2025-03-24T00:00:00Z'"
             
             points_query += """
                     GROUP BY user_id
@@ -695,6 +775,22 @@ async def create_game(
 ):
     """Create a new game (admin only)."""
     try:
+        # Validate game date is not in the past
+        current_time = get_current_utc_time()
+        if game.game_date <= current_time:
+            raise HTTPException(
+                status_code=400, 
+                detail="Game date must be in the future"
+            )
+        
+        # Validate game date is reasonable (not more than 1 year in the future)
+        max_future_date = current_time + timedelta(days=365)
+        if game.game_date > max_future_date:
+            raise HTTPException(
+                status_code=400,
+                detail="Game date cannot be more than 1 year in the future"
+            )
+        
         with get_db_cursor(commit=True) as cur:
             logger.info(f"Creating new game with data: {game}")
             logger.info(f"Game date before DB insert: {game.game_date}")
@@ -712,6 +808,8 @@ async def create_game(
             logger.info(f"Game created successfully: {new_game}")
             logger.info(f"Game date after DB insert: {new_game['game_date']}")
             return new_game
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating game: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -763,7 +861,8 @@ def get_user_picks(username: str):
     """Get a user's picks for games that have already started."""
     try:
         with get_db_cursor() as cur:
-            current_time = datetime.now() - timedelta(hours=4)
+            current_time = get_current_utc_time()
+            
             cur.execute("""
                 SELECT 
                     g.id as game_id,
@@ -790,22 +889,9 @@ def get_user_picks(username: str):
 def get_live_games():
     """Get all live games (games that have started but don't have a winner yet) and their picks."""
     current_time = get_current_utc_time()
-    current_time = current_time - timedelta(hours=4)
 
     try:
         with get_db_cursor() as cur:
-            
-            # First get all games to log their dates
-            cur.execute("SELECT id, game_date, winning_team FROM games")
-            all_games = cur.fetchall()
-            for game in all_games:
-                # Ensure game_date is timezone-aware
-                game_date = game['game_date']
-                
-                if game_date.tzinfo is None:
-                    game_date = game_date.replace(tzinfo=timezone.utc)
-                
-                is_live = game_date <= current_time and (game['winning_team'] is None or game['winning_team'] == '')
             
             cur.execute("""
                 SELECT 
@@ -856,6 +942,24 @@ async def update_game(
             existing_game = cur.fetchone()
             if not existing_game:
                 raise HTTPException(status_code=404, detail="Game not found")
+            
+            # Validate game date is not in the past (only if it's being changed)
+            existing_game_date = normalize_datetime(existing_game["game_date"])
+            if game.game_date != existing_game_date:
+                current_time = get_current_utc_time()
+                if game.game_date <= current_time:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="Game date must be in the future"
+                    )
+                
+                # Validate game date is reasonable (not more than 1 year in the future)
+                max_future_date = current_time + timedelta(days=365)
+                if game.game_date > max_future_date:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Game date cannot be more than 1 year in the future"
+                    )
             
             # Update game
             cur.execute(
@@ -978,7 +1082,7 @@ async def get_my_picks(current_user: User = Depends(get_current_user)):
 async def get_user_picks_status(current_user: User = Depends(get_current_admin_user)):
     """Get the picks status for all users."""
     with get_db_cursor() as cur:
-        current_time = datetime.now() - timedelta(hours=4)
+        current_time = get_current_utc_time()
         
         # Get total number of upcoming games
         cur.execute("""
@@ -1046,11 +1150,45 @@ class Tiebreaker(BaseModel):
     question: str
     start_time: datetime
 
+    @validator('start_time', pre=True, always=True)
+    def normalize_start_time(cls, v):
+        if isinstance(v, str):
+            # Ensure the string has timezone info
+            if '+' not in v and '-' not in v[10:] and 'Z' not in v:
+                raise ValueError("Datetime string must include timezone information")
+            v = datetime.fromisoformat(v)
+        
+        if not isinstance(v, datetime):
+            raise ValueError("Invalid datetime format")
+
+        if v.tzinfo is None:
+            raise ValueError("Datetime must be timezone-aware")
+            
+        dt = normalize_datetime(v)
+        return dt.replace(second=0, microsecond=0)
+
 class TiebreakerUpdate(BaseModel):
     question: str
     start_time: datetime
     answer: Optional[Union[str, float]] = None
     is_active: bool = True
+
+    @validator('start_time', pre=True, always=True)
+    def normalize_start_time(cls, v):
+        if isinstance(v, str):
+            # Ensure the string has timezone info
+            if '+' not in v and '-' not in v[10:] and 'Z' not in v:
+                raise ValueError("Datetime string must include timezone information")
+            v = datetime.fromisoformat(v)
+        
+        if not isinstance(v, datetime):
+            raise ValueError("Invalid datetime format")
+
+        if v.tzinfo is None:
+            raise ValueError("Datetime must be timezone-aware")
+            
+        dt = normalize_datetime(v)
+        return dt.replace(second=0, microsecond=0)
 
 class TiebreakerPick(BaseModel):
     tiebreaker_id: int
@@ -1068,6 +1206,22 @@ async def create_tiebreaker(
 ):
     """Create a new tiebreaker (admin only)."""
     try:
+        # Validate start time is not in the past
+        current_time = get_current_utc_time()
+        if tiebreaker.start_time <= current_time:
+            raise HTTPException(
+                status_code=400, 
+                detail="Tiebreaker start time must be in the future"
+            )
+        
+        # Validate start time is reasonable (not more than 1 year in the future)
+        max_future_date = current_time + timedelta(days=365)
+        if tiebreaker.start_time > max_future_date:
+            raise HTTPException(
+                status_code=400,
+                detail="Tiebreaker start time cannot be more than 1 year in the future"
+            )
+        
         with get_db_cursor(commit=True) as cur:
             logger.info(f"Creating new tiebreaker: {tiebreaker}")
             cur.execute(
@@ -1081,6 +1235,8 @@ async def create_tiebreaker(
             new_tiebreaker = cur.fetchone()
             logger.info(f"Tiebreaker created successfully: {new_tiebreaker}")
             return new_tiebreaker
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating tiebreaker: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1105,7 +1261,6 @@ def get_live_tiebreakers():
     try:
         with get_db_cursor() as cur:
             current_time = get_current_utc_time()
-            current_time = current_time - timedelta(hours=4)  # Convert to ET
             
             logger.info(f"Checking live tiebreakers at {current_time}")
             
@@ -1131,14 +1286,6 @@ def get_live_tiebreakers():
                 WHERE t.start_time <= %s 
                 AND t.is_active = TRUE
                 AND t.answer IS NULL
-                AND (
-                    -- If it's the same day as start_time, only show after 10:10 PM ET
-                    (DATE(t.start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') = CURRENT_DATE AT TIME ZONE 'America/New_York'
-                    AND CURRENT_TIME AT TIME ZONE 'America/New_York' >= '22:10:00')
-                    OR
-                    -- If it's a previous day, always show
-                    DATE(t.start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') < CURRENT_DATE AT TIME ZONE 'America/New_York'
-                )
                 GROUP BY t.id
                 ORDER BY t.start_time DESC
             """, (current_time,))
@@ -1164,6 +1311,24 @@ async def update_tiebreaker(
             if not existing_tiebreaker:
                 raise HTTPException(status_code=404, detail="Tiebreaker not found")
             
+            # Validate start time is not in the past (only if it's being changed)
+            existing_start_time = normalize_datetime(existing_tiebreaker["start_time"])
+            if tiebreaker.start_time != existing_start_time:
+                current_time = get_current_utc_time()
+                if tiebreaker.start_time <= current_time:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="Tiebreaker start time must be in the future"
+                    )
+                
+                # Validate start time is reasonable (not more than 1 year in the future)
+                max_future_date = current_time + timedelta(days=365)
+                if tiebreaker.start_time > max_future_date:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Tiebreaker start time cannot be more than 1 year in the future"
+                    )
+            
             # Update tiebreaker
             cur.execute(
                 """
@@ -1177,6 +1342,8 @@ async def update_tiebreaker(
             updated_tiebreaker = cur.fetchone()
             
             return updated_tiebreaker
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating tiebreaker: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1238,6 +1405,16 @@ async def create_tiebreaker_pick(
             tiebreaker = cur.fetchone()
             if not tiebreaker:
                 raise HTTPException(status_code=404, detail="Tiebreaker not found or is no longer active")
+            
+            # Check if tiebreaker has started
+            current_time = get_current_utc_time()
+            tiebreaker_start_time = normalize_datetime(tiebreaker["start_time"])
+            
+            if current_time >= tiebreaker_start_time:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Cannot submit tiebreaker pick after the tiebreaker has started"
+                )
             
             # Check if user already has a pick for this tiebreaker
             cur.execute(
@@ -1460,8 +1637,8 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
     try:
         with get_db_cursor() as cur:
             current_time = get_current_utc_time()
-            current_time = current_time - timedelta(hours=4)
             print(f"Current time: {current_time}")
+            
             # Get user info
             cur.execute("SELECT id, username, full_name FROM users WHERE username = %s", (username,))
             user = cur.fetchone()
@@ -1485,9 +1662,9 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
             """
             
             if filter == "first_half":
-                game_query += " AND g.game_date < '2025-03-24'"
+                game_query += " AND g.game_date < '2025-03-24T00:00:00Z'"
             elif filter == "second_half":
-                game_query += " AND g.game_date >= '2025-03-24'"
+                game_query += " AND g.game_date >= '2025-03-24T00:00:00Z'"
                 
             game_query += " ORDER BY g.game_date DESC"
             
@@ -1510,9 +1687,9 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
             """
             
             if filter == "first_half":
-                tiebreaker_query += " AND t.start_time < '2025-03-24'"
+                tiebreaker_query += " AND t.start_time < '2025-03-24T00:00:00Z'"
             elif filter == "second_half":
-                tiebreaker_query += " AND t.start_time >= '2025-03-24'"
+                tiebreaker_query += " AND t.start_time >= '2025-03-24T00:00:00Z'"
                 
             tiebreaker_query += " ORDER BY t.start_time DESC"
             

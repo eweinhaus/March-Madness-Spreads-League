@@ -31,32 +31,6 @@ export default function Picks() {
     });
   };
 
-  // Helper function to get game week bounds (Wednesday 12:00 AM to Tuesday 11:59 PM EST)
-  const getGameWeekBounds = (gameDate) => {
-    const gameDateObj = new Date(gameDate);
-    
-    // Work directly with the date as provided (assuming it's already in the correct timezone)
-    // If the game date is "2025-08-06T00:36:00", treat it as August 6th at 12:36 AM
-    
-    // Find the Wednesday that starts the week containing this game
-    // Wednesday is 2 (backend convention), so we calculate days since Wednesday
-    let daysSinceWednesday = (gameDateObj.getDay() - 2 + 7) % 7;
-    
-    // If it's Wednesday at exactly midnight (12:00 AM), it's the start of the new week
-    // No adjustment needed - Wednesday 12:00 AM starts the week
-    
-    const weekStart = new Date(gameDateObj);
-    weekStart.setDate(gameDateObj.getDate() - daysSinceWednesday);
-    weekStart.setHours(0, 0, 0, 0);
-    
-    // Week ends Tuesday 11:59 PM (6 days later, not 7)
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 7);
-    weekEnd.setMinutes(weekEnd.getMinutes() - 1);
-    
-    return { weekStart, weekEnd };
-  };
-
   // Function to handle authentication errors
   const handleAuthError = (err) => {
     console.error('Auth check - Error loading data:', err);
@@ -199,96 +173,13 @@ export default function Picks() {
         [gameIdStr]: false
       }));
     } else {
-      // Check if user already has a started locked game in the SAME WEEK as this game
-      const targetGame = games.find(g => g.id === Number(gameIdStr));
-      if (targetGame) {
-        const { weekStart, weekEnd } = getGameWeekBounds(targetGame.game_date);
-        const currentTime = new Date();
-        
-        // Find any existing locked games in the same week that have started
-        const allLocks = { ...existingLocks, ...locks };
-        let startedLockedGameInSameWeek = null;
-        
-        console.log('Week calculation for target game:', {
-          targetGameId: gameIdStr,
-          targetGameDate: targetGame.game_date,
-          weekStart: weekStart.toISOString(),
-          weekEnd: weekEnd.toISOString(),
-          dayOfWeek: new Date(targetGame.game_date).getDay(), // 0=Sunday, 3=Wednesday
-          dayName: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date(targetGame.game_date).getDay()]
-        });
-        
-        for (const [lockGameIdStr, isLocked] of Object.entries(allLocks)) {
-          if (isLocked) {
-            const lockGame = games.find(g => g.id === Number(lockGameIdStr));
-            if (lockGame) {
-              const lockGameDate = new Date(lockGame.game_date);
-              const isInSameWeek = lockGameDate >= weekStart && lockGameDate <= weekEnd;
-              const hasStarted = currentTime >= lockGameDate;
-              
-              console.log(`Checking locked game ${lockGameIdStr}:`, {
-                gameDate: lockGame.game_date,
-                dayOfWeek: lockGameDate.getDay(),
-                dayName: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][lockGameDate.getDay()],
-                isInSameWeek,
-                hasStarted
-              });
-              
-              // Check if this locked game is in the same week and has started
-              if (isInSameWeek && hasStarted) {
-                startedLockedGameInSameWeek = lockGame;
-                break;
-              }
-            }
-          }
-        }
-        
-        if (startedLockedGameInSameWeek) {
-          const gameInfo = `${startedLockedGameInSameWeek.away_team} @ ${startedLockedGameInSameWeek.home_team}`;
-          alert(`Your locked game (${gameInfo}) has already started and cannot be changed.`);
-          return; // Don't allow the lock
-        }
-      }
-      
-      // If this pick is not locked, lock it and unlock all others IN THE SAME WEEK
-      console.log('Locking game', gameIdStr, 'and unlocking others in same week');
-      const newLocks = {};
-      
-      // Find the target game's week bounds
-      const targetGameForWeek = games.find(g => g.id === Number(gameIdStr));
-      if (targetGameForWeek) {
-        const { weekStart, weekEnd } = getGameWeekBounds(targetGameForWeek.game_date);
-        
-        // Only unlock locks that are in the same week as the target game
-        Object.keys(locks).forEach(id => {
-          const game = games.find(g => g.id === Number(id));
-          if (game) {
-            const gameDate = new Date(game.game_date);
-            if (gameDate >= weekStart && gameDate <= weekEnd) {
-              // This game is in the same week, so unlock it
-              newLocks[id] = false;
-            }
-            // If game is in a different week, don't touch it (don't add to newLocks)
-          }
-        });
-        
-        // Only unlock existing locks from database that are in the same week
-        Object.keys(existingLocks).forEach(id => {
-          const game = games.find(g => g.id === Number(id));
-          if (game) {
-            const gameDate = new Date(game.game_date);
-            if (gameDate >= weekStart && gameDate <= weekEnd) {
-              // This game is in the same week, so unlock it
-              newLocks[id] = false;
-            }
-            // If game is in a different week, don't touch it (don't add to newLocks)
-          }
-        });
-      }
-      
-      // Lock only this pick
-      newLocks[gameIdStr] = true;
-      setLocks(newLocks);
+      // If this pick is not locked, lock it
+      // The backend will handle unlocking other games in the same week
+      console.log('Locking game', gameIdStr);
+      setLocks(prevLocks => ({
+        ...prevLocks,
+        [gameIdStr]: true
+      }));
     }
   };
 
@@ -474,7 +365,10 @@ export default function Picks() {
   };
 
   const hasGameStarted = (gameDate) => {
-    return new Date() >= new Date(gameDate);
+    // Use UTC comparison for consistency with backend
+    const now = new Date();
+    const gameTime = new Date(gameDate);
+    return now.getTime() >= gameTime.getTime();
   };
 
   const availableGames = games.filter(game => {

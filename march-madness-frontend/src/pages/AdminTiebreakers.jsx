@@ -70,16 +70,17 @@ const AdminTiebreakers = () => {
     setSuccess(null);
     
     try {
-      // Create a date object from the input
+      // The datetime-local input is in the user's local timezone
+      // We need to convert it to UTC for storage
       const localDate = new Date(newTiebreaker.start_time);
-      // Get the local timezone offset in minutes
-      const offset = localDate.getTimezoneOffset();
-      // Adjust the date to account for the timezone offset
-      const adjustedDate = new Date(localDate.getTime() - (offset * 60 * 1000));
+      
+      // The toISOString() method automatically converts to UTC
+      // This is the correct way to convert local time to UTC
+      const utcDateString = localDate.toISOString();
       
       const tiebreakerData = {
         ...newTiebreaker,
-        start_time: adjustedDate.toISOString(),
+        start_time: utcDateString,
       };
 
       const response = await axios.post(`${API_URL}/tiebreakers`, tiebreakerData, {
@@ -101,13 +102,23 @@ const AdminTiebreakers = () => {
       } else {
         setError('Failed to add tiebreaker. Please try again.');
       }
+      console.error('Error adding tiebreaker:', err);
     }
   };
 
   const handleEditClick = (tiebreaker) => {
+    // Convert UTC start_time to local time for datetime-local input
+    const utcDate = new Date(tiebreaker.start_time);
+    
+    // Create a new Date object in local timezone
+    const localDate = new Date(utcDate.getTime() - (utcDate.getTimezoneOffset() * 60000));
+    
+    // Format as YYYY-MM-DDTHH:MM for datetime-local input
+    const localDateString = localDate.toISOString().slice(0, 16);
+    
     setEditingTiebreaker({
       ...tiebreaker,
-      start_time: tiebreaker.start_time
+      start_time: localDateString
     });
     setShowEditModal(true);
   };
@@ -118,13 +129,13 @@ const AdminTiebreakers = () => {
     setSuccess(null);
     
     try {
+      // Convert local time back to UTC for storage
       const localDate = new Date(editingTiebreaker.start_time);
-      const offset = localDate.getTimezoneOffset();
-      const adjustedDate = new Date(localDate.getTime() - (offset * 60 * 1000));
+      const utcDateString = localDate.toISOString();
       
       const tiebreakerData = {
         ...editingTiebreaker,
-        start_time: adjustedDate.toISOString(),
+        start_time: utcDateString,
       };
       
       await axios.put(`${API_URL}/tiebreakers/${editingTiebreaker.id}`, tiebreakerData, {
