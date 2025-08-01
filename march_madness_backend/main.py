@@ -50,8 +50,8 @@ def get_game_week_bounds(game_date):
     
     # Find the Wednesday that starts the week containing this game
     days_since_wednesday = (game_date_est.weekday() - 2) % 7  # Wednesday is 2 (0-indexed)
-    if days_since_wednesday == 0 and game_date_est.hour < 12:
-        # If it's Wednesday but before 12 AM, go back to previous Wednesday
+    if days_since_wednesday == 0 and game_date_est.hour == 0:
+        # If it's Wednesday but exactly at 12 AM, go back to the previous Wednesday
         days_since_wednesday = 7
     
     week_start = game_date_est - timedelta(days=days_since_wednesday)
