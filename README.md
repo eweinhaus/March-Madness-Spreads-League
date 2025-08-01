@@ -3,7 +3,7 @@
 This web application is currently being utilized by 40+ active users to track and score sports spread picking pools across multiple sports and leagues.
 
 You can view the live site here: 
-https://spreads-league.onrender.com/leaderboard
+https://www.spreadpools.com
 
 
 ## Features

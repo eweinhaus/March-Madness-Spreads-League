@@ -8,6 +8,7 @@ from psycopg2.pool import SimpleConnectionPool
 import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import logging
 from contextlib import contextmanager
 import smtplib
@@ -33,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
+
+# Get league ID from environment or use default
+LEAGUE_ID = os.getenv("LEAGUE_ID", "march_madness_2025")
 
 def get_current_utc_time():
     """Get current time in UTC."""
@@ -80,7 +84,7 @@ pool = SimpleConnectionPool(
 )
 
 # OAuth2 scheme
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token", auto_error=False)
 
 @contextmanager
 def get_db_connection():
@@ -108,6 +112,15 @@ def get_db_cursor(commit=False):
 
 app = FastAPI()
 
+# Add request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Request: {request.method} {request.url}")
+    logger.info(f"Headers: {dict(request.headers)}")
+    response = await call_next(request)
+    logger.info(f"Response status: {response.status_code}")
+    return response
+
 # Add CORS middleware - must be added before routes
 app.add_middleware(
     CORSMiddleware,
@@ -119,11 +132,14 @@ app.add_middleware(
         "https://march-madness-spreads-league.onrender.com",
         "https://march-madness-spreads-league.onrender.com/",
         "https://spreads-backend-qyw5.onrender.com",
-        "https://spreads-backend-qyw5.onrender.com/"
+        "https://spreads-backend-qyw5.onrender.com/",
+        "https://*.onrender.com"  # Allow all onrender.com subdomains
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
+    allow_headers=["*", "Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
+    expose_headers=["*"],
+    max_age=86400,  # Cache preflight requests for 24 hours
 )
 
 @app.get("/debug-token")
@@ -139,6 +155,16 @@ def debug_token(token: str = Depends(oauth2_scheme)):
 def test_cors():
     """Test endpoint to verify CORS is working."""
     return {"message": "CORS is working!", "timestamp": datetime.now().isoformat()}
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+@app.options("/token")
+async def options_token():
+    """Handle OPTIONS request for /token endpoint."""
+    return {"message": "OPTIONS request handled"}
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     """Get the current user from the token."""
@@ -237,6 +263,7 @@ async def register(user: UserCreate):
 @app.post("/token", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     """Login and get access token."""
+    logger.info("Login attempt received")
     try:
         with get_db_cursor() as cur:
             cur.execute(
@@ -246,6 +273,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
             user = cur.fetchone()
             
             if not user or not verify_password(form_data.password, user["password_hash"]):
+                logger.warning(f"Login failed for username: {form_data.username}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Incorrect username or password",
@@ -253,6 +281,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
                 )
             
             access_token = create_access_token(data={"sub": user["username"]}, username=user["username"])
+            logger.info(f"Login successful for username: {form_data.username}")
             return {"access_token": access_token, "token_type": "bearer"}
     except Exception as e:
         logger.error(f"Error logging in: {str(e)}")
