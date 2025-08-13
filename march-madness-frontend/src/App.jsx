@@ -1,6 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Link, Navigate, useNavigate } from 'react-router-dom';
 import { Container, Nav, Navbar, Button } from 'react-bootstrap';
 import { useState, useEffect } from 'react';
+import { FaLock } from 'react-icons/fa';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import './App.css';
 import axios from 'axios';
@@ -175,13 +176,13 @@ function AppContent() {
               <Nav.Link as={Link} to="/leaderboard" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Leaderboard</Nav.Link>
               <Nav.Link as={Link} to="/live" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Live</Nav.Link>
               {isAuthenticated && isAdmin && (
-                <Nav.Link as={Link} to="/admin/games" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>$Games</Nav.Link>
+                <Nav.Link as={Link} to="/admin/games" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}><FaLock className="me-1" />Games</Nav.Link>
               )}
               {isAuthenticated && isAdmin && (
-                <Nav.Link as={Link} to="/admin/tiebreakers" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>$Questions</Nav.Link>
+                <Nav.Link as={Link} to="/admin/tiebreakers" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}><FaLock className="me-1" />Questions</Nav.Link>
               )}
               {isAuthenticated && isAdmin && (
-                <Nav.Link as={Link} to="/admin/user-picks" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>$User Picks</Nav.Link>
+                <Nav.Link as={Link} to="/admin/user-picks" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}><FaLock className="me-1" />User Picks</Nav.Link>
               )}
             </Nav>
             <Nav>
