@@ -152,14 +152,77 @@ export default function Live() {
     setSelectedTiebreaker(null);
   };
 
+  // Function to normalize team names for comparison
+  const normalizeTeamName = (teamName) => {
+    if (!teamName) return '';
+    return teamName
+      // Handle "St." at the beginning (like "St. Mary's" -> "Saint Mary's")
+      .replace(/^St\.\s+/g, 'Saint ')
+      // Handle "St." in the middle or end (like "Iowa St." -> "Iowa State")
+      .replace(/\bSt\.\b/g, 'State')
+      // Handle directional abbreviations
+      .replace(/\bW\.\b/g, 'Western')
+      .replace(/\bC\.\b/g, 'Central')
+      .replace(/\bE\.\b/g, 'Eastern')
+      .replace(/\bSo\.\b/g, 'Southern')
+      .replace(/\bN\.\b/g, 'Northern')
+      // Handle state abbreviations
+      .replace(/\bTenn\b/g, 'Tennessee')
+      .replace(/\bFla\.\b/g, 'Florida')
+      .replace(/\bArk\b/g, 'Arkansas')
+      // Handle regional abbreviations (only standalone SE, not part of words like Tennessee)
+      .replace(/\bSE\b/g, 'Southeast')
+      // Normalize full words to be consistent
+      .replace(/\bState\b/g, 'State')
+      .replace(/\bWestern\b/g, 'Western')
+      .replace(/\bCentral\b/g, 'Central')
+      .replace(/\bEastern\b/g, 'Eastern')
+      .replace(/\bSouthern\b/g, 'Southern')
+      .replace(/\bNorthern\b/g, 'Northern')
+      .replace(/\bTennessee\b/g, 'Tennessee')
+      .replace(/\bFlorida\b/g, 'Florida')
+      .replace(/\bArkansas\b/g, 'Arkansas')
+      .replace(/\bSoutheast\b/g, 'Southeast')
+      .toLowerCase()
+      .trim();
+  };
+
+  // Function to check if two team names match (handling St./State variations)
+  const teamNamesMatch = (name1, name2) => {
+    if (!name1 || !name2) return false;
+    
+    const normalized1 = normalizeTeamName(name1);
+    const normalized2 = normalizeTeamName(name2);
+    
+    // Exact match after normalization
+    if (normalized1 === normalized2) return true;
+    
+    // Check if one contains the other
+    return normalized1.includes(normalized2) || normalized2.includes(normalized1);
+  };
+
   // Function to get the score for the selected game
   const getGameScore = (game) => {
-    return gameScores.find(score => 
-      (score.AwayTeam === game.away_team && score.HomeTeam === game.home_team) ||
-      (score.AwayTeam === game.home_team && score.HomeTeam === game.away_team) ||
-      (score.AwayTeam.includes(game.away_team) || score.AwayTeam.includes(game.home_team)) ||
-      (score.HomeTeam.includes(game.away_team) || score.HomeTeam.includes(game.home_team))
-    );
+    return gameScores.find(score => {
+      // Check exact matches first
+      if ((score.AwayTeam === game.away_team && score.HomeTeam === game.home_team) ||
+          (score.AwayTeam === game.home_team && score.HomeTeam === game.away_team)) {
+        return true;
+      }
+      
+      // Check normalized matches (handling St./State variations)
+      if (teamNamesMatch(score.AwayTeam, game.away_team) && teamNamesMatch(score.HomeTeam, game.home_team)) {
+        return true;
+      }
+      
+      if (teamNamesMatch(score.AwayTeam, game.home_team) && teamNamesMatch(score.HomeTeam, game.away_team)) {
+        return true;
+      }
+      
+      // Fallback to partial matching
+      return (score.AwayTeam.includes(game.away_team) || score.AwayTeam.includes(game.home_team)) ||
+             (score.HomeTeam.includes(game.away_team) || score.HomeTeam.includes(game.home_team));
+    });
   };
 
   return (
