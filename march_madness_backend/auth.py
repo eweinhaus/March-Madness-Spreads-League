@@ -28,7 +28,7 @@ class UserCreate(BaseModel):
     username: str
     full_name: str
     email: str
-    league_id: str
+    league_id: Optional[str] = None
     password: str
 
 class UserLogin(BaseModel):

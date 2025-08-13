@@ -295,12 +295,8 @@ async def get_current_admin_user(current_user: User = Depends(get_current_user))
 async def register(user: UserCreate):
     """Register a new user."""
     try:
-        # Validate league ID
-        if user.league_id != LEAGUE_ID:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid league ID. Please enter the valid league ID: {LEAGUE_ID}."
-            )
+        # Use default league ID if not provided
+        league_id = user.league_id if user.league_id else LEAGUE_ID
             
         with get_db_cursor(commit=True) as cur:
             # Check if username exists
@@ -319,7 +315,7 @@ async def register(user: UserCreate):
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING id, username, full_name, email, league_id, is_admin
                 """,
-                (user.username, user.full_name, user.email, user.league_id, hashed_password)
+                (user.username, user.full_name, user.email, league_id, hashed_password)
             )
             new_user = cur.fetchone()
             

@@ -8,7 +8,6 @@ const Register = () => {
     username: '',
     full_name: '',
     email: '',
-    league_id: '',
     password: '',
     confirmPassword: '',
   });
@@ -45,7 +44,6 @@ const Register = () => {
           username: formData.username,
           full_name: formData.full_name,
           email: formData.email,
-          league_id: formData.league_id,
           password: formData.password,
         }),
       });
@@ -135,19 +133,6 @@ const Register = () => {
                   onChange={handleChange}
                   required
                   className="py-2"
-                />
-              </Form.Group>
-
-              <Form.Group className="mb-3">
-                <Form.Label>League ID *</Form.Label>
-                <Form.Control
-                  type="text"
-                  name="league_id"
-                  value={formData.league_id}
-                  onChange={handleChange}
-                  required
-                  className="py-2"
-                  placeholder="Enter your league ID (required)"
                 />
               </Form.Group>
 
