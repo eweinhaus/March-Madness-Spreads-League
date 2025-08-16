@@ -53,3 +53,5 @@ logs/
 
 #Any file starting with "test_"
 test_*
+
+database_exports

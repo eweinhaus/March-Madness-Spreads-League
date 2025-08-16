@@ -31,7 +31,7 @@ export default function Picks() {
     });
   };
 
-  // Helper function to get week start for a game date (Wednesday 3:00 AM EST/EDT)
+  // Helper function to get week start for a game date (Tuesday 3:00 AM EST/EDT)
   const getWeekStart = (gameDate) => {
     const date = new Date(gameDate);
     
@@ -42,24 +42,24 @@ export default function Picks() {
     const estDate = new Date(date);
     estDate.setUTCHours(estHours);
     
-    // Find the Wednesday that starts the week
-    const dayOfWeek = estDate.getDay(); // 0=Sunday, 3=Wednesday
-    const daysSinceWednesday = (dayOfWeek - 3 + 7) % 7;
+    // Find the Tuesday that starts the week
+    const dayOfWeek = estDate.getDay(); // 0=Sunday, 2=Tuesday
+    const daysSinceTuesday = (dayOfWeek - 2 + 7) % 7;
     
     const weekStart = new Date(estDate);
-    weekStart.setDate(estDate.getDate() - daysSinceWednesday);
+    weekStart.setDate(estDate.getDate() - daysSinceTuesday);
     weekStart.setHours(3, 0, 0, 0); // 3:00 AM
     
     return weekStart;
   };
 
-  // Helper function to get game week bounds (Wednesday 3:00 AM to Tuesday 2:59 AM EST)
+  // Helper function to get game week bounds (Tuesday 3:00 AM to Tuesday 2:59 AM EST)
   const getGameWeekBounds = (gameDate) => {
     const weekStart = getWeekStart(gameDate);
     
-    // Week ends Tuesday 2:59 AM (6 days later)
+    // Week ends Tuesday 2:59 AM (7 days later)
     const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setDate(weekStart.getDate() + 7);
     weekEnd.setHours(2, 59, 59, 999);
     
     return { weekStart, weekEnd };

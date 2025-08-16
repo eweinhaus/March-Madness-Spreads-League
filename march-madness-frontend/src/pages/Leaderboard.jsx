@@ -12,6 +12,7 @@ export default function Leaderboard() {
   const [userPicks, setUserPicks] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [filter, setFilter] = useState('overall');
+  const [weekOptions, setWeekOptions] = useState([]);
   const navigate = useNavigate();
 
   // Function to handle authentication errors
@@ -60,8 +61,46 @@ export default function Leaderboard() {
   };
 
   useEffect(() => {
+    fetchWeekOptions();
+  }, []);
+
+  useEffect(() => {
     fetchLeaderboard();
   }, [filter]);
+
+  const fetchWeekOptions = () => {
+    axios.get(`${API_URL}/leaderboard/weeks`)
+      .then(res => {
+        setWeekOptions(res.data.weeks);
+      })
+      .catch(err => {
+        console.error('Failed to load week options:', err);
+        // Fallback to hardcoded options if API fails
+        setWeekOptions([
+          { key: "overall", label: "Overall" },
+          { key: "cfb_week_0", label: "CFB Week 0" },
+          { key: "cfb_week_1", label: "CFB Week 1" },
+          { key: "cfb_week_2_nfl_week_1", label: "CFB Week 2, NFL Week 1" },
+          { key: "cfb_week_3_nfl_week_2", label: "CFB Week 3, NFL Week 2" },
+          { key: "cfb_week_4_nfl_week_3", label: "CFB Week 4, NFL Week 3" },
+          { key: "cfb_week_5_nfl_week_4", label: "CFB Week 5, NFL Week 4" },
+          { key: "cfb_week_6_nfl_week_5", label: "CFB Week 6, NFL Week 5" },
+          { key: "cfb_week_7_nfl_week_6", label: "CFB Week 7, NFL Week 6" },
+          { key: "cfb_week_8_nfl_week_7", label: "CFB Week 8, NFL Week 7" },
+          { key: "cfb_week_9_nfl_week_8", label: "CFB Week 9, NFL Week 8" },
+          { key: "cfb_week_10_nfl_week_9", label: "CFB Week 10, NFL Week 9" },
+          { key: "cfb_week_11_nfl_week_10", label: "CFB Week 11, NFL Week 10" },
+          { key: "cfb_week_12_nfl_week_11", label: "CFB Week 12, NFL Week 11" },
+          { key: "cfb_week_13_nfl_week_12", label: "CFB Week 13, NFL Week 12" },
+          { key: "cfb_week_14_nfl_week_13", label: "CFB Week 14, NFL Week 13" },
+          { key: "nfl_week_14", label: "NFL Week 14" },
+          { key: "nfl_week_15", label: "NFL Week 15" },
+          { key: "nfl_week_16", label: "NFL Week 16" },
+          { key: "nfl_week_17", label: "NFL Week 17" },
+          { key: "nfl_week_18", label: "NFL Week 18" }
+        ]);
+      });
+  };
 
   const fetchLeaderboard = () => {
     // Leaderboard endpoint doesn't require authentication
@@ -117,10 +156,11 @@ export default function Leaderboard() {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         >
-          <option value="overall">Overall</option>
-          <option value="first_half">First Half</option>
-          <option value="second_half">Second Half</option>
-          <option value="andrew">Andrew</option>
+          {weekOptions.map((week) => (
+            <option key={week.key} value={week.key}>
+              {week.label}
+            </option>
+          ))}
         </Form.Select>
       </div>
       
@@ -161,7 +201,7 @@ export default function Leaderboard() {
         <Modal.Body className="p-2 p-md-3">
           {(!userPicks.picks || userPicks.picks.length === 0) && (!userPicks.tiebreakers || userPicks.tiebreakers.length === 0) ? (
             <Alert variant="info">
-              No contests available that have started.
+              No picks available for this time period
             </Alert>
           ) : (
             <>

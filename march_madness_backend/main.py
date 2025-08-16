@@ -20,13 +20,14 @@ from auth import (
     Token, UserCreate, UserLogin, User, ForgotPasswordRequest,
     verify_password, get_password_hash, create_access_token, verify_token
 )
-from typing import Optional, Union
+from typing import Optional, Union, List
 import urllib.parse
 import db
 from flask import Flask, jsonify
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
+import re
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -55,7 +56,7 @@ def normalize_datetime(dt):
     return dt.replace(tzinfo=timezone.utc)
 
 def get_game_week_bounds(game_date):
-    """Get the start and end of the week for a given game date (3:00 AM Wednesday EST/EDT through 2:59 AM Wednesday EST/EDT)."""
+    """Get the start and end of the week for a given game date (3:00 AM Tuesday EST/EDT through 2:59 AM Tuesday EST/EDT)."""
     # Ensure game_date is in UTC
     game_date = normalize_datetime(game_date)
 
@@ -63,13 +64,13 @@ def get_game_week_bounds(game_date):
     ny_tz = ZoneInfo("America/New_York")
     game_date_ny = game_date.astimezone(ny_tz)
     
-    # Find the Wednesday that starts the week containing this game
-    days_since_wednesday = (game_date_ny.weekday() - 2) % 7  # Wednesday is 2 (0-indexed)
-    if game_date_ny.weekday() == 2 and game_date_ny.hour < 3:
-        # If it's Wednesday but before 3:00 AM, it belongs to the previous week
-        days_since_wednesday = 7
+    # Find the Tuesday that starts the week containing this game
+    days_since_tuesday = (game_date_ny.weekday() - 1) % 7  # Tuesday is 1 (0-indexed)
+    if game_date_ny.weekday() == 1 and game_date_ny.hour < 3:
+        # If it's Tuesday but before 3:00 AM, it belongs to the previous week
+        days_since_tuesday = 7
     
-    week_start_ny = game_date_ny - timedelta(days=days_since_wednesday)
+    week_start_ny = game_date_ny - timedelta(days=days_since_tuesday)
     week_start_ny = week_start_ny.replace(hour=3, minute=0, second=0, microsecond=0)
     
     # Week ends at the start of the next week. The range is [start, end).
@@ -170,6 +171,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:5173",
+        "http://192.168.4.38:5173",
+        "http://192.168.4.38:3000",
         os.getenv("DEV_IP_ADDRESS", ""),
         "https://spreads-league.onrender.com",
         "https://march-madness-spreads-league.onrender.com",
@@ -706,6 +709,21 @@ def update_score(result: GameResult):
         logger.error(f"Error updating score: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/leaderboard/weeks")
+def get_available_weeks():
+    """Get all available week options for the leaderboard."""
+    try:
+        week_ranges = get_week_ranges()
+        return {
+            "weeks": [
+                {"key": key, "label": info["label"]} 
+                for key, info in week_ranges.items()
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error fetching available weeks: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/leaderboard")
 def get_leaderboard(filter: str = "overall"):
     try:
@@ -726,12 +744,9 @@ def get_leaderboard(filter: str = "overall"):
                 WITH filtered_users AS (
                     SELECT id, username, full_name
                     FROM users
-                    WHERE 1=1
+                    WHERE created_at >= '2025-06-01T00:00:00Z'
+                    AND username != 'adminEthan'
             """
-            
-            # Add filter for Andrew users
-            if filter == "andrew":
-                points_query += " AND LOWER(full_name) LIKE '%drew%'"
             
             points_query += """
                 ),
@@ -742,11 +757,9 @@ def get_leaderboard(filter: str = "overall"):
                     WHERE 1=1
             """
             
-            # Add time filter for games
-            if filter == "first_half":
-                points_query += " AND g.game_date < '2025-03-24T00:00:00Z'"
-            elif filter == "second_half":
-                points_query += " AND g.game_date >= '2025-03-24T00:00:00Z'"
+            # Add time filter for games using week-based filtering
+            start_condition, end_condition = get_week_filter_conditions(filter)
+            points_query += start_condition + end_condition
             
             points_query += """
                     GROUP BY user_id
@@ -758,11 +771,9 @@ def get_leaderboard(filter: str = "overall"):
                     WHERE 1=1
             """
             
-            # Add time filter for tiebreakers
-            if filter == "first_half":
-                points_query += " AND t.start_time < '2025-03-24T00:00:00Z'"
-            elif filter == "second_half":
-                points_query += " AND t.start_time >= '2025-03-24T00:00:00Z'"
+            # Add time filter for tiebreakers using week-based filtering
+            tiebreaker_start_condition, tiebreaker_end_condition = get_tiebreaker_week_filter_conditions(filter)
+            points_query += tiebreaker_start_condition + tiebreaker_end_condition
             
             points_query += """
                     GROUP BY user_id
@@ -783,6 +794,70 @@ def get_leaderboard(filter: str = "overall"):
     except Exception as e:
         logger.error(f"Error fetching leaderboard: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+def get_week_ranges():
+    """Define all CFB and NFL week ranges for the 2025 season."""
+    # All times are in UTC (Eastern + 4 hours during EDT, +5 during EST)
+    # CFB Week 0: Tues Aug 19 2025 3am ET to Tues Aug 26 2025 2:59am ET
+    # CFB Week 1: Tues Aug 26 2025 3am ET to Tues Sept 2 2025 2:59am ET
+    # etc.
+    
+    week_ranges = {
+        "overall": {"start": None, "end": None, "label": "Overall"},
+        "cfb_week_0": {"start": "2025-08-19T07:00:00Z", "end": "2025-08-26T06:59:59Z", "label": "CFB Week 0"},
+        "cfb_week_1": {"start": "2025-08-26T07:00:00Z", "end": "2025-09-02T06:59:59Z", "label": "CFB Week 1"},
+        "cfb_week_2_nfl_week_1": {"start": "2025-09-02T07:00:00Z", "end": "2025-09-09T06:59:59Z", "label": "CFB Week 2, NFL Week 1"},
+        "cfb_week_3_nfl_week_2": {"start": "2025-09-09T07:00:00Z", "end": "2025-09-16T06:59:59Z", "label": "CFB Week 3, NFL Week 2"},
+        "cfb_week_4_nfl_week_3": {"start": "2025-09-16T07:00:00Z", "end": "2025-09-23T06:59:59Z", "label": "CFB Week 4, NFL Week 3"},
+        "cfb_week_5_nfl_week_4": {"start": "2025-09-23T07:00:00Z", "end": "2025-09-30T06:59:59Z", "label": "CFB Week 5, NFL Week 4"},
+        "cfb_week_6_nfl_week_5": {"start": "2025-09-30T07:00:00Z", "end": "2025-10-07T06:59:59Z", "label": "CFB Week 6, NFL Week 5"},
+        "cfb_week_7_nfl_week_6": {"start": "2025-10-07T07:00:00Z", "end": "2025-10-14T06:59:59Z", "label": "CFB Week 7, NFL Week 6"},
+        "cfb_week_8_nfl_week_7": {"start": "2025-10-14T07:00:00Z", "end": "2025-10-21T06:59:59Z", "label": "CFB Week 8, NFL Week 7"},
+        "cfb_week_9_nfl_week_8": {"start": "2025-10-21T07:00:00Z", "end": "2025-10-28T06:59:59Z", "label": "CFB Week 9, NFL Week 8"},
+        "cfb_week_10_nfl_week_9": {"start": "2025-10-28T07:00:00Z", "end": "2025-11-04T06:59:59Z", "label": "CFB Week 10, NFL Week 9"},
+        "cfb_week_11_nfl_week_10": {"start": "2025-11-04T07:00:00Z", "end": "2025-11-11T06:59:59Z", "label": "CFB Week 11, NFL Week 10"},
+        "cfb_week_12_nfl_week_11": {"start": "2025-11-11T07:00:00Z", "end": "2025-11-18T06:59:59Z", "label": "CFB Week 12, NFL Week 11"},
+        "cfb_week_13_nfl_week_12": {"start": "2025-11-18T07:00:00Z", "end": "2025-11-25T06:59:59Z", "label": "CFB Week 13, NFL Week 12"},
+        "cfb_week_14_nfl_week_13": {"start": "2025-11-25T07:00:00Z", "end": "2025-12-02T06:59:59Z", "label": "CFB Week 14, NFL Week 13"},
+        "nfl_week_14": {"start": "2025-12-02T07:00:00Z", "end": "2025-12-09T06:59:59Z", "label": "NFL Week 14"},
+        "nfl_week_15": {"start": "2025-12-09T07:00:00Z", "end": "2025-12-16T06:59:59Z", "label": "NFL Week 15"},
+        "nfl_week_16": {"start": "2025-12-16T07:00:00Z", "end": "2025-12-23T06:59:59Z", "label": "NFL Week 16"},
+        "nfl_week_17": {"start": "2025-12-23T07:00:00Z", "end": "2025-12-30T06:59:59Z", "label": "NFL Week 17"},
+        "nfl_week_18": {"start": "2025-12-30T07:00:00Z", "end": "2026-01-06T06:59:59Z", "label": "NFL Week 18"}
+    }
+    return week_ranges
+
+def get_week_filter_conditions(filter_key):
+    """Get the SQL filter conditions for a given week filter."""
+    week_ranges = get_week_ranges()
+    
+    if filter_key not in week_ranges:
+        return "", ""
+    
+    week_info = week_ranges[filter_key]
+    
+    if filter_key == "overall":
+        return "", ""
+    else:
+        start_condition = f" AND g.game_date >= '{week_info['start']}'" if week_info['start'] else ""
+        end_condition = f" AND g.game_date <= '{week_info['end']}'" if week_info['end'] else ""
+        return start_condition, end_condition
+
+def get_tiebreaker_week_filter_conditions(filter_key):
+    """Get the SQL filter conditions for tiebreakers for a given week filter."""
+    week_ranges = get_week_ranges()
+    
+    if filter_key not in week_ranges:
+        return "", ""
+    
+    week_info = week_ranges[filter_key]
+    
+    if filter_key == "overall":
+        return "", ""
+    else:
+        start_condition = f" AND t.start_time >= '{week_info['start']}'" if week_info['start'] else ""
+        end_condition = f" AND t.start_time <= '{week_info['end']}'" if week_info['end'] else ""
+        return start_condition, end_condition
 
 @app.post("/games")
 async def create_game(
@@ -924,7 +999,7 @@ def get_live_games():
                                 'full_name', u.full_name,
                                 'picked_team', p.picked_team
                             )
-                        ) FILTER (WHERE u.username IS NOT NULL),
+                        ) FILTER (WHERE u.username IS NOT NULL AND u.username != 'adminEthan'),
                         '[]'
                     ) as picks
                 FROM games g
@@ -1153,6 +1228,7 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
             FROM users u
             LEFT JOIN upcoming_picks up ON u.id = up.user_id
             LEFT JOIN upcoming_tiebreaker_picks utp ON u.id = utp.user_id
+            WHERE u.username != 'adminEthan'
             ORDER BY u.username
         """, (current_time, current_time))
         
@@ -1317,7 +1393,7 @@ def get_live_tiebreakers():
                                 'full_name', u.full_name,
                                 'answer', tp.answer
                             )
-                        ) FILTER (WHERE u.username IS NOT NULL),
+                        ) FILTER (WHERE u.username IS NOT NULL AND u.username != 'adminEthan'),
                         '[]'
                     ) as picks
                 FROM tiebreakers t
@@ -1541,6 +1617,10 @@ async def get_user_all_picks(
             user = cur.fetchone()
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
+            
+            # Prevent access to adminEthan's picks
+            if username == 'adminEthan':
+                raise HTTPException(status_code=404, detail="User not found")
 
             # Get all game picks
             cur.execute("""
@@ -1694,6 +1774,10 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
             user = cur.fetchone()
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
+            
+            # Prevent access to adminEthan's picks
+            if username == 'adminEthan':
+                raise HTTPException(status_code=404, detail="User not found")
 
             # Get all game picks for games that have started
             game_query = """
@@ -1711,10 +1795,9 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
                 WHERE g.game_date <= %s
             """
             
-            if filter == "first_half":
-                game_query += " AND g.game_date < '2025-03-24T00:00:00Z'"
-            elif filter == "second_half":
-                game_query += " AND g.game_date >= '2025-03-24T00:00:00Z'"
+            # Add time filter for games using week-based filtering
+            start_condition, end_condition = get_week_filter_conditions(filter)
+            game_query += start_condition + end_condition
                 
             game_query += " ORDER BY g.game_date DESC"
             
@@ -1736,10 +1819,9 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
                 WHERE t.start_time <= %s
             """
             
-            if filter == "first_half":
-                tiebreaker_query += " AND t.start_time < '2025-03-24T00:00:00Z'"
-            elif filter == "second_half":
-                tiebreaker_query += " AND t.start_time >= '2025-03-24T00:00:00Z'"
+            # Add time filter for tiebreakers using week-based filtering
+            tiebreaker_start_condition, tiebreaker_end_condition = get_tiebreaker_week_filter_conditions(filter)
+            tiebreaker_query += tiebreaker_start_condition + tiebreaker_end_condition
                 
             tiebreaker_query += " ORDER BY t.start_time DESC"
             
