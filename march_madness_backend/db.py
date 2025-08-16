@@ -91,6 +91,15 @@ def create_tables(conn):
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, tiebreaker_id)
                 );
+                
+                -- Create indexes for better performance
+                CREATE INDEX IF NOT EXISTS idx_games_game_date ON games(game_date);
+                CREATE INDEX IF NOT EXISTS idx_picks_user_id ON picks(user_id);
+                CREATE INDEX IF NOT EXISTS idx_picks_game_id ON picks(game_id);
+                CREATE INDEX IF NOT EXISTS idx_tiebreakers_start_time ON tiebreakers(start_time);
+                CREATE INDEX IF NOT EXISTS idx_tiebreakers_is_active ON tiebreakers(is_active);
+                CREATE INDEX IF NOT EXISTS idx_tiebreaker_picks_user_id ON tiebreaker_picks(user_id);
+                CREATE INDEX IF NOT EXISTS idx_tiebreaker_picks_tiebreaker_id ON tiebreaker_picks(tiebreaker_id);
             """)
             conn.commit()
             logger.info("Database tables created successfully")

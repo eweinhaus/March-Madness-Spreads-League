@@ -186,9 +186,21 @@ export default function Leaderboard() {
               <div>
                 {index + 1}. {player.full_name}
               </div>
-              <span className="badge bg-primary rounded-pill">
-                {player.total_points} points
-              </span>
+              <div className="d-flex align-items-center gap-2">
+                <span className="badge bg-primary rounded-pill">
+                  {player.total_points} points
+                </span>
+                {player.correct_locks > 0 && (
+                  <span className="badge bg-success rounded-pill" style={{ fontSize: '0.75rem' }}>
+                    {player.correct_locks} lock{player.correct_locks !== 1 ? 's' : ''}
+                  </span>
+                )}
+                {player.first_tiebreaker_diff !== 999999 && (
+                  <span className="badge bg-info rounded-pill" style={{ fontSize: '0.75rem' }}>
+                    TB1: {player.first_tiebreaker_diff}
+                  </span>
+                )}
+              </div>
             </li>
           ))}
         </ul>
@@ -252,10 +264,11 @@ export default function Leaderboard() {
                   <div className="table-responsive">
                     <Table striped bordered hover responsive className="mb-0" size="sm">
                       <thead>
-                        <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
-                          <th className="py-2">Question</th>
-                          <th className="py-2">Pick</th>
-                        </tr>
+                                              <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
+                        <th className="py-2">Question</th>
+                        <th className="py-2">Pick</th>
+                        <th className="py-2">Accuracy</th>
+                      </tr>
                       </thead>
                       <tbody className="small">
                         {userPicks.tiebreakers
@@ -285,6 +298,15 @@ export default function Leaderboard() {
                                   <span className="text-muted ms-2" style={{ fontSize: '0.8rem' }}>
                                     (Correct: {tiebreaker.correct_answer})
                                   </span>
+                                )}
+                              </td>
+                              <td className="py-2 text-center">
+                                {tiebreaker.accuracy_diff !== null ? (
+                                  <span className="badge bg-info" style={{ fontSize: '0.75rem', padding: '0.2em 0.4em' }}>
+                                    {tiebreaker.accuracy_diff}
+                                  </span>
+                                ) : (
+                                  <span className="text-muted" style={{ fontSize: '0.75rem' }}>-</span>
                                 )}
                               </td>
                             </tr>

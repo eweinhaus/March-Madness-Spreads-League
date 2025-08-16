@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import axios from "axios";
 import { Container, Row, Col, Card, Button, Alert, Form } from "react-bootstrap";
 import { API_URL } from "../config";
@@ -117,44 +117,37 @@ export default function Picks() {
     };
 
     setIsLoading(true);
-    // Fetch games, existing picks, and tiebreakers
-    Promise.all([
-      axios.get(`${API_URL}/games`, { headers }),
-      axios.get(`${API_URL}/my_picks`, { headers }),
-      axios.get(`${API_URL}/tiebreakers`, { headers }),
-      axios.get(`${API_URL}/my_tiebreaker_picks`, { headers })
-    ])
-      .then(([gamesRes, picksRes, tiebreakersRes, tiebreakerPicksRes]) => {        
+    // Fetch all data in a single optimized call
+    axios.get(`${API_URL}/picks_data`, { headers })
+      .then((response) => {        
+        const { games, tiebreakers } = response.data;
+        
         // Verify game IDs are properly formatted
-        const games = gamesRes.data;
         games.forEach(game => {
         });
         
         setGames(games);
         
-        // Handle the picks response (back to simple format)
-        const picks = picksRes.data;
-        
         // Convert picks array to object for easier lookup
         const picksObj = {};
         const locksObj = {};
-        picks.forEach(pick => {
-          if (pick.picked_team) {
-            picksObj[pick.game_id] = pick.picked_team;
+        games.forEach(game => {
+          if (game.picked_team) {
+            picksObj[game.game_id] = game.picked_team;
           }
-          if (pick.lock) {
-            locksObj[pick.game_id] = pick.lock;
+          if (game.lock) {
+            locksObj[game.game_id] = game.lock;
           }
         });
         setExistingPicks(picksObj);
         setExistingLocks(locksObj);
 
         // Set tiebreakers and convert tiebreaker picks to object for easier lookup
-        setTiebreakers(tiebreakersRes.data);
+        setTiebreakers(tiebreakers);
         const tiebreakerPicksObj = {};
-        tiebreakerPicksRes.data.forEach(pick => {
-          if (pick.user_answer !== null) {
-            tiebreakerPicksObj[pick.tiebreaker_id] = pick.user_answer;
+        tiebreakers.forEach(tiebreaker => {
+          if (tiebreaker.user_answer !== null) {
+            tiebreakerPicksObj[tiebreaker.tiebreaker_id] = tiebreaker.user_answer;
           }
         });
         setExistingTiebreakerPicks(tiebreakerPicksObj);
@@ -170,21 +163,21 @@ export default function Picks() {
       });
   }, [navigate]);
 
-  const handlePick = (gameId, team) => {
+  const handlePick = useCallback((gameId, team) => {
     // Ensure gameId is stored as a string for consistency
     const gameIdStr = String(gameId);
     console.log(`Setting pick for game ID: ${gameIdStr}, team: ${team}`);
-    setPicks({ ...picks, [gameIdStr]: team });
-  };
+    setPicks(prevPicks => ({ ...prevPicks, [gameIdStr]: team }));
+  }, []);
 
-  const handleTiebreakerPick = (tiebreakerId, answer, isNumeric = true) => {
+  const handleTiebreakerPick = useCallback((tiebreakerId, answer, isNumeric = true) => {
     // Ensure tiebreakerId is stored as a string for consistency
     const tiebreakerIdStr = String(tiebreakerId);
-    setTiebreakerPicks({ 
-      ...tiebreakerPicks, 
+    setTiebreakerPicks(prevPicks => ({ 
+      ...prevPicks, 
       [tiebreakerIdStr]: isNumeric ? parseFloat(answer) : answer 
-    });
-  };
+    }));
+  }, []);
 
   const handleLockToggle = (gameId) => {
     // Ensure gameId is stored as a string for consistency
@@ -473,30 +466,34 @@ export default function Picks() {
     }
   };
 
-  const hasGameStarted = (gameDate) => {
+  const hasGameStarted = useCallback((gameDate) => {
     // Use UTC comparison for consistency with backend
     const now = new Date();
     const gameTime = new Date(gameDate);
     return now.getTime() >= gameTime.getTime();
-  };
+  }, []);
 
-  const availableGames = games.filter(game => {
-    // Ensure game data is valid
-    if (!game || !game.game_date) {
-      console.warn('Invalid game data:', game);
-      return false;
-    }
-    return !hasGameStarted(game.game_date);
-  }).sort((a, b) => new Date(a.game_date) - new Date(b.game_date));
+  const availableGames = useMemo(() => {
+    return games.filter(game => {
+      // Ensure game data is valid
+      if (!game || !game.game_date) {
+        console.warn('Invalid game data:', game);
+        return false;
+      }
+      return !hasGameStarted(game.game_date);
+    }).sort((a, b) => new Date(a.game_date) - new Date(b.game_date));
+  }, [games, hasGameStarted]);
 
-  const availableTiebreakers = tiebreakers.filter(tiebreaker => {
-    // Ensure tiebreaker data is valid
-    if (!tiebreaker || !tiebreaker.start_time) {
-      console.warn('Invalid tiebreaker data:', tiebreaker);
-      return false;
-    }
-    return !hasGameStarted(tiebreaker.start_time) && tiebreaker.is_active;
-  }).sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+  const availableTiebreakers = useMemo(() => {
+    return tiebreakers.filter(tiebreaker => {
+      // Ensure tiebreaker data is valid
+      if (!tiebreaker || !tiebreaker.start_time) {
+        console.warn('Invalid tiebreaker data:', tiebreaker);
+        return false;
+      }
+      return !hasGameStarted(tiebreaker.start_time) && tiebreaker.is_active;
+    }).sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+  }, [tiebreakers, hasGameStarted]);
 
   return (
     <Container fluid="md" className="px-2 px-md-3">
@@ -518,7 +515,12 @@ export default function Picks() {
       {isLoading ? (
         <Row>
           <Col className="text-center">
-            <div>Loading games...</div>
+            <div className="d-flex justify-content-center align-items-center" style={{ minHeight: '200px' }}>
+              <div className="spinner-border text-primary" role="status">
+                <span className="visually-hidden">Loading...</span>
+              </div>
+              <span className="ms-3">Loading picks data...</span>
+            </div>
           </Col>
         </Row>
       ) : (availableGames.length === 0 && availableTiebreakers.length === 0) ? (

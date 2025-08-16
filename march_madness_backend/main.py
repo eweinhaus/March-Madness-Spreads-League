@@ -777,15 +777,65 @@ def get_leaderboard(filter: str = "overall"):
             
             points_query += """
                     GROUP BY user_id
+                ),
+                correct_locks AS (
+                    SELECT user_id, COUNT(*) as correct_locks_count
+                    FROM picks p
+                    JOIN games g ON p.game_id = g.id
+                    WHERE p.lock = TRUE 
+                    AND p.picked_team = g.winning_team
+                    AND g.winning_team IS NOT NULL
+                    AND g.winning_team != 'PUSH'
+            """
+            
+            # Add time filter for correct locks using week-based filtering
+            points_query += start_condition + end_condition
+            
+            points_query += """
+                    GROUP BY user_id
+                ),
+                tiebreaker_accuracy AS (
+                    SELECT 
+                        tp.user_id,
+                        t.id as tiebreaker_id,
+                        t.start_time,
+                        t.answer as correct_answer,
+                        tp.answer as user_answer,
+                        CASE 
+                            WHEN t.answer ~ '^[0-9]+\.?[0-9]*$' AND tp.answer ~ '^[0-9]+\.?[0-9]*$'
+                            THEN ABS(CAST(t.answer AS NUMERIC) - CAST(tp.answer AS NUMERIC))
+                            ELSE NULL
+                        END as accuracy_diff,
+                        ROW_NUMBER() OVER (PARTITION BY tp.user_id ORDER BY t.start_time ASC) as tiebreaker_rank
+                    FROM tiebreaker_picks tp
+                    JOIN tiebreakers t ON tp.tiebreaker_id = t.id
+                    WHERE t.answer ~ '^[0-9]+\.?[0-9]*$'
+                    AND t.answer IS NOT NULL
+                    AND tp.answer ~ '^[0-9]+\.?[0-9]*$'
+                    AND tp.answer IS NOT NULL
+            """
+            
+            # Add time filter for tiebreaker accuracy using week-based filtering
+            points_query += tiebreaker_start_condition + tiebreaker_end_condition
+            
+            points_query += """
                 )
                 SELECT 
                     u.username, 
                     u.full_name,
-                    COALESCE(gp.game_points, 0) + COALESCE(tp.tiebreaker_points, 0) as total_points
+                    COALESCE(gp.game_points, 0) + COALESCE(tp.tiebreaker_points, 0) as total_points,
+                    COALESCE(cl.correct_locks_count, 0) as correct_locks,
+                    COALESCE(ta1.accuracy_diff, 999999) as first_tiebreaker_diff,
+                    COALESCE(ta2.accuracy_diff, 999999) as second_tiebreaker_diff,
+                    COALESCE(ta3.accuracy_diff, 999999) as third_tiebreaker_diff
                 FROM filtered_users u
                 LEFT JOIN game_points gp ON u.id = gp.user_id
                 LEFT JOIN tiebreaker_points tp ON u.id = tp.user_id
-                ORDER BY total_points DESC
+                LEFT JOIN correct_locks cl ON u.id = cl.user_id
+                LEFT JOIN tiebreaker_accuracy ta1 ON u.id = ta1.user_id AND ta1.tiebreaker_rank = 1
+                LEFT JOIN tiebreaker_accuracy ta2 ON u.id = ta2.user_id AND ta2.tiebreaker_rank = 2
+                LEFT JOIN tiebreaker_accuracy ta3 ON u.id = ta3.user_id AND ta3.tiebreaker_rank = 3
+                ORDER BY total_points DESC, correct_locks DESC, first_tiebreaker_diff ASC, second_tiebreaker_diff ASC, third_tiebreaker_diff ASC
             """
             
             cur.execute(points_query)
@@ -909,11 +959,10 @@ async def create_game(
 def get_games():
     try:
         with get_db_cursor() as cur:
-            #logger.info("Fetching all games")
-            cur.execute("SELECT * FROM games ORDER BY game_date")
+            # Only fetch future games for better performance
+            current_time = get_current_utc_time()
+            cur.execute("SELECT * FROM games WHERE game_date > %s ORDER BY game_date", (current_time,))
             games = cur.fetchall()
-            #logger.info(f"Found {len(games)} games")
-            #logger.info(f"Games: {games}")
             return games
     except Exception as e:
         logger.error(f"Error fetching games: {str(e)}")
@@ -1362,10 +1411,10 @@ def get_tiebreakers():
     """Get all tiebreakers."""
     try:
         with get_db_cursor() as cur:
-            logger.info("Fetching all tiebreakers")
-            cur.execute("SELECT * FROM tiebreakers ORDER BY start_time")
+            # Only fetch active tiebreakers for better performance
+            current_time = get_current_utc_time()
+            cur.execute("SELECT * FROM tiebreakers WHERE start_time > %s AND is_active = TRUE ORDER BY start_time", (current_time,))
             tiebreakers = cur.fetchall()
-            logger.info(f"Found {len(tiebreakers)} tiebreakers")
             return tiebreakers
     except Exception as e:
         logger.error(f"Error fetching tiebreakers: {str(e)}")
@@ -1580,6 +1629,58 @@ async def create_tiebreaker_pick(
         logger.error(f"Error creating tiebreaker pick: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/picks_data")
+async def get_picks_data(current_user: User = Depends(get_current_user)):
+    """Get all data needed for the Picks page in a single optimized call."""
+    try:
+        with get_db_cursor() as cur:
+            # Get current time for filtering
+            current_time = get_current_utc_time()
+            
+            # Single query to get games with user picks and locks
+            cur.execute("""
+                SELECT 
+                    g.id as game_id,
+                    g.home_team,
+                    g.away_team,
+                    g.spread,
+                    g.game_date,
+                    g.winning_team,
+                    p.picked_team,
+                    p.points_awarded,
+                    p.lock
+                FROM games g
+                LEFT JOIN picks p ON g.id = p.game_id AND p.user_id = %s
+                WHERE g.game_date > %s
+                ORDER BY g.game_date
+            """, (current_user.id, current_time))
+            games = cur.fetchall()
+            
+            # Single query to get active tiebreakers with user picks
+            cur.execute("""
+                SELECT 
+                    t.id as tiebreaker_id,
+                    t.question,
+                    t.start_time,
+                    t.answer as correct_answer,
+                    t.is_active,
+                    tp.answer as user_answer,
+                    tp.points_awarded
+                FROM tiebreakers t
+                LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id AND tp.user_id = %s
+                WHERE t.start_time > %s AND t.is_active = TRUE
+                ORDER BY t.start_time
+            """, (current_user.id, current_time))
+            tiebreakers = cur.fetchall()
+            
+            return {
+                "games": games,
+                "tiebreakers": tiebreakers
+            }
+    except Exception as e:
+        logger.error(f"Error fetching picks data: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/my_tiebreaker_picks")
 async def get_my_tiebreaker_picks(current_user: User = Depends(get_current_user)):
     """Get all tiebreaker picks for the current user."""
@@ -1789,7 +1890,8 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
                     g.game_date,
                     g.winning_team,
                     p.picked_team,
-                    p.points_awarded
+                    p.points_awarded,
+                    p.lock
                 FROM games g
                 LEFT JOIN picks p ON g.id = p.game_id AND p.user_id = %s
                 WHERE g.game_date <= %s
@@ -1813,7 +1915,12 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
                     t.answer as correct_answer,
                     t.is_active,
                     tp.answer as user_answer,
-                    tp.points_awarded
+                    tp.points_awarded,
+                    CASE 
+                        WHEN t.answer ~ '^[0-9]+\.?[0-9]*$' AND tp.answer ~ '^[0-9]+\.?[0-9]*$'
+                        THEN ABS(CAST(t.answer AS NUMERIC) - CAST(tp.answer AS NUMERIC))
+                        ELSE NULL
+                    END as accuracy_diff
                 FROM tiebreakers t
                 LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id AND tp.user_id = %s
                 WHERE t.start_time <= %s
