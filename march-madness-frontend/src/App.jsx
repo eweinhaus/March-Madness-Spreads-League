@@ -72,7 +72,7 @@ function ProtectedRoute({ children, adminOnly = false }) {
         
         const data = await response.json();
         console.log('ProtectedRoute - User authenticated successfully');
-        setIsAdmin(data.is_admin);
+        setIsAdmin(data.admin);
       } catch (error) {
         console.error('ProtectedRoute - Error checking user:', error);
         localStorage.removeItem('token');
@@ -150,7 +150,7 @@ function AppContent() {
         })
         .then(data => {
           console.log('AppContent - User authenticated successfully');
-          setIsAdmin(data.is_admin);
+          setIsAdmin(data.admin);
           setUser(data);
         })
         .catch(err => {

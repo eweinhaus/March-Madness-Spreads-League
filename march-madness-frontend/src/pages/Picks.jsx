@@ -530,6 +530,9 @@ export default function Picks() {
             </div>
           </Col>
         </Row>
+      ) : error ? (
+        // Don't show anything else if there's an error - the error message is already displayed above
+        null
       ) : (availableGames.length === 0 && availableTiebreakers.length === 0) ? (
         <Row>
           <Col>

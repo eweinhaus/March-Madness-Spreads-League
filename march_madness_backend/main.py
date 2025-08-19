@@ -270,7 +270,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
         with get_db_cursor() as cur:
             logger.info(f"Looking up user in database: {username}")
             cur.execute(
-                "SELECT id, username, full_name, email, league_id, admin FROM users WHERE username = %s",
+                "SELECT id, username, full_name, email, league_id, admin, make_picks FROM users WHERE username = %s",
                 (username,)
             )
             user = cur.fetchone()
@@ -559,14 +559,14 @@ async def submit_pick(
     current_user: User = Depends(get_current_user)
 ):
     """Submit a pick for a game."""
+    # Check if user has permission to make picks
+    if not current_user.make_picks:
+        raise HTTPException(
+            status_code=403, 
+            detail="You do not have permission to make picks"
+        )
+    
     try:
-        # Check if user has permission to make picks
-        if not current_user.make_picks:
-            raise HTTPException(
-                status_code=403, 
-                detail="You do not have permission to make picks"
-            )
-        
         with get_db_cursor(commit=True) as cur:
             # Get game details
             cur.execute("SELECT * FROM games WHERE id = %s", (pick.game_id,))
@@ -1602,14 +1602,14 @@ async def create_tiebreaker_pick(
     current_user: User = Depends(get_current_user)
 ):
     """Create a new tiebreaker pick."""
+    # Check if user has permission to make picks
+    if not current_user.make_picks:
+        raise HTTPException(
+            status_code=403, 
+            detail="You do not have permission to make picks"
+        )
+    
     try:
-        # Check if user has permission to make picks
-        if not current_user.make_picks:
-            raise HTTPException(
-                status_code=403, 
-                detail="You do not have permission to make picks"
-            )
-        
         with get_db_cursor(commit=True) as cur:
             # Check if tiebreaker exists and is active
             cur.execute(
@@ -1674,14 +1674,14 @@ async def create_tiebreaker_pick(
 @app.get("/picks_data")
 async def get_picks_data(current_user: User = Depends(get_current_user)):
     """Get all data needed for the Picks page in a single optimized call."""
+    # Check if user has permission to make picks
+    if not current_user.make_picks:
+        raise HTTPException(
+            status_code=403, 
+            detail="You do not have permission to make picks"
+        )
+    
     try:
-        # Check if user has permission to make picks
-        if not current_user.make_picks:
-            raise HTTPException(
-                status_code=403, 
-                detail="You do not have permission to make picks"
-            )
-        
         with get_db_cursor() as cur:
             # Get current time for filtering
             current_time = get_current_utc_time()
