@@ -350,8 +350,33 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
             )
             user = cur.fetchone()
             
-            if not user or not verify_password(form_data.password, user["password_hash"]):
-                logger.warning(f"Login failed for username: {form_data.username}")
+            if not user:
+                logger.warning(f"Login failed for username: {form_data.username} - user not found")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Incorrect username or password",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            
+            # Verify password - ignore bcrypt warnings
+            try:
+                logger.info(f"Attempting to verify password for user: {form_data.username}")
+                password_valid = verify_password(form_data.password, user["password_hash"])
+                logger.info(f"Password verification result: {password_valid}")
+            except Exception as e:
+                # Log bcrypt warnings but don't treat them as errors
+                if "bcrypt version" in str(e) or "trapped" in str(e):
+                    logger.warning(f"Bcrypt warning during password verification: {str(e)}")
+                    # Try to verify password again, ignoring the warning
+                    password_valid = verify_password(form_data.password, user["password_hash"])
+                    logger.info(f"Password verification result after retry: {password_valid}")
+                else:
+                    # Re-raise if it's not a bcrypt warning
+                    logger.error(f"Password verification error: {str(e)}")
+                    raise
+            
+            if not password_valid:
+                logger.warning(f"Login failed for username: {form_data.username} - incorrect password")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Incorrect username or password",
@@ -361,6 +386,9 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
             access_token = create_access_token(data={"sub": user["username"]}, username=user["username"])
             logger.info(f"Login successful for username: {form_data.username}")
             return {"access_token": access_token, "token_type": "bearer"}
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 401 Unauthorized)
+        raise
     except Exception as e:
         logger.error(f"Error logging in: {str(e)}")
         raise HTTPException(

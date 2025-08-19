@@ -4,7 +4,11 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 import os
+import warnings
 from dotenv import load_dotenv
+
+# Suppress bcrypt warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="passlib.handlers.bcrypt")
 
 # Load environment variables
 load_dotenv()
@@ -14,8 +18,8 @@ SECRET_KEY = os.getenv("SECRET_KEY", "secret-key-in-env")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing - use bcrypt as primary, sha256_crypt as fallback
+pwd_context = CryptContext(schemes=["bcrypt", "sha256_crypt"], deprecated="auto")
 
 class Token(BaseModel):
     access_token: str
