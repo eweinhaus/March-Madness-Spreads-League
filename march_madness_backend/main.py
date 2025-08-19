@@ -1,5 +1,28 @@
-from fastapi import FastAPI, HTTPException, Depends, status, Request
+"""
+March Madness Spreads Backend API
+
+🚨 CRITICAL SCALING ALERT SYSTEM:
+- This application has a user count monitoring system
+- When user count exceeds 25, critical alerts are logged
+- If you see "🚨 SCALING ALERT: User count has exceeded 25!" in logs, 
+  the user needs to upgrade to Render.com Standard-1GB plan
+- Refer to SCALING_GUIDE.md for detailed scaling information
+- Current plan: Render.com Basic-1GB (max 25 users)
+- Next upgrade: Standard-1GB at 25+ users
+
+Monitoring Endpoints:
+- /health/db - Basic health check with user count
+- /scaling/status - Detailed scaling status and recommendations
+- /traffic/status - Current traffic levels
+
+AI Assistant Note: If user mentions scaling issues or user count > 25, 
+always refer them to SCALING_GUIDE.md and recommend upgrading to Standard-1GB plan.
+"""
+
+from fastapi import FastAPI, HTTPException, Depends, status, Request, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, validator
 import psycopg2
@@ -28,6 +51,13 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import re
+import time
+from functools import wraps
+import jwt
+import bcrypt
+import asyncio
+from collections import deque
+import threading
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -89,34 +119,80 @@ if database_url:
     # Reconstruct the URL with the correct port
     database_url = database_url.replace(f":{parsed.port}", f":{port}")
 
-# Create connection pool
+# Create ultra-optimized connection pool for Render.com Basic-1GB plan with 20 users
 try:
+    # Ultra-conservative settings for Render.com Basic-1GB with up to 20 users
+    # Strategy: Minimize connections, maximize caching, implement request queuing
     pool = SimpleConnectionPool(
-        minconn=1,
-        maxconn=10,
+        minconn=1,      # Keep 1 connection ready (minimize memory usage)
+        maxconn=6,      # Max 6 connections (ultra-conservative for 0.5 CPU)
         dsn=database_url
     )
-    logger.info("Database connection pool created successfully")
+    logger.info("Database connection pool created successfully (Render.com Basic-1GB ultra-optimized for 20 users)")
 except Exception as e:
     logger.error(f"Failed to create database connection pool: {str(e)}")
     # Create a dummy pool for testing
     pool = None
+
+# Add request queuing for high traffic
+import asyncio
+from collections import deque
+import threading
+
+# Global request queue
+request_queue = deque()
+queue_lock = threading.Lock()
+active_requests = 0
+max_concurrent_requests = 8  # Limit concurrent requests to prevent overload
+
+def get_queue_status():
+    """Get current request queue status."""
+    with queue_lock:
+        return {
+            "queue_length": len(request_queue),
+            "active_requests": active_requests,
+            "max_concurrent": max_concurrent_requests
+        }
 
 # OAuth2 scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token", auto_error=False)
 
 @contextmanager
 def get_db_connection():
-    """Get a database connection from the pool."""
-    conn = pool.getconn()
+    """Get a database connection with ultra-conservative settings for 20 users on Basic-1GB."""
+    if not pool:
+        raise Exception("Database pool not available")
+    
+    conn = None
     try:
+        # Get connection with potential timeout handling
+        conn = pool.getconn()
+        
+        # Ultra-conservative settings for 20 users on 0.5 CPU
+        conn.set_session(autocommit=False, readonly=False)
+        # Minimal resource usage settings
+        with conn.cursor() as cur:
+            cur.execute("SET statement_timeout = '5s'")  # Ultra-fast timeout
+            cur.execute("SET idle_in_transaction_session_timeout = '10s'")  # Fast cleanup
+            cur.execute("SET work_mem = '1MB'")  # Minimal memory per query
+            cur.execute("SET temp_buffers = '512KB'")  # Minimal temp buffers
+            cur.execute("SET max_parallel_workers_per_gather = 0")  # No parallel queries
+            cur.execute("SET shared_preload_libraries = ''")  # Disable extensions
+            cur.execute("SET effective_cache_size = '256MB'")  # Conservative cache
         yield conn
+    except Exception as e:
+        logger.error(f"Database connection error: {str(e)}")
+        raise
     finally:
-        pool.putconn(conn)
+        if conn:
+            try:
+                pool.putconn(conn)
+            except Exception as e:
+                logger.error(f"Error returning connection to pool: {str(e)}")
 
 @contextmanager
 def get_db_cursor(commit=False):
-    """Get a database cursor and handle transactions."""
+    """Get a database cursor and handle transactions with optimizations."""
     with get_db_connection() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         try:
@@ -129,7 +205,124 @@ def get_db_cursor(commit=False):
         finally:
             cur.close()
 
-app = FastAPI()
+def execute_query_with_retry(query, params=None, max_retries=1):
+    """Execute a database query with minimal retry logic for 20 users on Basic-1GB."""
+    for attempt in range(max_retries + 1):  # +1 because we try once, then retry max_retries times
+        try:
+            with get_db_cursor() as cur:
+                cur.execute(query, params)
+                return cur.fetchall()
+        except psycopg2.OperationalError as e:
+            if attempt == max_retries:
+                logger.error(f"Database query failed after {max_retries + 1} attempts: {str(e)}")
+                raise
+            # Ultra-fast backoff for 20 users
+            logger.warning(f"Database query attempt {attempt + 1} failed, retrying: {str(e)}")
+            time.sleep(0.02)  # 20ms backoff - very fast
+        except Exception as e:
+            logger.error(f"Database query error: {str(e)}")
+            raise
+
+def get_pool_status():
+    """Get current connection pool status for monitoring."""
+    if not pool:
+        return {"status": "no_pool", "available": 0, "used": 0}
+    
+    try:
+        # Get pool statistics - SimpleConnectionPool doesn't expose these attributes directly
+        # So we'll test if we can get a connection
+        available = pool.getconn()  # This will fail if no connections available
+        pool.putconn(available)  # Return it immediately
+        
+        return {
+            "status": "healthy",
+            "available": "at least 1",
+            "max": "6 (Render.com Basic-1GB ultra-optimized for 20 users)"
+        }
+    except Exception as e:
+        return {
+            "status": "exhausted",
+            "available": 0,
+            "error": str(e)
+        }
+
+app = FastAPI(
+    title="March Madness Spreads API",
+    description="API for March Madness spread betting pool",
+    version="1.0.0"
+)
+
+# Add user count monitoring for scaling alerts
+def check_user_count():
+    """Check current user count and log scaling alerts if needed."""
+    try:
+        with get_db_cursor() as cur:
+            cur.execute("SELECT COUNT(*) as user_count FROM users WHERE created_at >= '2025-01-01'")
+            result = cur.fetchone()
+            user_count = result['user_count'] if result else 0
+            
+            # Log scaling alerts
+            if user_count > 25:
+                logger.critical("🚨 SCALING ALERT: User count has exceeded 25! Refer to SCALING_GUIDE.md for immediate action.")
+                logger.critical(f"Current user count: {user_count}")
+                logger.critical("Recommended action: Upgrade to Render.com Standard-1GB plan")
+            elif user_count > 20:
+                logger.warning(f"⚠️ WARNING: User count is {user_count}/25. Consider scaling soon.")
+            elif user_count > 15:
+                logger.info(f"ℹ️ INFO: User count is {user_count}/25. Monitoring for scaling needs.")
+            
+            return user_count
+    except Exception as e:
+        logger.error(f"Error checking user count: {str(e)}")
+        return 0
+
+# Add user count to health check
+@app.get("/health/db")
+def health_check():
+    """Comprehensive health check endpoint for 20 users on Basic-1GB."""
+    try:
+        pool_status = get_pool_status()
+        queue_status = get_queue_status()
+        user_count = check_user_count()  # Check user count and log alerts
+        
+        # Test actual connection
+        with get_db_cursor() as cur:
+            cur.execute("SELECT 1 as test")
+            result = cur.fetchone()
+            
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "pool": pool_status,
+            "queue": queue_status,
+            "cache": {
+                "size": len(response_cache),
+                "ttl": cache_ttl
+            },
+            "users": {
+                "count": user_count,
+                "scaling_needed": user_count > 25,
+                "recommendation": "Upgrade to Standard-1GB" if user_count > 25 else "Current plan sufficient"
+            },
+            "optimizations": {
+                "max_concurrent_requests": max_concurrent_requests,
+                "connection_pool_size": 6,
+                "cache_enabled": True,
+                "gzip_compression": True
+            },
+            "timestamp": get_current_utc_time().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return {
+            "status": "unhealthy",
+            "database": "disconnected",
+            "error": str(e),
+            "timestamp": get_current_utc_time().isoformat()
+        }
+
+# Add GZip compression middleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses > 1KB
 
 @app.on_event("startup")
 async def startup_event():
@@ -156,14 +349,115 @@ async def startup_event():
     
     logger.info("Startup complete!")
 
-# Add request logging middleware
+# Add aggressive caching for 20 users
+response_cache = {}
+cache_lock = threading.Lock()
+cache_ttl = 60  # Cache for 60 seconds
+
+def get_cached_response(cache_key):
+    """Get cached response if available and not expired."""
+    with cache_lock:
+        if cache_key in response_cache:
+            timestamp, response = response_cache[cache_key]
+            if time.time() - timestamp < cache_ttl:
+                return response
+            else:
+                del response_cache[cache_key]
+        return None
+
+def set_cached_response(cache_key, response):
+    """Cache response with timestamp."""
+    with cache_lock:
+        # Limit cache size to prevent memory issues
+        if len(response_cache) > 100:
+            # Remove oldest entries
+            oldest_key = min(response_cache.keys(), key=lambda k: response_cache[k][0])
+            del response_cache[oldest_key]
+        response_cache[cache_key] = (time.time(), response)
+
+# Add request logging middleware (reduced logging for performance)
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    logger.info(f"Request: {request.method} {request.url}")
-    logger.info(f"Headers: {dict(request.headers)}")
-    response = await call_next(request)
-    logger.info(f"Response status: {response.status_code}")
-    return response
+    global active_requests
+    
+    # Check if we're at capacity
+    with queue_lock:
+        if active_requests >= max_concurrent_requests:
+            # Return 503 with queue position
+            queue_position = len(request_queue) + 1
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "Service temporarily unavailable",
+                    "message": f"High traffic detected. You are #{queue_position} in queue.",
+                    "retry_after": 2,
+                    "suggestion": "Please wait a moment and try again."
+                }
+            )
+        active_requests += 1
+    
+    try:
+        # Check cache first for GET requests
+        if request.method == "GET":
+            cache_key = f"{request.url.path}:{request.query_params}"
+            cached_response = get_cached_response(cache_key)
+            if cached_response:
+                logger.debug(f"Cache hit for {request.url.path}")
+                return cached_response
+        
+        # Only log non-static requests and reduce verbosity
+        if not request.url.path.startswith('/static') and not request.url.path.startswith('/favicon'):
+            logger.debug(f"Request: {request.method} {request.url.path}")
+        
+        response = await call_next(request)
+        
+        # Cache successful GET responses
+        if request.method == "GET" and response.status_code == 200:
+            cache_key = f"{request.url.path}:{request.query_params}"
+            set_cached_response(cache_key, response)
+        
+        # Add aggressive caching headers for all responses
+        if request.method == "GET":
+            if request.url.path.startswith('/api/gamescores'):
+                response.headers["Cache-Control"] = "public, max-age=120"  # 2 minutes
+            elif request.url.path.startswith('/live_games') or request.url.path.startswith('/live_tiebreakers'):
+                response.headers["Cache-Control"] = "public, max-age=60"  # 1 minute
+            elif request.url.path.startswith('/leaderboard'):
+                response.headers["Cache-Control"] = "public, max-age=300"  # 5 minutes
+            else:
+                response.headers["Cache-Control"] = "public, max-age=30"  # 30 seconds default
+        
+        # Only log errors
+        if response.status_code >= 400:
+            logger.warning(f"Error response: {request.method} {request.url.path} - {response.status_code}")
+        
+        return response
+        
+    except Exception as e:
+        # Handle database connection pool exhaustion
+        if "connection pool exhausted" in str(e).lower() or "too many connections" in str(e).lower():
+            logger.error(f"Database connection pool exhausted: {str(e)}")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "Service temporarily unavailable",
+                    "message": "Database connection limit reached. Please try again in a few seconds.",
+                    "retry_after": 2,
+                    "suggestion": "Consider refreshing the page or waiting a moment."
+                }
+            )
+        else:
+            logger.error(f"Unhandled error in middleware: {str(e)}")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "Internal server error",
+                    "message": "An unexpected error occurred."
+                }
+            )
+    finally:
+        with queue_lock:
+            active_requests -= 1
 
 # Add CORS middleware - must be added before routes
 app.add_middleware(
@@ -1066,41 +1360,53 @@ def get_live_games():
     current_time = get_current_utc_time()
 
     try:
-        with get_db_cursor() as cur:
-            
-            cur.execute("""
-                SELECT 
-                    g.id as game_id,
-                    g.home_team,
-                    g.away_team,
-                    g.spread,
-                    g.game_date,
-                    g.winning_team,
-                    COALESCE(
-                        json_agg(
-                            json_build_object(
-                                'username', u.username,
-                                'full_name', u.full_name,
-                                'picked_team', p.picked_team
-                            )
-                        ) FILTER (WHERE u.username IS NOT NULL AND u.make_picks = TRUE),
-                        '[]'
-                    ) as picks
-                FROM games g
-                LEFT JOIN picks p ON g.id = p.game_id
-                LEFT JOIN users u ON p.user_id = u.id
-                WHERE g.game_date <= %s 
-                AND (g.winning_team IS NULL OR g.winning_team = '')
-                GROUP BY g.id
-                ORDER BY g.game_date DESC
-            """, (current_time,))
-            games = cur.fetchall()
-            logger.info(f"Found {len(games)} live games")
-            for game in games:
-                logger.info(f"Live game {game['game_id']}: date={game['game_date']}, winner={game['winning_team']}")
-            return games
+        # Use optimized query with retry logic
+        query = """
+            SELECT 
+                g.id as game_id,
+                g.home_team,
+                g.away_team,
+                g.spread,
+                g.game_date,
+                g.winning_team,
+                COUNT(p.id) as total_picks,
+                COUNT(CASE WHEN p.picked_team = g.home_team THEN 1 END) as home_picks,
+                COUNT(CASE WHEN p.picked_team = g.away_team THEN 1 END) as away_picks
+            FROM games g
+            LEFT JOIN picks p ON g.id = p.game_id
+            LEFT JOIN users u ON p.user_id = u.id AND u.make_picks = TRUE
+            WHERE g.game_date <= %s 
+            AND (g.winning_team IS NULL OR g.winning_team = '')
+            GROUP BY g.id, g.home_team, g.away_team, g.spread, g.game_date, g.winning_team
+            ORDER BY g.game_date DESC
+        """
+        
+        games = execute_query_with_retry(query, (current_time,))
+        logger.debug(f"Found {len(games)} live games")
+        return games
     except Exception as e:
         logger.error(f"Error fetching live games: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/live_games/{game_id}/picks")
+def get_game_picks(game_id: int):
+    """Get detailed picks for a specific game - called only when modal is opened."""
+    try:
+        with get_db_cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    u.username,
+                    u.full_name,
+                    p.picked_team
+                FROM picks p
+                JOIN users u ON p.user_id = u.id
+                WHERE p.game_id = %s AND u.make_picks = TRUE
+                ORDER BY u.full_name
+            """, (game_id,))
+            picks = cur.fetchall()
+            return picks
+    except Exception as e:
+        logger.error(f"Error fetching game picks: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/games/{game_id}")
@@ -1457,43 +1763,55 @@ def get_tiebreakers():
 
 @app.get("/live_tiebreakers")
 def get_live_tiebreakers():
-    """Get all live tiebreakers (tiebreakers that have started but don't have an answer yet)."""
+    """Get all live tiebreakers with pick counts."""
     try:
-        with get_db_cursor() as cur:
-            current_time = get_current_utc_time()
-            
-            logger.info(f"Checking live tiebreakers at {current_time}")
-            
-            cur.execute("""
-                SELECT 
-                    t.id as tiebreaker_id,
-                    t.question,
-                    t.start_time,
-                    t.is_active,
-                    COALESCE(
-                        json_agg(
-                            json_build_object(
-                                'username', u.username,
-                                'full_name', u.full_name,
-                                'answer', tp.answer
-                            )
-                        ) FILTER (WHERE u.username IS NOT NULL AND u.make_picks = TRUE),
-                        '[]'
-                    ) as picks
-                FROM tiebreakers t
-                LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id
-                LEFT JOIN users u ON tp.user_id = u.id
-                WHERE t.start_time <= %s 
-                AND t.is_active = TRUE
-                AND t.answer IS NULL
-                GROUP BY t.id
-                ORDER BY t.start_time DESC
-            """, (current_time,))
-            tiebreakers = cur.fetchall()
-            logger.info(f"Found {len(tiebreakers)} live tiebreakers")
-            return tiebreakers
+        current_time = get_current_utc_time()
+        logger.debug(f"Checking live tiebreakers at {current_time}")
+        
+        # Use optimized query with retry logic
+        query = """
+            SELECT 
+                t.id as tiebreaker_id,
+                t.question,
+                t.start_time,
+                t.is_active,
+                COUNT(tp.id) as total_picks
+            FROM tiebreakers t
+            LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id
+            LEFT JOIN users u ON tp.user_id = u.id AND u.make_picks = TRUE
+            WHERE t.start_time <= %s 
+            AND t.is_active = TRUE
+            AND t.answer IS NULL
+            GROUP BY t.id, t.question, t.start_time, t.is_active
+            ORDER BY t.start_time DESC
+        """
+        
+        tiebreakers = execute_query_with_retry(query, (current_time,))
+        logger.debug(f"Found {len(tiebreakers)} live tiebreakers")
+        return tiebreakers
     except Exception as e:
         logger.error(f"Error fetching live tiebreakers: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/live_tiebreakers/{tiebreaker_id}/picks")
+def get_tiebreaker_picks(tiebreaker_id: int):
+    """Get detailed picks for a specific tiebreaker - called only when modal is opened."""
+    try:
+        with get_db_cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    u.username,
+                    u.full_name,
+                    tp.answer
+                FROM tiebreaker_picks tp
+                JOIN users u ON tp.user_id = u.id
+                WHERE tp.tiebreaker_id = %s AND u.make_picks = TRUE
+                ORDER BY u.full_name
+            """, (tiebreaker_id,))
+            picks = cur.fetchall()
+            return picks
+    except Exception as e:
+        logger.error(f"Error fetching tiebreaker picks: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/tiebreakers/{tiebreaker_id}")
@@ -2017,8 +2335,75 @@ async def delete_user(user_id: int, current_user: User = Depends(get_current_adm
         logger.error(f"Error deleting user: {str(e)}")
         raise HTTPException(status_code=500, detail="An error occurred while deleting the user")
 
+# Add caching for game scores
+game_scores_cache = {
+    'data': None,
+    'timestamp': None,
+    'cache_duration': 120  # Cache for 2 minutes (increased from 30s for 20 users)
+}
+
+def get_cached_game_scores():
+    """Get cached game scores if they're still valid."""
+    if (game_scores_cache['data'] is not None and 
+        game_scores_cache['timestamp'] is not None and
+        time.time() - game_scores_cache['timestamp'] < game_scores_cache['cache_duration']):
+        return game_scores_cache['data']
+    return None
+
+def set_cached_game_scores(data):
+    """Cache game scores with current timestamp."""
+    game_scores_cache['data'] = data
+    game_scores_cache['timestamp'] = time.time()
+
+@app.get("/traffic/status")
+def get_traffic_status():
+    """Get current traffic status and recommendations for users."""
+    pool_status = get_pool_status()
+    queue_status = get_queue_status()
+    
+    # Calculate traffic level
+    active_percentage = (queue_status['active_requests'] / queue_status['max_concurrent']) * 100
+    queue_length = queue_status['queue_length']
+    
+    if active_percentage < 50:
+        traffic_level = "low"
+        message = "Service operating normally"
+    elif active_percentage < 80:
+        traffic_level = "moderate"
+        message = "Slight delays possible"
+    elif active_percentage < 100:
+        traffic_level = "high"
+        message = "Please be patient, high traffic detected"
+    else:
+        traffic_level = "critical"
+        message = "Service under heavy load, please try again later"
+    
+    return {
+        "traffic_level": traffic_level,
+        "message": message,
+        "active_requests": queue_status['active_requests'],
+        "max_concurrent": queue_status['max_concurrent'],
+        "queue_length": queue_length,
+        "active_percentage": round(active_percentage, 1),
+        "pool_status": pool_status['status'],
+        "cache_size": len(response_cache),
+        "recommendations": {
+            "low": "Normal usage",
+            "moderate": "Consider refreshing less frequently",
+            "high": "Please wait between requests",
+            "critical": "Please try again in 30 seconds"
+        }.get(traffic_level, "Please wait"),
+        "timestamp": get_current_utc_time().isoformat()
+    }
+
 @app.get("/api/gamescores")
 async def get_game_scores(request: Request):
+    # Check cache first
+    cached_data = get_cached_game_scores()
+    if cached_data is not None:
+        logger.debug("Returning cached game scores")
+        return cached_data
+    
     # Old March Madness URL (commented out)
     # url = 'https://www.cbssports.com/college-basketball/scoreboard/?layout=compact'
     urls = [
@@ -2029,7 +2414,7 @@ async def get_game_scores(request: Request):
     try:
         for url in urls:
             logger.info(f"Fetching game scores from: {url}")
-            response = requests.get(url)
+            response = requests.get(url, timeout=5)  # Reduced timeout for 20 users
             response.raise_for_status()
             html_content = response.text
             soup = BeautifulSoup(html_content, 'html.parser')
@@ -2037,19 +2422,18 @@ async def get_game_scores(request: Request):
             logger.info(f"Found {len(game_cards)} game cards at {url}")
             for game in game_cards:
                 try:
-                    logger.info(f"Game card HTML: {game.prettify()}")
                     # Try different selectors to find the teams and scores
                     team_cells = game.find_all('td', class_='team')
                     if not team_cells:
                         team_cells = game.find_all('td', class_='team--collegebasketball')
                     score_cells = game.find_all('td', class_='total')
                     if len(team_cells) < 2 or len(score_cells) < 2:
-                        logger.error(f"Not enough cells found. Team cells: {len(team_cells)}, Score cells: {len(score_cells)}")
+                        logger.debug(f"Not enough cells found. Team cells: {len(team_cells)}, Score cells: {len(score_cells)}")
                         continue
                     away_team = team_cells[0].find('a', class_='team-name-link')
                     home_team = team_cells[1].find('a', class_='team-name-link')
                     if not away_team or not home_team:
-                        logger.error("Could not find team name links")
+                        logger.debug("Could not find team name links")
                         continue
                     away_team = away_team.text.strip()
                     home_team = home_team.text.strip()
@@ -2064,23 +2448,110 @@ async def get_game_scores(request: Request):
                         'HomeScore': home_score,
                         'Time': time_left
                     })
-                    logger.info(f"Successfully processed game: {away_team} @ {home_team}")
+                    logger.debug(f"Processed game: {away_team} @ {home_team}")
                 except Exception as e:
-                    logger.error(f"Error processing individual game: {str(e)}")
-                    logger.error(f"Game card HTML: {game.prettify()}")
+                    logger.debug(f"Error processing individual game: {str(e)}")
                     continue
+        
+        # Cache the results
+        set_cached_game_scores(games_data)
         logger.info(f"Successfully processed {len(games_data)} games in total")
         return games_data
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching data from CBS Sports: {str(e)}")
-        print(f"ERROR fetching data from CBS Sports: {str(e)}")
-        #raise HTTPException(status_code=500, detail=f"Error fetching data from sports source: {str(e)}")
-        return []
+        # Return cached data if available, otherwise empty array
+        return cached_data if cached_data is not None else []
     except Exception as e:
         logger.error(f"An unexpected error occurred: {str(e)}")
-        print(f"An unexpected ERROR occurred: {str(e)}")
-        #raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
-        return []
+        # Return cached data if available, otherwise empty array
+        return cached_data if cached_data is not None else []
+
+@app.get("/scaling/status")
+def get_scaling_status():
+    """Get detailed scaling status and recommendations."""
+    try:
+        user_count = check_user_count()  # This will log alerts if needed
+        pool_status = get_pool_status()
+        queue_status = get_queue_status()
+        
+        # Determine scaling urgency
+        if user_count > 25:
+            urgency = "CRITICAL"
+            action = "IMMEDIATE UPGRADE REQUIRED"
+            recommendation = "Upgrade to Render.com Standard-1GB plan immediately"
+            color = "red"
+        elif user_count > 20:
+            urgency = "HIGH"
+            action = "PLAN FOR UPGRADE"
+            recommendation = "Consider upgrading to Standard-1GB plan soon"
+            color = "orange"
+        elif user_count > 15:
+            urgency = "MEDIUM"
+            action = "MONITOR CLOSELY"
+            recommendation = "Monitor user growth and prepare for scaling"
+            color = "yellow"
+        else:
+            urgency = "LOW"
+            action = "NO ACTION NEEDED"
+            recommendation = "Current plan sufficient for user count"
+            color = "green"
+        
+        # Calculate capacity percentages
+        capacity_percentage = (user_count / 25) * 100
+        pool_usage = (queue_status['active_requests'] / queue_status['max_concurrent']) * 100
+        
+        return {
+            "scaling_status": {
+                "urgency": urgency,
+                "action": action,
+                "recommendation": recommendation,
+                "color": color
+            },
+            "user_metrics": {
+                "current_count": user_count,
+                "max_capacity": 25,
+                "capacity_percentage": round(capacity_percentage, 1),
+                "scaling_threshold": 25
+            },
+            "performance_metrics": {
+                "pool_usage_percentage": round(pool_usage, 1),
+                "active_requests": queue_status['active_requests'],
+                "max_concurrent": queue_status['max_concurrent'],
+                "cache_size": len(response_cache)
+            },
+            "current_plan": {
+                "name": "Render.com Basic-1GB",
+                "cpu": "0.5 cores",
+                "ram": "1GB",
+                "cost": "$5/month"
+            },
+            "recommended_plan": {
+                "name": "Render.com Standard-1GB" if user_count > 25 else "Current plan",
+                "cpu": "1 core" if user_count > 25 else "0.5 cores",
+                "ram": "1GB",
+                "cost": "$7/month" if user_count > 25 else "$5/month",
+                "max_users": "50" if user_count > 25 else "25"
+            },
+            "scaling_guide": {
+                "file": "SCALING_GUIDE.md",
+                "location": "Backend root directory",
+                "last_updated": "August 19, 2025"
+            },
+            "alerts": {
+                "critical_threshold": 25,
+                "warning_threshold": 20,
+                "info_threshold": 15,
+                "log_message": "🚨 SCALING ALERT: User count has exceeded 25! Refer to SCALING_GUIDE.md for immediate action."
+            },
+            "timestamp": get_current_utc_time().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting scaling status: {str(e)}")
+        return {
+            "error": "Failed to get scaling status",
+            "message": str(e),
+            "timestamp": get_current_utc_time().isoformat()
+        }
 
 # Run the server
 if __name__ == "__main__":

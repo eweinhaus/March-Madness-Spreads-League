@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import axios from "axios";
 import { Alert, Card, ListGroup, Badge, Container, Spinner, Modal, Button, Row, Col, Pagination, Form } from "react-bootstrap";
 import { API_URL } from "../config";
@@ -10,6 +10,7 @@ export default function Live() {
   const [gameScores, setGameScores] = useState([]); // New state for game scores
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [backgroundRefreshing, setBackgroundRefreshing] = useState(false);
   const [selectedGame, setSelectedGame] = useState(null);
   const [selectedTiebreaker, setSelectedTiebreaker] = useState(null);
   const [showGameModal, setShowGameModal] = useState(false);
@@ -19,6 +20,9 @@ export default function Live() {
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState("");
   const [sortOption, setSortOption] = useState("answer"); // "answer" or "name"
+  const [gamePicks, setGamePicks] = useState({}); // Cache for game picks
+  const [tiebreakerPicks, setTiebreakerPicks] = useState({}); // Cache for tiebreaker picks
+  const [loadingPicks, setLoadingPicks] = useState(false);
   const picksPerPage = 12; // Show more picks per page
   const navigate = useNavigate();
 
@@ -70,12 +74,21 @@ export default function Live() {
   useEffect(() => {
     fetchLiveData();
     fetchGameScores(); // Fetch game scores on component mount
+    
+    // Set up auto-refresh every 30 seconds (background only)
+    const interval = setInterval(() => {
+      setBackgroundRefreshing(true);
+      fetchLiveDataBackground();
+      fetchGameScoresBackground();
+    }, 30000);
+    
+    return () => clearInterval(interval);
   }, []);
 
   const fetchLiveData = () => {
     setLoading(true);
     setError(null);
-    console.log("Current User Time: ", new Date().toLocaleString());
+    console.debug("Current User Time: ", new Date().toLocaleString());
     
     const token = localStorage.getItem('token');
     const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
@@ -101,6 +114,31 @@ export default function Live() {
       });
   };
 
+  const fetchLiveDataBackground = () => {
+    const token = localStorage.getItem('token');
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+    
+    Promise.all([
+      axios.get(`${API_URL}/live_games`, { headers }),
+      axios.get(`${API_URL}/live_tiebreakers`, { headers })
+    ])
+      .then(([gamesRes, tiebreakersRes]) => {
+        setLiveGames(Array.isArray(gamesRes.data) ? gamesRes.data : []);
+        setLiveTiebreakers(Array.isArray(tiebreakersRes.data) ? tiebreakersRes.data : []);
+        setError(null);
+      })
+      .catch(err => {
+        // Try to handle as auth error first
+        if (!handleAuthError(err)) {
+          console.error('Background refresh error:', err);
+          // Don't show error for background refreshes
+        }
+      })
+      .finally(() => {
+        setBackgroundRefreshing(false);
+      });
+  };
+
   const fetchGameScores = () => {
     const token = localStorage.getItem('token');
     const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
@@ -118,6 +156,71 @@ export default function Live() {
       });
   };
 
+  const fetchGameScoresBackground = () => {
+    const token = localStorage.getItem('token');
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+    
+    axios.get(`${API_URL}/api/gamescores`, { headers })
+      .then(response => {
+        setGameScores(response.data); // Set the game scores
+      })
+      .catch(err => {
+        // Try to handle as auth error first
+        if (!handleAuthError(err)) {
+          console.error('Background game scores error:', err);
+          // Don't show error for background refreshes
+        }
+      });
+  };
+
+  // Lazy load game picks when modal is opened
+  const fetchGamePicks = useCallback(async (gameId) => {
+    if (gamePicks[gameId]) return gamePicks[gameId]; // Return cached data
+    
+    setLoadingPicks(true);
+    const token = localStorage.getItem('token');
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+    
+    try {
+      const response = await axios.get(`${API_URL}/live_games/${gameId}/picks`, { headers });
+      const picks = response.data;
+      setGamePicks(prev => ({ ...prev, [gameId]: picks }));
+      return picks;
+    } catch (err) {
+      if (!handleAuthError(err)) {
+        console.error(err);
+        setError('Failed to load game picks. Please try again.');
+      }
+      return [];
+    } finally {
+      setLoadingPicks(false);
+    }
+  }, [gamePicks, handleAuthError]);
+
+  // Lazy load tiebreaker picks when modal is opened
+  const fetchTiebreakerPicks = useCallback(async (tiebreakerId) => {
+    if (tiebreakerPicks[tiebreakerId]) return tiebreakerPicks[tiebreakerId]; // Return cached data
+    
+    setLoadingPicks(true);
+    const token = localStorage.getItem('token');
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+    
+    try {
+      const response = await axios.get(`${API_URL}/live_tiebreakers/${tiebreakerId}/picks`, { headers });
+      const picks = response.data;
+      setTiebreakerPicks(prev => ({ ...prev, [tiebreakerId]: picks }));
+      return picks;
+    } catch (err) {
+      if (!handleAuthError(err)) {
+        console.error(err);
+        setError('Failed to load tiebreaker picks. Please try again.');
+      }
+      return [];
+    } finally {
+      setLoadingPicks(false);
+    }
+  }, [tiebreakerPicks, handleAuthError]);
+
   const formatGameDate = (dateString) => {
     const date = new Date(dateString);
     return date.toLocaleString('en-US', {
@@ -130,16 +233,24 @@ export default function Live() {
     });
   };
 
-  const handleGameClick = (game) => {
+  const handleGameClick = async (game) => {
     setSelectedGame(game);
     setShowGameModal(true);
+    // Load picks if not already cached
+    if (!gamePicks[game.game_id]) {
+      await fetchGamePicks(game.game_id);
+    }
   };
 
-  const handleTiebreakerClick = (tiebreaker) => {
+  const handleTiebreakerClick = async (tiebreaker) => {
     setSelectedTiebreaker(tiebreaker);
     setShowTiebreakerModal(true);
     setCurrentPage(1);
     setSearchTerm("");
+    // Load picks if not already cached
+    if (!tiebreakerPicks[tiebreaker.tiebreaker_id]) {
+      await fetchTiebreakerPicks(tiebreaker.tiebreaker_id);
+    }
   };
 
   const handleCloseGameModal = () => {
@@ -152,8 +263,8 @@ export default function Live() {
     setSelectedTiebreaker(null);
   };
 
-  // Function to normalize team names for comparison
-  const normalizeTeamName = (teamName) => {
+  // Memoized team name normalization function
+  const normalizeTeamName = useCallback((teamName) => {
     if (!teamName) return '';
     return teamName
       // Handle "St." at the beginning (like "St. Mary's" -> "Saint Mary's")
@@ -185,10 +296,10 @@ export default function Live() {
       .replace(/\bSoutheast\b/g, 'Southeast')
       .toLowerCase()
       .trim();
-  };
+  }, []);
 
-  // Function to check if two team names match (handling St./State variations)
-  const teamNamesMatch = (name1, name2) => {
+  // Memoized team name matching function
+  const teamNamesMatch = useCallback((name1, name2) => {
     if (!name1 || !name2) return false;
     
     const normalized1 = normalizeTeamName(name1);
@@ -199,10 +310,10 @@ export default function Live() {
     
     // Check if one contains the other
     return normalized1.includes(normalized2) || normalized2.includes(normalized1);
-  };
+  }, [normalizeTeamName]);
 
-  // Function to get the score for the selected game
-  const getGameScore = (game) => {
+  // Memoized game score lookup
+  const getGameScore = useCallback((game) => {
     return gameScores.find(score => {
       // Check exact matches first
       if ((score.AwayTeam === game.away_team && score.HomeTeam === game.home_team) ||
@@ -223,7 +334,19 @@ export default function Live() {
       return (score.AwayTeam.includes(game.away_team) || score.AwayTeam.includes(game.home_team)) ||
              (score.HomeTeam.includes(game.away_team) || score.HomeTeam.includes(game.home_team));
     });
-  };
+  }, [gameScores, teamNamesMatch]);
+
+  // Memoized game picks data for selected game
+  const selectedGamePicks = useMemo(() => {
+    if (!selectedGame || !gamePicks[selectedGame.game_id]) return null;
+    return gamePicks[selectedGame.game_id];
+  }, [selectedGame, gamePicks]);
+
+  // Memoized tiebreaker picks data for selected tiebreaker
+  const selectedTiebreakerPicks = useMemo(() => {
+    if (!selectedTiebreaker || !tiebreakerPicks[selectedTiebreaker.tiebreaker_id]) return null;
+    return tiebreakerPicks[selectedTiebreaker.tiebreaker_id];
+  }, [selectedTiebreaker, tiebreakerPicks]);
 
   return (
     <Container className="my-5">
@@ -244,7 +367,15 @@ export default function Live() {
       
       {!loading && !error && (
         <>
-          <h2 className="mb-4">Live Contests</h2>
+          <div className="d-flex justify-content-between align-items-center mb-4">
+            <h2>Live Contests</h2>
+            {backgroundRefreshing && (
+              <small className="text-muted">
+                <i className="bi bi-arrow-clockwise me-1"></i>
+                Updating...
+              </small>
+            )}
+          </div>
           {!loading && !error && liveGames.length === 0 && liveTiebreakers.length === 0 && (
             <Alert variant="info">
               No live contests at the moment.
@@ -256,7 +387,7 @@ export default function Live() {
                 <Card 
                   onClick={() => handleGameClick(game)}
                   style={{ cursor: 'pointer' }}
-                  className="hover-shadow h-100"
+                  className={`hover-shadow h-100 ${backgroundRefreshing ? 'opacity-75' : ''}`}
                 >
                   <Card.Header className="d-flex justify-content-between align-items-center">
                     <Badge bg="info" className="py-2 px-3" style={{ fontSize: '1rem' }}>
@@ -294,6 +425,11 @@ export default function Live() {
                           ); // Fallback if score is not available
                       })()}
                     </Card.Text>
+                    <div className="mt-2">
+                      <small className="text-muted">
+                        {game.total_picks || 0} picks • {game.home_picks || 0} home • {game.away_picks || 0} away
+                      </small>
+                    </div>
                   </Card.Body>
                 </Card>
               </div>
@@ -305,7 +441,7 @@ export default function Live() {
                 <Card 
                   onClick={() => handleTiebreakerClick(tiebreaker)}
                   style={{ cursor: 'pointer' }}
-                  className="hover-shadow h-100"
+                  className={`hover-shadow h-100 ${backgroundRefreshing ? 'opacity-75' : ''}`}
                 >
                   <Card.Header className="d-flex justify-content-between align-items-center">
                     <Badge bg="info" className="py-2 px-3" style={{ fontSize: '1rem' }}>
@@ -319,6 +455,11 @@ export default function Live() {
                     <Card.Text style={{ fontSize: '1.1rem' }}>
                       {tiebreaker.question}
                     </Card.Text>
+                    <div className="mt-2">
+                      <small className="text-muted">
+                        {tiebreaker.total_picks || 0} responses
+                      </small>
+                    </div>
                   </Card.Body>
                 </Card>
               </div>
@@ -370,12 +511,18 @@ export default function Live() {
                   </div>
                 );
               })()}
-              <ListGroup>
-                {selectedGame?.picks ? (
-                  (() => {
-                    const totalPicks = selectedGame.picks.length;
-                    const homePicks = selectedGame.picks.filter(pick => pick.picked_team === selectedGame.home_team).length;
-                    const awayPicks = selectedGame.picks.filter(pick => pick.picked_team === selectedGame.away_team).length;
+              
+              {loadingPicks ? (
+                <div className="text-center py-4">
+                  <Spinner animation="border" size="sm" />
+                  <p className="mt-2">Loading picks...</p>
+                </div>
+              ) : selectedGamePicks ? (
+                <ListGroup>
+                  {(() => {
+                    const totalPicks = selectedGamePicks.length;
+                    const homePicks = selectedGamePicks.filter(pick => pick.picked_team === selectedGame.home_team).length;
+                    const awayPicks = selectedGamePicks.filter(pick => pick.picked_team === selectedGame.away_team).length;
                     const homePercentage = totalPicks > 0 ? ((homePicks / totalPicks) * 100).toFixed(0) : 0;
                     const awayPercentage = totalPicks > 0 ? ((awayPicks / totalPicks) * 100).toFixed(0) : 0;
 
@@ -393,7 +540,7 @@ export default function Live() {
                         </ListGroup.Item>
                         {showAwayPicks && (
                           <div className="d-flex flex-wrap justify-content-center p-3 bg-light">
-                            {selectedGame.picks.filter(pick => pick.picked_team === selectedGame.away_team).map((pick, index) => (
+                            {selectedGamePicks.filter(pick => pick.picked_team === selectedGame.away_team).map((pick, index) => (
                               <Badge key={index} bg="secondary" className="m-1 py-2 px-3">
                                 {pick.full_name}
                               </Badge>
@@ -412,7 +559,7 @@ export default function Live() {
                         </ListGroup.Item>
                         {showHomePicks && (
                           <div className="d-flex flex-wrap justify-content-center p-3 bg-light">
-                            {selectedGame.picks.filter(pick => pick.picked_team === selectedGame.home_team).map((pick, index) => (
+                            {selectedGamePicks.filter(pick => pick.picked_team === selectedGame.home_team).map((pick, index) => (
                               <Badge key={index} bg="secondary" className="m-1 py-2 px-3">
                                 {pick.full_name}
                               </Badge>
@@ -421,11 +568,11 @@ export default function Live() {
                         )}
                       </>
                     );
-                  })()
-                ) : (
-                  <ListGroup.Item className="text-center text-muted py-3">No picks for this game yet</ListGroup.Item>
-                )}
-              </ListGroup>
+                  })()}
+                </ListGroup>
+              ) : (
+                <ListGroup.Item className="text-center text-muted py-3">No picks for this game yet</ListGroup.Item>
+              )}
             </>
           )}
         </Modal.Body>
@@ -456,7 +603,12 @@ export default function Live() {
         <Modal.Body className="py-4">
           {selectedTiebreaker && (
             <>
-              {selectedTiebreaker?.picks && selectedTiebreaker.picks.length > 0 ? (
+              {loadingPicks ? (
+                <div className="text-center py-4">
+                  <Spinner animation="border" size="sm" />
+                  <p className="mt-2">Loading responses...</p>
+                </div>
+              ) : selectedTiebreakerPicks && selectedTiebreakerPicks.length > 0 ? (
                 <>
                   <div className="mb-4">
                     <Row className="align-items-center">
@@ -486,7 +638,7 @@ export default function Live() {
                       </Col>
                       <Col md={3} className="text-end">
                         <Badge bg="primary" className="py-2 px-3">
-                          {selectedTiebreaker.picks.length} responses
+                          {selectedTiebreakerPicks.length} responses
                         </Badge>
                       </Col>
                     </Row>
@@ -495,7 +647,7 @@ export default function Live() {
                   <Row>
                     {(() => {
                       // Filter picks based on search term
-                      const filteredPicks = selectedTiebreaker.picks
+                      const filteredPicks = selectedTiebreakerPicks
                         .filter(pick => 
                           pick.full_name.toLowerCase().includes(searchTerm.toLowerCase())
                         );
