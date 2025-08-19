@@ -134,8 +134,14 @@ export default function Leaderboard() {
     } catch (err) {
       // Try to handle as auth error first
       if (!handleAuthError(err)) {
-        console.error(err);
-        console.log(err.response?.data || err.message);
+        // Check for permission error (user doesn't have make_picks permission)
+        if (err.response && err.response.status === 404) {
+          console.log('User not found or does not have permission to make picks');
+          // Don't show error to user, just silently fail
+        } else {
+          console.error(err);
+          console.log(err.response?.data || err.message);
+        }
       }
     }
   };

@@ -41,7 +41,8 @@ class User(BaseModel):
     full_name: str
     email: str
     league_id: str
-    is_admin: bool
+    make_picks: bool = True
+    admin: bool = False
 
 class ForgotPasswordRequest(BaseModel):
     username: str

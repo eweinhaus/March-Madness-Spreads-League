@@ -51,6 +51,9 @@ const AdminUserPicks = () => {
     } catch (err) {
       if (err.response?.status === 401) {
         navigate('/login');
+      } else if (err.response?.status === 404) {
+        // User not found or doesn't have make_picks permission
+        setError('User not found or does not have permission to make picks');
       } else {
         setError('Failed to fetch user picks');
       }

@@ -270,7 +270,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
         with get_db_cursor() as cur:
             logger.info(f"Looking up user in database: {username}")
             cur.execute(
-                "SELECT id, username, full_name, email, league_id, is_admin FROM users WHERE username = %s",
+                "SELECT id, username, full_name, email, league_id, admin FROM users WHERE username = %s",
                 (username,)
             )
             user = cur.fetchone()
@@ -287,7 +287,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     
 async def get_current_admin_user(current_user: User = Depends(get_current_user)) -> User:
     """Check if the current user is an admin."""
-    if not current_user.is_admin:
+    if not current_user.admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions"
@@ -316,7 +316,7 @@ async def register(user: UserCreate):
                 """
                 INSERT INTO users (username, full_name, email, league_id, password_hash)
                 VALUES (%s, %s, %s, %s, %s)
-                RETURNING id, username, full_name, email, league_id, is_admin
+                RETURNING id, username, full_name, email, league_id, admin
                 """,
                 (user.username, user.full_name, user.email, league_id, hashed_password)
             )
@@ -532,6 +532,13 @@ async def submit_pick(
 ):
     """Submit a pick for a game."""
     try:
+        # Check if user has permission to make picks
+        if not current_user.make_picks:
+            raise HTTPException(
+                status_code=403, 
+                detail="You do not have permission to make picks"
+            )
+        
         with get_db_cursor(commit=True) as cur:
             # Get game details
             cur.execute("SELECT * FROM games WHERE id = %s", (pick.game_id,))
@@ -745,7 +752,7 @@ def get_leaderboard(filter: str = "overall"):
                     SELECT id, username, full_name
                     FROM users
                     WHERE created_at >= '2025-06-01T00:00:00Z'
-                    AND username != 'adminEthan'
+                    AND make_picks = TRUE
             """
             
             points_query += """
@@ -987,7 +994,7 @@ async def make_admin(
             
             # Make user admin
             cur.execute(
-                "UPDATE users SET is_admin = TRUE WHERE username = %s RETURNING username, is_admin",
+                "UPDATE users SET admin = TRUE WHERE username = %s RETURNING username, admin",
                 (username,)
             )
             updated_user = cur.fetchone()
@@ -1048,7 +1055,7 @@ def get_live_games():
                                 'full_name', u.full_name,
                                 'picked_team', p.picked_team
                             )
-                        ) FILTER (WHERE u.username IS NOT NULL AND u.username != 'adminEthan'),
+                        ) FILTER (WHERE u.username IS NOT NULL AND u.make_picks = TRUE),
                         '[]'
                     ) as picks
                 FROM games g
@@ -1277,7 +1284,7 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
             FROM users u
             LEFT JOIN upcoming_picks up ON u.id = up.user_id
             LEFT JOIN upcoming_tiebreaker_picks utp ON u.id = utp.user_id
-            WHERE u.username != 'adminEthan'
+            WHERE u.make_picks = TRUE
             ORDER BY u.username
         """, (current_time, current_time))
         
@@ -1442,7 +1449,7 @@ def get_live_tiebreakers():
                                 'full_name', u.full_name,
                                 'answer', tp.answer
                             )
-                        ) FILTER (WHERE u.username IS NOT NULL AND u.username != 'adminEthan'),
+                        ) FILTER (WHERE u.username IS NOT NULL AND u.make_picks = TRUE),
                         '[]'
                     ) as picks
                 FROM tiebreakers t
@@ -1568,6 +1575,13 @@ async def create_tiebreaker_pick(
 ):
     """Create a new tiebreaker pick."""
     try:
+        # Check if user has permission to make picks
+        if not current_user.make_picks:
+            raise HTTPException(
+                status_code=403, 
+                detail="You do not have permission to make picks"
+            )
+        
         with get_db_cursor(commit=True) as cur:
             # Check if tiebreaker exists and is active
             cur.execute(
@@ -1633,6 +1647,13 @@ async def create_tiebreaker_pick(
 async def get_picks_data(current_user: User = Depends(get_current_user)):
     """Get all data needed for the Picks page in a single optimized call."""
     try:
+        # Check if user has permission to make picks
+        if not current_user.make_picks:
+            raise HTTPException(
+                status_code=403, 
+                detail="You do not have permission to make picks"
+            )
+        
         with get_db_cursor() as cur:
             # Get current time for filtering
             current_time = get_current_utc_time()
@@ -1719,8 +1740,10 @@ async def get_user_all_picks(
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
             
-            # Prevent access to adminEthan's picks
-            if username == 'adminEthan':
+            # Check if user has make_picks permission
+            cur.execute("SELECT make_picks FROM users WHERE username = %s", (username,))
+            user_permissions = cur.fetchone()
+            if not user_permissions or not user_permissions['make_picks']:
                 raise HTTPException(status_code=404, detail="User not found")
 
             # Get all game picks
@@ -1825,7 +1848,7 @@ def create_admin_user(username, full_name, password):
     try:
         with get_db_cursor(commit=True) as cur:
             # Check if any admin exists
-            cur.execute("SELECT id FROM users WHERE is_admin = TRUE")
+            cur.execute("SELECT id FROM users WHERE admin = TRUE")
             # if cur.fetchone():
             #     return
             
@@ -1834,7 +1857,7 @@ def create_admin_user(username, full_name, password):
             hashed_password = get_password_hash(admin_password)
             cur.execute(
                 """
-                INSERT INTO users (username, full_name, password_hash, is_admin)
+                INSERT INTO users (username, full_name, password_hash, admin)
                 VALUES (%s, %s, %s, TRUE)
                 RETURNING id
                 """,
@@ -1854,7 +1877,7 @@ def create_admin_user(username, full_name, password):
 
 def wipe_all_admin_users():
     with get_db_cursor(commit=True) as cur:
-        cur.execute("DELETE FROM users WHERE is_admin = TRUE")
+        cur.execute("DELETE FROM users WHERE admin = TRUE")
 
 # Initialize database
 with get_db_connection() as conn:
@@ -1876,8 +1899,10 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
             
-            # Prevent access to adminEthan's picks
-            if username == 'adminEthan':
+            # Check if user has make_picks permission
+            cur.execute("SELECT make_picks FROM users WHERE username = %s", (username,))
+            user_permissions = cur.fetchone()
+            if not user_permissions or not user_permissions['make_picks']:
                 raise HTTPException(status_code=404, detail="User not found")
 
             # Get all game picks for games that have started

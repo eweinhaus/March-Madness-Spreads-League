@@ -156,8 +156,13 @@ export default function Picks() {
       .catch(err => {
         // Try to handle as auth error first
         if (!handleAuthError(err)) {
-          // If not an auth error, show the general error
-          setError('Failed to load games, picks, and tiebreakers');
+          // Check for permission error
+          if (err.response && err.response.status === 403) {
+            setError('You do not have permission to make picks. Please contact an administrator.');
+          } else {
+            // If not an auth error, show the general error
+            setError('Failed to load games, picks, and tiebreakers');
+          }
         }
         setIsLoading(false);
       });
@@ -441,8 +446,10 @@ export default function Picks() {
       console.error(err);
       // Try to handle auth error first
       if (!handleAuthError(err)) {
-        // If not an auth error, display more detailed error message if available
-        if (err.response && err.response.data && err.response.data.detail) {
+        // Check for permission error
+        if (err.response && err.response.status === 403) {
+          setError('You do not have permission to make picks. Please contact an administrator.');
+        } else if (err.response && err.response.data && err.response.data.detail) {
           const errorMessage = err.response.data.detail;
           
           // Check if it's a lock-specific error

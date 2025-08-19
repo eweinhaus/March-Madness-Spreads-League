@@ -29,6 +29,71 @@ def get_db_connection():
         logger.error(f"Error connecting to database: {str(e)}")
         raise
 
+def migrate_users_table(conn):
+    """Migrate the users table to add new fields and update existing users."""
+    try:
+        logger.info("Migrating users table...")
+        with conn.cursor() as cur:
+            # Check if make_picks column exists
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'users' AND column_name = 'make_picks'
+            """)
+            make_picks_exists = cur.fetchone()
+            
+            # Check if admin column exists (not is_admin)
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'users' AND column_name = 'admin'
+            """)
+            admin_exists = cur.fetchone()
+            
+            # Add make_picks column if it doesn't exist
+            if not make_picks_exists:
+                cur.execute("ALTER TABLE users ADD COLUMN make_picks BOOLEAN DEFAULT TRUE")
+                logger.info("Added make_picks column to users table")
+            
+            # Add admin column if it doesn't exist
+            if not admin_exists:
+                cur.execute("ALTER TABLE users ADD COLUMN admin BOOLEAN DEFAULT FALSE")
+                logger.info("Added admin column to users table")
+            
+            # Update all existing users: make_picks = TRUE, admin = FALSE
+            cur.execute("""
+                UPDATE users 
+                SET make_picks = TRUE, admin = FALSE 
+                WHERE make_picks IS NULL OR admin IS NULL
+            """)
+            
+            # If is_admin column exists, migrate its data to admin column
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'users' AND column_name = 'is_admin'
+            """)
+            is_admin_exists = cur.fetchone()
+            
+            if is_admin_exists:
+                cur.execute("""
+                    UPDATE users 
+                    SET admin = is_admin 
+                    WHERE admin = FALSE AND is_admin = TRUE
+                """)
+                logger.info("Migrated is_admin data to admin column")
+                
+                # Drop the old is_admin column
+                cur.execute("ALTER TABLE users DROP COLUMN is_admin")
+                logger.info("Dropped old is_admin column")
+            
+            conn.commit()
+            logger.info("Users table migration completed successfully")
+    except Exception as e:
+        logger.error(f"Error migrating users table: {str(e)}")
+        conn.rollback()
+        raise
+
 def create_tables(conn):
     """Create tables if they don't exist."""
     try:
@@ -42,7 +107,8 @@ def create_tables(conn):
                     email VARCHAR(100) UNIQUE NOT NULL,
                     league_id VARCHAR(50) NOT NULL,
                     password_hash TEXT NOT NULL,
-                    is_admin BOOLEAN DEFAULT FALSE,
+                    make_picks BOOLEAN DEFAULT TRUE,
+                    admin BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -111,3 +177,4 @@ def create_tables(conn):
 # Create initial connection and tables
 conn = get_db_connection()
 create_tables(conn)
+migrate_users_table(conn)
