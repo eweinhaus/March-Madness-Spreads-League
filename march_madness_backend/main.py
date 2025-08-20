@@ -2306,7 +2306,7 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
         with get_db_cursor() as cur:
             current_time = get_current_utc_time()
             print(f"Current time: {current_time}")
-            
+             
             # Get user info
             cur.execute("SELECT id, username, full_name FROM users WHERE username = %s", (username,))
             user = cur.fetchone()
