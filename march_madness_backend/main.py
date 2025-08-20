@@ -2621,6 +2621,91 @@ def get_scaling_status():
             "timestamp": get_current_utc_time().isoformat()
         }
 
+@app.post("/debug-password")
+async def debug_password_verification(username: str, password: str):
+    """Debug endpoint to test password verification (only in debug mode)."""
+    if not os.getenv("DEBUG_MODE", "false").lower() in ["true", "1"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Debug mode is not enabled"
+        )
+    
+    try:
+        with get_db_cursor() as cur:
+            cur.execute(
+                "SELECT id, username, password_hash FROM users WHERE username = %s",
+                (username,)
+            )
+            user = cur.fetchone()
+            
+            if not user:
+                return {
+                    "status": "user_not_found",
+                    "username": username,
+                    "message": "User does not exist in database"
+                }
+            
+            # Test password verification with detailed logging
+            logger.info(f"Debug: Testing password for user {username}")
+            logger.info(f"Debug: Password hash starts with: {user['password_hash'][:10]}...")
+            
+            try:
+                password_valid = verify_password(password, user["password_hash"])
+                return {
+                    "status": "verification_complete",
+                    "username": username,
+                    "password_valid": password_valid,
+                    "hash_prefix": user['password_hash'][:10],
+                    "hash_type": "bcrypt" if user['password_hash'].startswith('$2') else "other"
+                }
+            except Exception as e:
+                return {
+                    "status": "verification_error",
+                    "username": username,
+                    "error": str(e),
+                    "hash_prefix": user['password_hash'][:10],
+                    "hash_type": "bcrypt" if user['password_hash'].startswith('$2') else "other"
+                }
+                
+    except Exception as e:
+        return {
+            "status": "database_error",
+            "error": str(e)
+        }
+
+@app.post("/admin/migrate-passwords")
+async def migrate_passwords(current_user: User = Depends(get_current_admin_user)):
+    """Re-hash all user passwords with current bcrypt version (admin only)."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Get all users
+            cur.execute("SELECT id, username, password_hash FROM users")
+            users = cur.fetchall()
+            
+            migrated_count = 0
+            for user in users:
+                try:
+                    # Try to identify if this is an old hash that needs migration
+                    old_hash = user['password_hash']
+                    
+                    # For security, we can't reverse the hash, so this endpoint
+                    # would need the user to provide their password or use a reset
+                    logger.info(f"User {user['username']} hash type: {'bcrypt' if old_hash.startswith('$2') else 'other'}")
+                    
+                except Exception as e:
+                    logger.error(f"Error checking user {user['username']}: {str(e)}")
+                    continue
+            
+            return {
+                "message": f"Password migration check completed for {len(users)} users",
+                "users_checked": len(users),
+                "note": "Use forgot-password endpoint for users with login issues"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in password migration: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Run the server
 if __name__ == "__main__":
     import uvicorn

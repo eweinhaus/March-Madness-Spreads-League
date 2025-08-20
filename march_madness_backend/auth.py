@@ -53,8 +53,40 @@ class ForgotPasswordRequest(BaseModel):
     email: str
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a password against its hash with enhanced error handling."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # First attempt with normal verification
+        result = pwd_context.verify(plain_password, hashed_password)
+        logger.info(f"Password verification successful: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"Password verification error: {str(e)}")
+        
+        # Handle bcrypt compatibility issues
+        if "bcrypt" in str(e).lower() or "version" in str(e).lower():
+            logger.warning("Bcrypt compatibility issue detected, trying fallback verification")
+            try:
+                # Try with explicit bcrypt verification
+                import bcrypt
+                if hashed_password.startswith('$2b$') or hashed_password.startswith('$2a$'):
+                    result = bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+                    logger.info(f"Fallback bcrypt verification result: {result}")
+                    return result
+                else:
+                    # Try with sha256_crypt as fallback
+                    from passlib.hash import sha256_crypt
+                    result = sha256_crypt.verify(plain_password, hashed_password)
+                    logger.info(f"SHA256 fallback verification result: {result}")
+                    return result
+            except Exception as fallback_error:
+                logger.error(f"Fallback verification also failed: {str(fallback_error)}")
+                return False
+        
+        # Re-raise other exceptions
+        raise
 
 def get_password_hash(password: str) -> str:
     """Generate password hash."""
