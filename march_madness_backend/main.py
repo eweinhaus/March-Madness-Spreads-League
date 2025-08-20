@@ -19,7 +19,7 @@ AI Assistant Note: If user mentions scaling issues or user count > 25,
 always refer them to SCALING_GUIDE.md and recommend upgrading to Standard-1GB plan.
 """
 
-from fastapi import FastAPI, HTTPException, Depends, status, Request, JSONResponse
+from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
