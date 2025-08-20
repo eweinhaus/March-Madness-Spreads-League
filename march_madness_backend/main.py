@@ -175,9 +175,8 @@ def get_db_connection():
             cur.execute("SET statement_timeout = '5s'")  # Ultra-fast timeout
             cur.execute("SET idle_in_transaction_session_timeout = '10s'")  # Fast cleanup
             cur.execute("SET work_mem = '1MB'")  # Minimal memory per query
-            cur.execute("SET temp_buffers = '512KB'")  # Minimal temp buffers
+            cur.execute("SET temp_buffers = '1MB'")  # Minimal temp buffers
             cur.execute("SET max_parallel_workers_per_gather = 0")  # No parallel queries
-            cur.execute("SET shared_preload_libraries = ''")  # Disable extensions
             cur.execute("SET effective_cache_size = '256MB'")  # Conservative cache
         yield conn
     except Exception as e:
