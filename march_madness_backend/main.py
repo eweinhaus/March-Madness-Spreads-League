@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, validator, ValidationError
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
@@ -352,6 +352,7 @@ async def startup_event():
 response_cache = {}
 cache_lock = threading.Lock()
 cache_ttl = 60  # Cache for 60 seconds
+CACHE_ENABLED = False  # Disable response caching to avoid protocol errors
 
 def get_cached_response(cache_key):
     """Get cached response if available and not expired."""
@@ -399,10 +400,11 @@ async def log_requests(request: Request, call_next):
         # Check cache first for GET requests
         if request.method == "GET":
             cache_key = f"{request.url.path}:{request.query_params}"
-            cached_response = get_cached_response(cache_key)
-            if cached_response:
-                logger.debug(f"Cache hit for {request.url.path}")
-                return cached_response
+            if CACHE_ENABLED:
+                cached_response = get_cached_response(cache_key)
+                if cached_response:
+                    logger.debug(f"Cache hit for {request.url.path}")
+                    return cached_response
         
         # Only log non-static requests and reduce verbosity
         if not request.url.path.startswith('/static') and not request.url.path.startswith('/favicon'):
@@ -411,7 +413,7 @@ async def log_requests(request: Request, call_next):
         response = await call_next(request)
         
         # Cache successful GET responses
-        if request.method == "GET" and response.status_code == 200:
+        if request.method == "GET" and response.status_code == 200 and CACHE_ENABLED:
             cache_key = f"{request.url.path}:{request.query_params}"
             set_cached_response(cache_key, response)
         
@@ -1237,6 +1239,39 @@ def get_tiebreaker_week_filter_conditions(filter_key):
         end_condition = f" AND t.start_time <= '{week_info['end']}'" if week_info['end'] else ""
         return start_condition, end_condition
 
+@app.post("/debug-game-data")
+async def debug_game_data(request: Request, current_user: User = Depends(get_current_admin_user)):
+    """Debug endpoint to see raw game data before Pydantic validation."""
+    try:
+        body = await request.json()
+        logger.info(f"Raw request body: {body}")
+        return {"received": body}
+    except Exception as e:
+        logger.error(f"Error parsing request: {str(e)}")
+        return {"error": str(e)}
+
+def serialize_game_row(row):
+    """Serialize a DB game row ensuring datetime fields are UTC ISO strings with 'Z'."""
+    try:
+        game_date = normalize_datetime(row["game_date"]).isoformat().replace("+00:00", "Z")
+    except Exception:
+        # Fallback in case of unexpected formats
+        game_date = row["game_date"].isoformat() if hasattr(row["game_date"], "isoformat") else row["game_date"]
+    serialized = dict(row)
+    serialized["game_date"] = game_date
+    return serialized
+
+def serialize_tiebreaker_row(row):
+    """Serialize a DB tiebreaker row ensuring datetime fields are UTC ISO strings with 'Z'."""
+    try:
+        start_time = normalize_datetime(row["start_time"]).isoformat().replace("+00:00", "Z")
+    except Exception:
+        # Fallback in case of unexpected formats
+        start_time = row["start_time"].isoformat() if hasattr(row["start_time"], "isoformat") else row["start_time"]
+    serialized = dict(row)
+    serialized["start_time"] = start_time
+    return serialized
+
 @app.post("/games")
 async def create_game(
     game: Game,
@@ -1244,9 +1279,17 @@ async def create_game(
 ):
     """Create a new game (admin only)."""
     try:
+        logger.info(f"Received game creation request: {game}")
+        logger.info(f"Game date: {game.game_date}")
+        logger.info(f"Game date type: {type(game.game_date)}")
+        logger.info(f"Game date timezone: {game.game_date.tzinfo}")
+        
         # Validate game date is not in the past
         current_time = get_current_utc_time()
+        logger.info(f"Current time: {current_time}")
+        
         if game.game_date <= current_time:
+            logger.warning(f"Game date {game.game_date} is not in the future (current: {current_time})")
             raise HTTPException(
                 status_code=400, 
                 detail="Game date must be in the future"
@@ -1276,22 +1319,30 @@ async def create_game(
             new_game = cur.fetchone()
             logger.info(f"Game created successfully: {new_game}")
             logger.info(f"Game date after DB insert: {new_game['game_date']}")
-            return new_game
+            return serialize_game_row(new_game)
     except HTTPException:
         raise
+    except ValidationError as e:
+        logger.error(f"Validation error creating game: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Validation error: {str(e)}")
     except Exception as e:
         logger.error(f"Error creating game: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/games")
-def get_games():
+def get_games(all_games: bool = False, current_user: User = Depends(get_current_user)):
     try:
         with get_db_cursor() as cur:
-            # Only fetch future games for better performance
-            current_time = get_current_utc_time()
-            cur.execute("SELECT * FROM games WHERE game_date > %s ORDER BY game_date", (current_time,))
+            # If user is admin and requests all games, fetch all games
+            # Otherwise, only fetch future games for better performance
+            if all_games and current_user.admin:
+                cur.execute("SELECT * FROM games ORDER BY game_date DESC")
+            else:
+                current_time = get_current_utc_time()
+                cur.execute("SELECT * FROM games WHERE game_date > %s ORDER BY game_date", (current_time,))
             games = cur.fetchall()
-            return games
+            # Ensure game_date has timezone info in the API response
+            return [serialize_game_row(g) for g in games]
     except Exception as e:
         logger.error(f"Error fetching games: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1503,7 +1554,7 @@ async def update_game(
                             (pick["user_id"], pick["user_id"])
                         )
             
-            return updated_game
+            return serialize_game_row(updated_game)
     except Exception as e:
         logger.error(f"Error updating game: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1538,6 +1589,8 @@ async def delete_game(
             )
             
             return {"message": "Game deleted successfully", "game": deleted_game}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting game: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1563,7 +1616,7 @@ async def get_my_picks(current_user: User = Depends(get_current_user)):
                 ORDER BY g.game_date
             """, (current_user.id,))
             picks = cur.fetchall()
-            return picks
+            return [serialize_game_row(p) for p in picks]
     except Exception as e:
         logger.error(f"Error fetching user picks: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1755,7 +1808,7 @@ def get_tiebreakers():
             current_time = get_current_utc_time()
             cur.execute("SELECT * FROM tiebreakers WHERE start_time > %s AND is_active = TRUE ORDER BY start_time", (current_time,))
             tiebreakers = cur.fetchall()
-            return tiebreakers
+            return [serialize_tiebreaker_row(t) for t in tiebreakers]
     except Exception as e:
         logger.error(f"Error fetching tiebreakers: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2040,8 +2093,8 @@ async def get_picks_data(current_user: User = Depends(get_current_user)):
             tiebreakers = cur.fetchall()
             
             return {
-                "games": games,
-                "tiebreakers": tiebreakers
+                "games": [serialize_game_row(g) for g in games],
+                "tiebreakers": [serialize_tiebreaker_row(t) for t in tiebreakers]
             }
     except Exception as e:
         logger.error(f"Error fetching picks data: {str(e)}")
@@ -2066,7 +2119,7 @@ async def get_my_tiebreaker_picks(current_user: User = Depends(get_current_user)
                 ORDER BY t.start_time
             """, (current_user.id,))
             picks = cur.fetchall()
-            return picks
+            return [serialize_tiebreaker_row(p) for p in picks]
     except Exception as e:
         logger.error(f"Error fetching user tiebreaker picks: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

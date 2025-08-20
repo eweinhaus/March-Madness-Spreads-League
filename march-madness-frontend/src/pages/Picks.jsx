@@ -6,6 +6,7 @@ import { useNavigate } from "react-router-dom";
 import { FaLock, FaUnlock } from "react-icons/fa";
 
 export default function Picks() {
+  console.log('Picks component is mounting...');
   const [games, setGames] = useState([]);
   const [picks, setPicks] = useState({});
   const [existingPicks, setExistingPicks] = useState({});
@@ -13,6 +14,7 @@ export default function Picks() {
   const [existingLocks, setExistingLocks] = useState({});
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [tiebreakers, setTiebreakers] = useState([]);
   const [tiebreakerPicks, setTiebreakerPicks] = useState({});
   const [existingTiebreakerPicks, setExistingTiebreakerPicks] = useState({});
@@ -31,33 +33,45 @@ export default function Picks() {
     });
   };
 
-  // Helper function to get week start for a game date (Tuesday 3:00 AM EST/EDT)
+  // Helper function to get week start for a game date (Tuesday 3:00 AM ET)
   const getWeekStart = (gameDate) => {
     const date = new Date(gameDate);
     
-    // Convert to EST/EDT (simplified - in production you'd use a proper timezone library)
-    // EST is UTC-5, EDT is UTC-4
-    const utcHours = date.getUTCHours();
-    const estHours = utcHours - 5; // Assume EST for now
-    const estDate = new Date(date);
-    estDate.setUTCHours(estHours);
+    // Convert UTC to Eastern Time (handles EST/EDT automatically)
+    // We'll approximate ET offset: -5 hours (EST) or -4 hours (EDT)
+    const year = date.getUTCFullYear();
+    const month = date.getUTCMonth();
+    
+    // Simple DST approximation: EDT from March to November, EST otherwise
+    // This is simplified but covers most cases for US Eastern Time
+    const isDST = month >= 2 && month <= 10; // March (2) through November (10)
+    const etOffset = isDST ? -4 : -5; // EDT is UTC-4, EST is UTC-5
+    
+    // Convert to Eastern Time
+    const etDate = new Date(date.getTime() + (etOffset * 60 * 60 * 1000));
     
     // Find the Tuesday that starts the week
-    const dayOfWeek = estDate.getDay(); // 0=Sunday, 2=Tuesday
-    const daysSinceTuesday = (dayOfWeek - 2 + 7) % 7;
+    const dayOfWeek = etDate.getDay(); // 0=Sunday, 2=Tuesday
+    let daysSinceTuesday = (dayOfWeek - 2 + 7) % 7;
     
-    const weekStart = new Date(estDate);
-    weekStart.setDate(estDate.getDate() - daysSinceTuesday);
-    weekStart.setHours(3, 0, 0, 0); // 3:00 AM
+    // If it's Tuesday but before 3:00 AM ET, it belongs to the previous week
+    if (dayOfWeek === 2 && etDate.getHours() < 3) {
+      daysSinceTuesday = 7;
+    }
+    
+    const weekStart = new Date(etDate);
+    weekStart.setDate(etDate.getDate() - daysSinceTuesday);
+    weekStart.setHours(3, 0, 0, 0); // 3:00 AM ET
     
     return weekStart;
   };
 
-  // Helper function to get game week bounds (Tuesday 3:00 AM to Tuesday 2:59 AM EST)
+  // Helper function to get game week bounds (Tuesday 3:00 AM to Tuesday 2:59 AM ET)
   const getGameWeekBounds = (gameDate) => {
     const weekStart = getWeekStart(gameDate);
     
-    // Week ends Tuesday 2:59 AM (7 days later)
+    // Week ends at the start of the next week (Tuesday 3:00 AM, 7 days later)
+    // We use 2:59:59.999 to create an exclusive end bound [start, end)
     const weekEnd = new Date(weekStart);
     weekEnd.setDate(weekStart.getDate() + 7);
     weekEnd.setHours(2, 59, 59, 999);
@@ -132,11 +146,12 @@ export default function Picks() {
         const picksObj = {};
         const locksObj = {};
         games.forEach(game => {
+          const gameIdStr = String(game.game_id);
           if (game.picked_team) {
-            picksObj[game.game_id] = game.picked_team;
+            picksObj[gameIdStr] = game.picked_team;
           }
           if (game.lock) {
-            locksObj[game.game_id] = game.lock;
+            locksObj[gameIdStr] = game.lock;
           }
         });
         setExistingPicks(picksObj);
@@ -146,8 +161,9 @@ export default function Picks() {
         setTiebreakers(tiebreakers);
         const tiebreakerPicksObj = {};
         tiebreakers.forEach(tiebreaker => {
+          const tiebreakerIdStr = String(tiebreaker.tiebreaker_id);
           if (tiebreaker.user_answer !== null) {
-            tiebreakerPicksObj[tiebreaker.tiebreaker_id] = tiebreaker.user_answer;
+            tiebreakerPicksObj[tiebreakerIdStr] = tiebreaker.user_answer;
           }
         });
         setExistingTiebreakerPicks(tiebreakerPicksObj);
@@ -206,7 +222,7 @@ export default function Picks() {
       }));
     } else {
       // If this pick is not locked, check if we can lock it
-      const targetGame = games.find(g => g.id === gameId);
+      const targetGame = games.find(g => g.game_id === gameId);
       if (!targetGame) {
         setError('Game not found');
         return;
@@ -218,7 +234,7 @@ export default function Picks() {
       
       for (const [lockGameIdStr, isLocked] of Object.entries(allLocks)) {
         if (isLocked) {
-          const lockGame = games.find(g => g.id === Number(lockGameIdStr));
+          const lockGame = games.find(g => g.game_id === Number(lockGameIdStr));
           if (lockGame) {
             const { weekStart: targetWeekStart, weekEnd: targetWeekEnd } = getGameWeekBounds(targetGame.game_date);
             const lockGameDate = new Date(lockGame.game_date);
@@ -227,10 +243,12 @@ export default function Picks() {
             
             console.log(`Checking locked game ${lockGameIdStr}:`, {
               gameDate: lockGame.game_date,
+              lockGameDate: lockGameDate.toISOString(),
               targetWeekStart: targetWeekStart.toISOString(),
               targetWeekEnd: targetWeekEnd.toISOString(),
               isInSameWeek,
-              hasStarted
+              hasStarted,
+              currentTime: new Date().toISOString()
             });
             
             // Check if this locked game is in the same week and has started
@@ -257,7 +275,7 @@ export default function Picks() {
       
       // Only unlock locks that are in the same week as the target game
       Object.keys(locks).forEach(id => {
-        const game = games.find(g => g.id === Number(id));
+        const game = games.find(g => g.game_id === Number(id));
         if (game) {
           const gameDate = new Date(game.game_date);
           if (gameDate >= weekStart && gameDate <= weekEnd) {
@@ -270,7 +288,7 @@ export default function Picks() {
       
       // Only unlock existing locks from database that are in the same week
       Object.keys(existingLocks).forEach(id => {
-        const game = games.find(g => g.id === Number(id));
+        const game = games.find(g => g.game_id === Number(id));
         if (game) {
           const gameDate = new Date(game.game_date);
           if (gameDate >= weekStart && gameDate <= weekEnd) {
@@ -292,6 +310,8 @@ export default function Picks() {
 
   const submitPicks = async () => {
     const token = localStorage.getItem('token');
+    setIsSubmitting(true);
+    setError(null);
     
     try {
       // Validate game picks before submitting
@@ -426,6 +446,9 @@ export default function Picks() {
         }
       }
       
+      // Hide the submitting popup immediately when successful
+      setIsSubmitting(false);
+      
       if (consolidatedMessage) {
         alert(consolidatedMessage);
       }
@@ -470,6 +493,7 @@ export default function Picks() {
           setError('Failed to submit picks. Please try again.');
         }
       }
+      setIsSubmitting(false);
     }
   };
 
@@ -551,15 +575,16 @@ export default function Picks() {
               </Row>
               <Row xs={1} sm={2} lg={3} className="g-3 g-md-4 mb-4">
                 {availableGames.map(game => {
-                  const existingPick = existingPicks[game.id];
-                  const currentPick = picks[game.id];
+                  const gameIdStr = String(game.game_id);
+                  const existingPick = existingPicks[gameIdStr];
+                  const currentPick = picks[gameIdStr];
                   const selectedTeam = currentPick || existingPick;
-                  const existingLock = existingLocks[game.id];
-                  const currentLock = locks[game.id];
+                  const existingLock = existingLocks[gameIdStr];
+                  const currentLock = locks[gameIdStr];
                   const isLocked = currentLock !== undefined ? currentLock : (existingLock || false);
 
                   return (
-                    <Col key={`game-${game.id}`}>
+                    <Col key={`game-${game.game_id}`}>
                       <Card className={`h-100 shadow-sm ${isLocked ? 'border-warning border-3' : 'border-3'}`} style={isLocked ? {} : {borderColor: 'transparent'}}>
                         <Card.Body className="d-flex flex-column">
                           <Card.Title className="d-flex justify-content-between align-items-center mb-3">
@@ -571,7 +596,7 @@ export default function Picks() {
                             <Button
                               variant="outline-secondary"
                               size="sm"
-                              onClick={() => handleLockToggle(game.id)}
+                              onClick={() => handleLockToggle(game.game_id)}
                               className="p-2"
                               title={isLocked ? "Unlock pick" : "Lock pick"}
                             >
@@ -591,14 +616,14 @@ export default function Picks() {
                           <div className="d-grid gap-2 mt-auto">
                             <Button
                               variant={selectedTeam === game.away_team ? "success" : "outline-primary"}
-                              onClick={() => handlePick(game.id, game.away_team)}
+                              onClick={() => handlePick(game.game_id, game.away_team)}
                               className="py-2"
                             >
                               {game.away_team} {game.spread > 0 ? `+${game.spread}` : `-${Math.abs(game.spread)}`}
                             </Button>
                             <Button
                               variant={selectedTeam === game.home_team ? "success" : "outline-primary"}
-                              onClick={() => handlePick(game.id, game.home_team)}
+                              onClick={() => handlePick(game.game_id, game.home_team)}
                               className="py-2"
                             >
                               {game.home_team} {game.spread > 0 ? `-${game.spread}` : `+${Math.abs(game.spread)}`}
@@ -623,8 +648,9 @@ export default function Picks() {
               </Row>
               <Row xs={1} sm={2} lg={3} className="g-3 g-md-4">
                 {availableTiebreakers.map(tiebreaker => {
-                  const existingAnswer = existingTiebreakerPicks[tiebreaker.id];
-                  const currentAnswer = tiebreakerPicks[tiebreaker.id];
+                  const tiebreakerIdStr = String(tiebreaker.tiebreaker_id);
+                  const existingAnswer = existingTiebreakerPicks[tiebreakerIdStr];
+                  const currentAnswer = tiebreakerPicks[tiebreakerIdStr];
                   const answer = currentAnswer !== undefined ? currentAnswer : existingAnswer;
                   
                   // Determine if the question likely requires a numeric or text answer
@@ -634,7 +660,7 @@ export default function Picks() {
                                            tiebreaker.question.toLowerCase().includes('total');
 
                   return (
-                    <Col key={`tiebreaker-${tiebreaker.id}`}>
+                    <Col key={`tiebreaker-${tiebreaker.tiebreaker_id}`}>
                       <Card className="h-100 shadow-sm">
                         <Card.Body className="d-flex flex-column">
                           <Card.Title className="mb-3">
@@ -655,7 +681,7 @@ export default function Picks() {
                                 step="0.1"
                                 placeholder="Enter your answer"
                                 value={answer !== undefined ? answer : ''}
-                                onChange={(e) => handleTiebreakerPick(tiebreaker.id, e.target.value, true)}
+                                onChange={(e) => handleTiebreakerPick(tiebreaker.tiebreaker_id, e.target.value, true)}
                                 className="text-center"
                               />
                             ) : (
@@ -663,7 +689,7 @@ export default function Picks() {
                                 type="text"
                                 placeholder="Enter your answer"
                                 value={answer !== undefined ? answer : ''}
-                                onChange={(e) => handleTiebreakerPick(tiebreaker.id, e.target.value, false)}
+                                onChange={(e) => handleTiebreakerPick(tiebreaker.tiebreaker_id, e.target.value, false)}
                                 className="text-center"
                               />
                             )}
@@ -680,13 +706,45 @@ export default function Picks() {
           {(Object.keys(picks).length > 0 || Object.keys(tiebreakerPicks).length > 0 || Object.keys(locks).length > 0) && (
             <Row className="mt-4">
               <Col className="d-flex justify-content-center">
-                <Button variant="success" size="lg" onClick={submitPicks} className="px-4 py-2">
+                <Button variant="success" size="lg" onClick={submitPicks} disabled={isSubmitting} className="px-4 py-2">
                   Submit Picks
                 </Button>
               </Col>
             </Row>
           )}
         </>
+      )}
+
+{/* Submission Modal - temporarily commented out for debugging */}
+      {isSubmitting && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            padding: '2rem',
+            borderRadius: '0.5rem',
+            textAlign: 'center',
+            minWidth: '300px'
+          }}>
+            <div className="mb-3">
+              <div className="spinner-border text-primary" style={{ width: '3rem', height: '3rem' }} role="status">
+                <span className="visually-hidden">Loading...</span>
+              </div>
+            </div>
+            <h5 className="mb-2">Submitting Your Picks</h5>
+            <p className="text-muted mb-0">Please wait your selections are saved...</p>
+          </div>
+        </div>
       )}
     </Container>
   );

@@ -33,7 +33,15 @@ const AdminGames = () => {
   const fetchGames = async () => {
     try {
       const response = await axios.get(`${API_URL}/games`, {
-        headers: getAuthHeaders()
+        headers: {
+          ...getAuthHeaders(),
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        },
+        params: {
+          all_games: true, // Request all games for admin view
+          _t: Date.now() // Cache busting parameter
+        }
       });
       setGames(response.data);
     } catch (err) {
@@ -56,10 +64,28 @@ const AdminGames = () => {
     }));
   };
 
+  // Helper: convert a datetime-local string (YYYY-MM-DDTHH:MM) to UTC ISO string
+  const toUtcISOStringFromLocal = (localDateTime) => {
+    if (!localDateTime) return '';
+    // Split without assuming seconds or timezone
+    const [datePart, timePartRaw] = localDateTime.split('T');
+    const [year, month, day] = datePart.split('-').map(Number);
+    const [hour, minute] = (timePartRaw || '00:00').split(':').map(Number);
+    // Construct a local Date (year, monthIndex, day, hour, minute)
+    const localDate = new Date(year, (month || 1) - 1, day || 1, hour || 0, minute || 0, 0, 0);
+    // Convert to UTC ISO string
+    return localDate.toISOString();
+  };
+
   // Helper function to format date for display
   const formatDateForDisplay = (dateString) => {
     const date = new Date(dateString);
-    return date.toLocaleString('en-US', {
+    console.log('formatDateForDisplay - Input dateString:', dateString);
+    console.log('formatDateForDisplay - Parsed date object:', date);
+    console.log('formatDateForDisplay - Timezone offset:', date.getTimezoneOffset());
+    console.log('formatDateForDisplay - toString():', date.toString());
+    
+    const formatted = date.toLocaleString('en-US', {
       year: 'numeric',
       month: 'numeric',
       day: 'numeric',
@@ -67,6 +93,8 @@ const AdminGames = () => {
       minute: '2-digit',
       hour12: true
     });
+    console.log('formatDateForDisplay - Formatted result:', formatted);
+    return formatted;
   };
 
   // Helper function to check if a game has started
@@ -85,14 +113,10 @@ const AdminGames = () => {
     try {
       // The datetime-local input is in the user's local timezone
       // We need to convert it to UTC for storage
-      const localDate = new Date(newGame.game_date);
       console.log('Original input date:', newGame.game_date);
-      console.log('Local date object:', localDate.toISOString());
-      console.log('Local date string:', localDate.toString());
       
-      // The toISOString() method automatically converts to UTC
-      // This is the correct way to convert local time to UTC
-      const utcDateString = localDate.toISOString();
+      // Convert local datetime string to UTC ISO string safely across browsers
+      const utcDateString = toUtcISOStringFromLocal(newGame.game_date);
       console.log('UTC date string:', utcDateString);
       
       const gameData = {
@@ -119,12 +143,20 @@ const AdminGames = () => {
       
       setSuccess('Game added successfully!');
     } catch (err) {
+      console.error('Full error object:', err);
+      console.error('Error response:', err.response);
+      console.error('Error response data:', err.response?.data);
+      
       if (err.response?.status === 401) {
         setError('Please log in to add games.');
       } else if (err.response?.status === 403) {
         setError('You do not have permission to add games.');
+      } else if (err.response?.status === 400) {
+        // Show the actual validation error from the server
+        const errorMessage = err.response?.data?.detail || 'Validation error occurred';
+        setError(`Validation Error: ${errorMessage}`);
       } else {
-        setError('Failed to add game. Please try again.');
+        setError(`Failed to add game: ${err.response?.data?.detail || err.message}`);
       }
       console.error('Error adding game:', err);
     }
@@ -161,11 +193,15 @@ const AdminGames = () => {
     // Convert UTC game_date to local time for datetime-local input
     const utcDate = new Date(game.game_date);
     
-    // Create a new Date object in local timezone
-    const localDate = new Date(utcDate.getTime() - (utcDate.getTimezoneOffset() * 60000));
+    // Get local time components
+    const localYear = utcDate.getFullYear();
+    const localMonth = String(utcDate.getMonth() + 1).padStart(2, '0');
+    const localDay = String(utcDate.getDate()).padStart(2, '0');
+    const localHours = String(utcDate.getHours()).padStart(2, '0');
+    const localMinutes = String(utcDate.getMinutes()).padStart(2, '0');
     
-    // Format as YYYY-MM-DDTHH:MM for datetime-local input
-    const localDateString = localDate.toISOString().slice(0, 16);
+    // Format for datetime-local input (YYYY-MM-DDTHH:MM in local time)
+    const localDateString = `${localYear}-${localMonth}-${localDay}T${localHours}:${localMinutes}`;
     
     setEditingGame({
       ...game,
@@ -181,8 +217,7 @@ const AdminGames = () => {
     
     try {
       // Convert local time back to UTC for storage
-      const localDate = new Date(editingGame.game_date);
-      const utcDateString = localDate.toISOString();
+      const utcDateString = toUtcISOStringFromLocal(editingGame.game_date);
       
       const gameData = {
         ...editingGame,
@@ -194,7 +229,9 @@ const AdminGames = () => {
         headers: getAuthHeaders()
       });
       
+      console.log('Game edit successful, refreshing games list...');
       await fetchGames();
+      console.log('Games list refreshed after edit');
       setShowEditModal(false);
       setSuccess('Game updated successfully!');
     } catch (err) {
