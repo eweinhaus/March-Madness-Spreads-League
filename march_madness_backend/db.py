@@ -60,11 +60,18 @@ def migrate_users_table(conn):
                 cur.execute("ALTER TABLE users ADD COLUMN admin BOOLEAN DEFAULT FALSE")
                 logger.info("Added admin column to users table")
             
-            # Update all existing users: make_picks = TRUE, admin = FALSE
+            # Update existing users: set make_picks = TRUE for users where it's NULL
+            # Only set admin = FALSE for users where admin is NULL (don't override existing admin = TRUE)
             cur.execute("""
                 UPDATE users 
-                SET make_picks = TRUE, admin = FALSE 
-                WHERE make_picks IS NULL OR admin IS NULL
+                SET make_picks = TRUE
+                WHERE make_picks IS NULL
+            """)
+            
+            cur.execute("""
+                UPDATE users 
+                SET admin = FALSE
+                WHERE admin IS NULL
             """)
             
             # If is_admin column exists, migrate its data to admin column

@@ -2242,24 +2242,41 @@ async def update_tiebreaker_points(
         raise HTTPException(status_code=500, detail=str(e))
 
 def create_admin_user(username, full_name, password):
-    """Create an admin user if no admin exists."""
+    """Create an admin user or update existing user to admin."""
     try:
         with get_db_cursor(commit=True) as cur:
+            # Check if user already exists
+            cur.execute("SELECT id, admin FROM users WHERE username = %s", (username,))
+            existing_user = cur.fetchone()
+            
+            if existing_user:
+                # User exists, make sure they're admin
+                if not existing_user['admin']:
+                    cur.execute(
+                        "UPDATE users SET admin = TRUE WHERE username = %s",
+                        (username,)
+                    )
+                    logger.info(f"Updated existing user {username} to admin")
+                else:
+                    logger.info(f"User {username} already exists and is admin")
+                return
+            
             # Check if any admin exists
             cur.execute("SELECT id FROM users WHERE admin = TRUE")
-            # if cur.fetchone():
-            #     return
+            if cur.fetchone():
+                logger.info("Admin user already exists, skipping creation")
+                return
             
-            # Create admin user
-            admin_password = password  # This is a temporary password
+            # Create new admin user
+            admin_password = password
             hashed_password = get_password_hash(admin_password)
             cur.execute(
                 """
-                INSERT INTO users (username, full_name, password_hash, admin)
-                VALUES (%s, %s, %s, TRUE)
+                INSERT INTO users (username, full_name, email, league_id, password_hash, admin)
+                VALUES (%s, %s, %s, %s, %s, TRUE)
                 RETURNING id
                 """,
-                (username, full_name, hashed_password)
+                (username, full_name, f"{username}@admin.local", "ADMIN", hashed_password)
             )
             admin_id = cur.fetchone()["id"]
             
@@ -2269,9 +2286,10 @@ def create_admin_user(username, full_name, password):
                 (admin_id,)
             )
             
-            logger.info("Created admin user with username: admin and password: admin123")
+            logger.info(f"Created admin user with username: {username}")
     except Exception as e:
         logger.error(f"Error creating admin user: {str(e)}")
+        # Don't raise exception to avoid breaking app startup
 
 def wipe_all_admin_users():
     with get_db_cursor(commit=True) as cur:
@@ -2280,8 +2298,6 @@ def wipe_all_admin_users():
 # Initialize database
 with get_db_connection() as conn:
     db.create_tables(conn)
-    #create_admin_user(username, full_name, password)
-
 
 @app.get("/user_all_past_picks/{username}")
 async def get_user_all_past_picks(username: str, filter: str = "overall"):
