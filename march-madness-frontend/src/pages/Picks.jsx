@@ -50,7 +50,7 @@ export default function Picks() {
     // Convert to Eastern Time
     const etDate = new Date(date.getTime() + (etOffset * 60 * 60 * 1000));
     
-    // Find the Tuesday that starts the week
+    // Find the Tuesday that starts the week containing this game
     const dayOfWeek = etDate.getDay(); // 0=Sunday, 2=Tuesday
     let daysSinceTuesday = (dayOfWeek - 2 + 7) % 7;
     
@@ -58,12 +58,22 @@ export default function Picks() {
     if (dayOfWeek === 2 && etDate.getHours() < 3) {
       daysSinceTuesday = 7;
     }
+    // If it's Tuesday at or after 3:00 AM ET, it starts the current week
+    else if (dayOfWeek === 2 && etDate.getHours() >= 3) {
+      daysSinceTuesday = 0; // This Tuesday is the start of the week
+    }
     
-    const weekStart = new Date(etDate);
-    weekStart.setDate(etDate.getDate() - daysSinceTuesday);
-    weekStart.setHours(3, 0, 0, 0); // 3:00 AM ET
+    // Calculate the Tuesday that starts the week
+    const weekStartDate = new Date(etDate);
+    weekStartDate.setDate(etDate.getDate() - daysSinceTuesday);
     
-    return weekStart;
+    // Set to 3:00 AM ET on that Tuesday
+    const weekStart = new Date(weekStartDate.getFullYear(), weekStartDate.getMonth(), weekStartDate.getDate(), 3, 0, 0, 0);
+    
+    // Convert back to UTC for consistency
+    const weekStartUTC = new Date(weekStart.getTime() - (etOffset * 60 * 60 * 1000));
+    
+    return weekStartUTC;
   };
 
   // Helper function to get game week bounds (Tuesday 3:00 AM to Tuesday 2:59 AM ET)
