@@ -182,6 +182,6 @@ def create_tables(conn):
         raise
 
 # Create initial connection and tables
-conn = get_db_connection()
-create_tables(conn)
-migrate_users_table(conn)
+# conn = get_db_connection()
+# create_tables(conn)
+# migrate_users_table(conn)
