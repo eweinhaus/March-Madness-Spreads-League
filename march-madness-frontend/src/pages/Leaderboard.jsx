@@ -197,11 +197,9 @@ export default function Leaderboard() {
                 <span className="badge bg-primary rounded-pill">
                   {player.total_points} points
                 </span>
-                {player.correct_locks > 0 && (
-                  <span className="badge bg-success rounded-pill" style={{ fontSize: '0.75rem' }}>
-                    {player.correct_locks} lock{player.correct_locks !== 1 ? 's' : ''}
-                  </span>
-                )}
+                <span className="badge bg-warning text-dark rounded-pill d-flex align-items-center gap-1" style={{ fontSize: '0.75rem' }}>
+                  {player.correct_locks} <FaLock className="text-dark" size={10} />
+                </span>
                 {player.first_tiebreaker_diff !== 999999 && (
                   <span className="badge bg-info rounded-pill" style={{ fontSize: '0.75rem' }}>
                     TB1: {player.first_tiebreaker_diff}
@@ -237,30 +235,39 @@ export default function Leaderboard() {
                       {userPicks.picks
                         .sort((a, b) => new Date(b.game_date) - new Date(a.game_date))
                         .map((pick) => {
-                        // Determine row color based on result
-                        let rowClass = "";
+                        // Determine background color for pick column based on result
+                        let pickCellClass = "";
                         if (pick.winning_team && pick.winning_team !== "PUSH") {
-                          rowClass = pick.winning_team === pick.picked_team ? "table-success" : "table-danger";
+                          pickCellClass = pick.winning_team === pick.picked_team ? "table-success" : "table-danger";
                         } else if (pick.winning_team === "PUSH") {
-                          rowClass = "table-warning"; // Highlight PUSH rows in yellow
+                          pickCellClass = "table-warning"; // Highlight PUSH picks in yellow
                         }
                         
                         return (
-                          <tr key={pick.game_id} className={rowClass} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
+                          <tr key={pick.game_id} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
                             <td className="text-nowrap py-2">
                               {pick.spread < 0 
                                 ? `${pick.away_team} @ ${pick.home_team} +${Math.abs(pick.spread)}` 
                                 : `${pick.away_team} @ ${pick.home_team} -${pick.spread}`}
                             </td>
-                            <td className="py-2" style={{
+                            <td className={`py-2 ${pickCellClass}`} style={{
                               ...(pick.lock && { 
-                                border: '3px solid #000000', 
+                                border: `3px solid ${
+                                  !pick.winning_team || pick.winning_team === '' 
+                                    ? '#000000' // Black for unresolved games
+                                    : pick.winning_team === "PUSH" || pick.winning_team !== pick.picked_team
+                                    ? '#8B0000' // Dark red for incorrect picks or push
+                                    : '#006400'  // Dark green for correct picks
+                                }`, 
                                 borderRadius: '6px',
                                 position: 'relative'
                               })
                             }}>
                               <div className="d-flex align-items-center gap-2">
-                                {pick.picked_team}
+                                {pick.picked_team === pick.home_team 
+                                  ? `${pick.picked_team} ${pick.spread > 0 ? `-${pick.spread}` : `+${Math.abs(pick.spread)}`}`
+                                  : `${pick.picked_team} ${pick.spread > 0 ? `+${pick.spread}` : `-${Math.abs(pick.spread)}`}`
+                                }
                                 {pick.lock && (
                                   <FaLock className="text-dark" size={14} title="Lock of the Week" />
                                 )}
