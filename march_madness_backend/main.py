@@ -2147,7 +2147,7 @@ async def get_user_all_picks(
 
             # Get all game picks
             cur.execute("""
-                SELECT 
+                SELECT
                     g.id as game_id,
                     g.home_team,
                     g.away_team,
@@ -2155,7 +2155,8 @@ async def get_user_all_picks(
                     g.game_date,
                     g.winning_team,
                     p.picked_team,
-                    p.points_awarded
+                    p.points_awarded,
+                    p.lock
                 FROM games g
                 LEFT JOIN picks p ON g.id = p.game_id AND p.user_id = %s
                 ORDER BY g.game_date

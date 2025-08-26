@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Modal, Table, Badge, Tabs, Tab, Form, Button } from 'react-bootstrap';
+import { FaLock } from 'react-icons/fa';
 import { format } from 'date-fns';
 import axios from 'axios';
 import { API_URL } from '../config';
@@ -18,7 +19,8 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
   };
 
   const getStatusBadge = (pick, game) => {
-    if (!pick) {
+    // Game result badge only
+    if (!pick.picked_team) {
       return <Badge bg="warning">No Pick</Badge>;
     }
     if (!game.winning_team) {
@@ -27,8 +29,8 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
     if (game.winning_team === "PUSH") {
       return <Badge bg="secondary">Push</Badge>;
     }
-    return pick.points_awarded > 0 ? 
-      <Badge bg="success">Won</Badge> : 
+    return pick.points_awarded > 0 ?
+      <Badge bg="success">Won</Badge> :
       <Badge bg="danger">Lost</Badge>;
   };
 
@@ -110,10 +112,15 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
                         : `${game.away_team} @ ${game.home_team} -${game.spread}`}
                     </td>
                     <td className="py-2">
-                      {game.picked_team || <span className="text-muted">-</span>}
+                      <div className="d-flex align-items-center">
+                        {game.picked_team || <span className="text-muted">-</span>}
+                        {game.picked_team && game.lock && (
+                          <FaLock className="ms-1 text-black" size={12} />
+                        )}
+                      </div>
                     </td>
                     <td className="py-2">
-                      {getStatusBadge(game.picked_team, game)}
+                      {getStatusBadge(game, game)}
                     </td>
                   </tr>
                 ))}
