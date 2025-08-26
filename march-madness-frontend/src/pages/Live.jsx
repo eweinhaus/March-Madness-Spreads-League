@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import axios from "axios";
 import { Alert, Card, ListGroup, Badge, Container, Spinner, Modal, Button, Row, Col, Pagination, Form } from "react-bootstrap";
+import { FaLock } from "react-icons/fa";
 import { API_URL } from "../config";
 import { useNavigate } from "react-router-dom";
 
@@ -541,8 +542,22 @@ export default function Live() {
                         {showAwayPicks && (
                           <div className="d-flex flex-wrap justify-content-center p-3 bg-light">
                             {selectedGamePicks.filter(pick => pick.picked_team === selectedGame.away_team).map((pick, index) => (
-                              <Badge key={index} bg="secondary" className="m-1 py-2 px-3">
+                              <Badge 
+                                key={index} 
+                                bg="secondary" 
+                                className="m-1 py-2 px-3 d-flex align-items-center gap-2" 
+                                style={{
+                                  ...(pick.lock && { 
+                                    border: '3px solid #ffc107', 
+                                    borderRadius: '6px',
+                                    position: 'relative'
+                                  })
+                                }}
+                              >
                                 {pick.full_name}
+                                {pick.lock && (
+                                  <FaLock className="text-dark" size={12} title="Lock of the Week" />
+                                )}
                               </Badge>
                             ))}
                           </div>
@@ -560,8 +575,22 @@ export default function Live() {
                         {showHomePicks && (
                           <div className="d-flex flex-wrap justify-content-center p-3 bg-light">
                             {selectedGamePicks.filter(pick => pick.picked_team === selectedGame.home_team).map((pick, index) => (
-                              <Badge key={index} bg="secondary" className="m-1 py-2 px-3">
+                              <Badge 
+                                key={index} 
+                                bg="secondary" 
+                                className="m-1 py-2 px-3 d-flex align-items-center gap-2" 
+                                style={{
+                                  ...(pick.lock && { 
+                                    border: '3px solid #ffc107', 
+                                    borderRadius: '6px',
+                                    position: 'relative'
+                                  })
+                                }}
+                              >
                                 {pick.full_name}
+                                {pick.lock && (
+                                  <FaLock className="text-dark" size={12} title="Lock of the Week" />
+                                )}
                               </Badge>
                             ))}
                           </div>

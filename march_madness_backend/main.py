@@ -1447,7 +1447,8 @@ def get_game_picks(game_id: int):
                 SELECT 
                     u.username,
                     u.full_name,
-                    p.picked_team
+                    p.picked_team,
+                    p.lock
                 FROM picks p
                 JOIN users u ON p.user_id = u.id
                 WHERE p.game_id = %s AND u.make_picks = TRUE
