@@ -847,6 +847,7 @@ class UserPicksStatus(BaseModel):
     total_games: int
     picks_made: int
     is_complete: bool
+    has_current_week_lock: bool
 
 @app.post("/submit_pick")
 async def submit_pick(
@@ -1627,6 +1628,9 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
     """Get the picks status for all users."""
     with get_db_cursor() as cur:
         current_time = get_current_utc_time()
+
+        # Calculate current week bounds (Tuesday 3am to next Tuesday 2:59am ET)
+        current_week_start, current_week_end = get_game_week_bounds(current_time)
         
         # Get total number of upcoming games
         cur.execute("""
@@ -1646,7 +1650,7 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
         
         total_required_picks = total_upcoming_games + total_upcoming_tiebreakers
         
-        # Get all users and their picks count for upcoming games and tiebreakers
+        # Get all users and their picks count for upcoming games and tiebreakers, plus current week locks
         cur.execute("""
             WITH upcoming_picks AS (
                 SELECT u.id as user_id, COUNT(p.id) as picks_count
@@ -1663,17 +1667,28 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
                 LEFT JOIN tiebreakers t ON tp.tiebreaker_id = t.id
                 WHERE t.start_time > %s AND t.is_active = TRUE
                 GROUP BY u.id
+            ),
+            current_week_locks AS (
+                SELECT u.id as user_id, COUNT(p.id) as locks_count
+                FROM users u
+                LEFT JOIN picks p ON u.id = p.user_id
+                LEFT JOIN games g ON p.game_id = g.id
+                WHERE p.lock = TRUE
+                AND g.game_date BETWEEN %s AND %s
+                GROUP BY u.id
             )
-            SELECT 
-                u.username, 
+            SELECT
+                u.username,
                 u.full_name,
-                COALESCE(up.picks_count, 0) + COALESCE(utp.picks_count, 0) as total_picks_made
+                COALESCE(up.picks_count, 0) + COALESCE(utp.picks_count, 0) as total_picks_made,
+                CASE WHEN COALESCE(cwl.locks_count, 0) > 0 THEN TRUE ELSE FALSE END as has_current_week_lock
             FROM users u
             LEFT JOIN upcoming_picks up ON u.id = up.user_id
             LEFT JOIN upcoming_tiebreaker_picks utp ON u.id = utp.user_id
+            LEFT JOIN current_week_locks cwl ON u.id = cwl.user_id
             WHERE u.make_picks = TRUE
             ORDER BY u.username
-        """, (current_time, current_time))
+        """, (current_time, current_time, current_week_start, current_week_end))
         
         users_status = []
         for row in cur.fetchall():
@@ -1682,7 +1697,8 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
                 full_name=row['full_name'],
                 total_games=total_required_picks,
                 picks_made=row['total_picks_made'],
-                is_complete=row['total_picks_made'] == total_required_picks
+                is_complete=row['total_picks_made'] == total_required_picks,
+                has_current_week_lock=row['has_current_week_lock']
             ))
         
         return users_status
