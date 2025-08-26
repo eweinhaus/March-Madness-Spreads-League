@@ -199,7 +199,7 @@ export default function Leaderboard() {
                 </span>
                 <span className="badge bg-warning text-dark rounded-pill d-flex align-items-center gap-1" style={{ fontSize: '0.75rem' }}>
                   {player.correct_locks} <FaLock className="text-dark" size={10} />
-                </span>
+                  </span>
                 {player.first_tiebreaker_diff !== 999999 && (
                   <span className="badge bg-info rounded-pill" style={{ fontSize: '0.75rem' }}>
                     TB1: {player.first_tiebreaker_diff}
@@ -264,16 +264,17 @@ export default function Leaderboard() {
                               })
                             }}>
                               <div className="d-flex align-items-center gap-2">
-                                {pick.picked_team === pick.home_team 
-                                  ? `${pick.picked_team} ${pick.spread > 0 ? `-${pick.spread}` : `+${Math.abs(pick.spread)}`}`
-                                  : `${pick.picked_team} ${pick.spread > 0 ? `+${pick.spread}` : `-${Math.abs(pick.spread)}`}`
+                                {!pick.picked_team ? <span className="fst-italic text-muted">No pick submitted</span> :
+                                  pick.picked_team === pick.home_team 
+                                    ? `${pick.picked_team} ${pick.spread > 0 ? `-${pick.spread}` : `+${Math.abs(pick.spread)}`}`
+                                    : `${pick.picked_team} ${pick.spread > 0 ? `+${pick.spread}` : `-${Math.abs(pick.spread)}`}`
                                 }
                                 {pick.lock && (
                                   <FaLock className="text-dark" size={14} title="Lock of the Week" />
                                 )}
-                                {pick.winning_team === "PUSH" && (
+                              {pick.winning_team === "PUSH" && (
                                   <span className="badge bg-secondary" style={{ fontSize: '0.75rem', padding: '0.2em 0.4em' }}>PUSH</span>
-                                )}
+                              )}
                               </div>
                             </td>
                           </tr>
