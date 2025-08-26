@@ -254,7 +254,7 @@ export default function Leaderboard() {
                             </td>
                             <td className="py-2" style={{
                               ...(pick.lock && { 
-                                border: '3px solid #ffc107', 
+                                border: '3px solid #000000', 
                                 borderRadius: '6px',
                                 position: 'relative'
                               })
