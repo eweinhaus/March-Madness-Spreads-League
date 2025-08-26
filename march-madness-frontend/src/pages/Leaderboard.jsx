@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { Alert, Modal, Button, Table, Form } from "react-bootstrap";
+import { FaLock } from "react-icons/fa";
 import { API_URL } from "../config";
 import { useNavigate } from "react-router-dom";
 
@@ -251,11 +252,22 @@ export default function Leaderboard() {
                                 ? `${pick.away_team} @ ${pick.home_team} +${Math.abs(pick.spread)}` 
                                 : `${pick.away_team} @ ${pick.home_team} -${pick.spread}`}
                             </td>
-                            <td className="py-2">
-                              {pick.picked_team}
-                              {pick.winning_team === "PUSH" && (
-                                <span className="ms-2 badge bg-secondary" style={{ fontSize: '0.75rem', padding: '0.2em 0.4em' }}>PUSH</span>
-                              )}
+                            <td className="py-2" style={{
+                              ...(pick.lock && { 
+                                border: '3px solid #ffc107', 
+                                borderRadius: '6px',
+                                position: 'relative'
+                              })
+                            }}>
+                              <div className="d-flex align-items-center gap-2">
+                                {pick.picked_team}
+                                {pick.lock && (
+                                  <FaLock className="text-dark" size={14} title="Lock of the Week" />
+                                )}
+                                {pick.winning_team === "PUSH" && (
+                                  <span className="badge bg-secondary" style={{ fontSize: '0.75rem', padding: '0.2em 0.4em' }}>PUSH</span>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );

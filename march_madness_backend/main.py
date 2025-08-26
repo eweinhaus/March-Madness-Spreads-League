@@ -2706,6 +2706,85 @@ async def migrate_passwords(current_user: User = Depends(get_current_admin_user)
         logger.error(f"Error in password migration: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/admin/reset-password")
+async def admin_reset_password(username: str, new_password: str, current_user: User = Depends(get_current_admin_user)):
+    """Reset a user's password with a fresh hash (admin only)."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Check if user exists
+            cur.execute("SELECT id, username FROM users WHERE username = %s", (username,))
+            user = cur.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            
+            # Generate new password hash with current environment's bcrypt
+            new_hashed_password = get_password_hash(new_password)
+            
+            # Update user's password
+            cur.execute(
+                "UPDATE users SET password_hash = %s WHERE username = %s RETURNING username",
+                (new_hashed_password, username)
+            )
+            updated_user = cur.fetchone()
+            
+            logger.info(f"Admin reset password for user: {username}")
+            return {
+                "message": f"Password reset successful for user {username}",
+                "username": updated_user["username"],
+                "hash_type": "bcrypt" if new_hashed_password.startswith('$2') else "other"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resetting password: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/emergency-admin-reset")
+async def emergency_admin_reset(username: str, new_password: str, emergency_key: str):
+    """Emergency admin password reset (requires emergency key)."""
+    # This is for emergency access when admin can't log in
+    expected_key = os.getenv("EMERGENCY_RESET_KEY", "emergency-key-not-set")
+    
+    if emergency_key != expected_key or expected_key == "emergency-key-not-set":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid emergency key"
+        )
+    
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Check if user exists and is admin
+            cur.execute("SELECT id, username, admin FROM users WHERE username = %s", (username,))
+            user = cur.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            
+            if not user['admin']:
+                raise HTTPException(status_code=403, detail="User is not an admin")
+            
+            # Generate new password hash
+            new_hashed_password = get_password_hash(new_password)
+            
+            # Update password
+            cur.execute(
+                "UPDATE users SET password_hash = %s WHERE username = %s RETURNING username",
+                (new_hashed_password, username)
+            )
+            updated_user = cur.fetchone()
+            
+            logger.info(f"Emergency password reset for admin user: {username}")
+            return {
+                "message": f"Emergency password reset successful for admin {username}",
+                "username": updated_user["username"]
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in emergency password reset: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Run the server
 if __name__ == "__main__":
     import uvicorn
