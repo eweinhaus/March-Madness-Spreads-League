@@ -161,7 +161,6 @@ const AdminUserPicks = () => {
             <thead>
               <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
                 <th className="py-2">Name</th>
-                <th className="py-2">Username</th>
                 <th className="py-2">Progress</th>
                 <th className="py-2">Pick Status</th>
                 <th className="py-2">Lock Status</th>
@@ -170,11 +169,19 @@ const AdminUserPicks = () => {
             <tbody className="small">
               {userPicksStatus
                 .sort((a, b) => {
-                  // First sort by completion status (incomplete first)
+                  // First priority: users without all picks made (incomplete picks)
                   if (a.is_complete !== b.is_complete) {
                     return a.is_complete ? 1 : -1;
                   }
-                  // Then sort by name alphabetically
+                  
+                  // Second priority: among users with complete picks, show those with unsubmitted locks first
+                  if (a.is_complete && b.is_complete) {
+                    if (a.has_current_week_lock !== b.has_current_week_lock) {
+                      return a.has_current_week_lock ? 1 : -1;
+                    }
+                  }
+                  
+                  // Finally sort by name alphabetically
                   return a.full_name.localeCompare(b.full_name);
                 })
                 .map((user) => (
@@ -184,8 +191,9 @@ const AdminUserPicks = () => {
                   style={{ cursor: 'pointer', fontSize: '0.85rem', lineHeight: '1.2' }}
                   className="user-row"
                 >
-                  <td className="py-2">{user.full_name}</td>
-                  <td className="py-2 text-muted" style={{ fontSize: '0.8rem' }}>@{user.username}</td>
+                  <td className="py-2">
+                    {user.full_name} <span className="text-muted" style={{ fontSize: '0.8rem' }}>({user.username})</span>
+                  </td>
                   <td className="py-2">
                     {user.total_games > 0 ? (
                       <div className="d-flex align-items-center">
