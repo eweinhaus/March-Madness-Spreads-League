@@ -161,6 +161,7 @@ const AdminUserPicks = () => {
             <thead>
               <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
                 <th className="py-2">Name</th>
+                <th className="py-2">Username</th>
                 <th className="py-2">Progress</th>
                 <th className="py-2">Pick Status</th>
                 <th className="py-2">Lock Status</th>
@@ -184,6 +185,7 @@ const AdminUserPicks = () => {
                   className="user-row"
                 >
                   <td className="py-2">{user.full_name}</td>
+                  <td className="py-2 text-muted" style={{ fontSize: '0.8rem' }}>@{user.username}</td>
                   <td className="py-2">
                     {user.total_games > 0 ? (
                       <div className="d-flex align-items-center">
