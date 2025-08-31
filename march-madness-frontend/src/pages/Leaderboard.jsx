@@ -235,10 +235,14 @@ export default function Leaderboard() {
                       {userPicks.picks
                         .sort((a, b) => new Date(b.game_date) - new Date(a.game_date))
                         .map((pick) => {
+
                         // Determine background color for pick column based on result
                         let pickCellClass = "";
                         if (pick.winning_team && pick.winning_team !== "PUSH") {
-                          pickCellClass = pick.winning_team === pick.picked_team ? "table-success" : "table-danger";
+                          // Normalize team names for comparison (remove trailing spaces and asterisks)
+                          const normalizeTeamName = (name) => name?.replace(/[\s*]+$/, '');
+                          const isCorrectPick = normalizeTeamName(pick.winning_team) === normalizeTeamName(pick.picked_team);
+                          pickCellClass = isCorrectPick ? "table-success" : "table-danger";
                         } else if (pick.winning_team === "PUSH") {
                           pickCellClass = "table-warning"; // Highlight PUSH picks in yellow
                         }
@@ -255,9 +259,12 @@ export default function Leaderboard() {
                                 border: `3px solid ${
                                   !pick.winning_team || pick.winning_team === '' 
                                     ? '#000000' // Black for unresolved games
-                                    : pick.winning_team === "PUSH" || pick.winning_team !== pick.picked_team
-                                    ? '#8B0000' // Dark red for incorrect picks or push
-                                    : '#006400'  // Dark green for correct picks
+                                    : (() => {
+                                        if (pick.winning_team === "PUSH") return '#8B0000'; // Dark red for push
+                                        const normalizeTeamName = (name) => name?.replace(/[\s*]+$/, '');
+                                        const isCorrectPick = normalizeTeamName(pick.winning_team) === normalizeTeamName(pick.picked_team);
+                                        return isCorrectPick ? '#006400' : '#8B0000'; // Dark green for correct, dark red for incorrect
+                                      })()
                                 }`, 
                                 borderRadius: '6px',
                                 position: 'relative'
@@ -265,9 +272,17 @@ export default function Leaderboard() {
                             }}>
                               <div className="d-flex align-items-center gap-2">
                                 {!pick.picked_team ? <span className="fst-italic text-muted">No pick submitted</span> :
-                                  pick.picked_team === pick.home_team 
-                                    ? `${pick.picked_team} ${pick.spread > 0 ? `-${pick.spread}` : `+${Math.abs(pick.spread)}`}`
-                                    : `${pick.picked_team} ${pick.spread > 0 ? `+${pick.spread}` : `-${Math.abs(pick.spread)}`}`
+                                  (() => {
+
+                                    
+                                    // Normalize team names for comparison (remove trailing spaces and asterisks) - v2
+                                    const normalizeTeamName = (name) => name?.replace(/[\s*]+$/, '');
+                                    const isHomeTeam = normalizeTeamName(pick.picked_team) === normalizeTeamName(pick.home_team);
+                                    
+                                    return isHomeTeam
+                                      ? `${pick.picked_team} ${pick.spread < 0 ? `+${Math.abs(pick.spread)}` : `-${pick.spread}`}`
+                                      : `${pick.picked_team} ${pick.spread < 0 ? `-${Math.abs(pick.spread)}` : `+${pick.spread}`}`
+                                  })()
                                 }
                                 {pick.lock && (
                                   <FaLock className="text-dark" size={14} title="Lock of the Week" />

@@ -1010,6 +1010,7 @@ def update_score(result: GameResult):
                 return {"message": "Game marked as a push", "winning_team": "PUSH"}
 
             # Update points for correct picks (2 points for locked picks, 1 point for regular picks)
+            # Use normalized team name comparison to handle trailing spaces and asterisks
             cur.execute(
                 """
                 UPDATE picks 
@@ -1017,7 +1018,7 @@ def update_score(result: GameResult):
                     WHEN lock = TRUE THEN 2 
                     ELSE 1 
                 END
-                WHERE game_id = %s AND picked_team = %s
+                WHERE game_id = %s AND TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s)
                 RETURNING user_id, points_awarded;
                 """,
                 (result.game_id, result.winning_team),
@@ -1114,7 +1115,7 @@ def get_leaderboard(filter: str = "overall"):
                     FROM picks p
                     JOIN games g ON p.game_id = g.id
                     WHERE p.lock = TRUE 
-                    AND p.picked_team = g.winning_team
+                    AND TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team)
                     AND g.winning_team IS NOT NULL
                     AND g.winning_team != 'PUSH'
             """
@@ -1526,12 +1527,13 @@ async def update_game(
                     )
                 else:
                     # Update points for correct picks (2 points for locked picks, 1 point for regular picks)
+                    # Use normalized team name comparison to handle trailing spaces and asterisks
                     cur.execute(
                         """
                         UPDATE picks 
                         SET points_awarded = CASE 
-                            WHEN picked_team = %s AND lock = TRUE THEN 2 
-                            WHEN picked_team = %s AND lock = FALSE THEN 1 
+                            WHEN TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s) AND lock = TRUE THEN 2 
+                            WHEN TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s) AND lock = FALSE THEN 1 
                             ELSE 0 
                         END
                         WHERE game_id = %s
