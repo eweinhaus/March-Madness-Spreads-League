@@ -51,7 +51,26 @@ yarn-error.log*
 *.log
 logs/ 
 
+# Test files
 #Any file starting with "test_"
 test_*
 
+# Database exports and backups
 database_exports
+backups/
+
+# Backup and validation files (created during scoring fix implementation)
+*.backup
+*_backup_*
+*_validation_*
+backup_*.py
+verify_backup.py
+test_backup.py
+test_scoring_*.py
+restore_instructions.md
+IMPLEMENTATION_COMPLETE.md
+
+# Analysis and documentation files (temporary)
+*_analysis.md
+scoring_fix_*.txt
+validation_report_*.txt
