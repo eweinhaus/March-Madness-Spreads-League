@@ -519,9 +519,14 @@ async def log_requests(request: Request, call_next):
             else:
                 response.headers["Cache-Control"] = "public, max-age=30"  # 30 seconds default
         
-        # Only log errors
+        # Only log errors, with special attention to 405 errors
         if response.status_code >= 400:
-            logger.warning(f"Error response: {request.method} {request.url.path} - {response.status_code}")
+            if response.status_code == 405:
+                logger.error(f"🚨 405 METHOD NOT ALLOWED: {request.method} {request.url.path}")
+                logger.error(f"🚨 Request headers: {dict(request.headers)}")
+                logger.error(f"🚨 Available routes for debugging: Use /debug/routes to see all available endpoints")
+            else:
+                logger.warning(f"Error response: {request.method} {request.url.path} - {response.status_code}")
         
         return response
         
@@ -599,6 +604,29 @@ def debug_token(token: str = Depends(oauth2_scheme)):
 def test_cors():
     """Test endpoint to verify CORS is working."""
     return {"message": "CORS is working!", "timestamp": get_current_utc_time().isoformat()}
+
+@app.get("/debug/routes")
+def debug_routes():
+    """Debug endpoint to list all available routes and their methods."""
+    routes = []
+    for route in app.routes:
+        if hasattr(route, 'methods'):
+            routes.append({
+                "path": route.path,
+                "methods": list(route.methods),
+                "name": getattr(route, 'name', 'N/A')
+            })
+    return {"routes": routes, "total_routes": len(routes)}
+
+@app.api_route("/debug/submit_pick", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+def debug_submit_pick_methods(request: Request):
+    """Debug endpoint to test which HTTP methods work for submit_pick-like endpoint."""
+    return {
+        "method": request.method,
+        "message": f"Method {request.method} is working",
+        "timestamp": get_current_utc_time().isoformat(),
+        "headers": dict(request.headers)
+    }
 
 @app.get("/health")
 def health_check():
@@ -1133,7 +1161,7 @@ def get_leaderboard(filter: str = "overall"):
             cur.execute("""
                 SELECT id, answer::numeric
                 FROM tiebreakers 
-                WHERE answer ~ '^[0-9]+\.?[0-9]*$'
+                WHERE answer ~ '^[0-9]+\\.?[0-9]*$'
                 AND answer IS NOT NULL
                 ORDER BY start_time DESC 
                 LIMIT 1
@@ -1203,7 +1231,7 @@ def get_leaderboard(filter: str = "overall"):
                         t.answer as correct_answer,
                         tp.answer as user_answer,
                         CASE 
-                            WHEN t.answer ~ '^[0-9]+\.?[0-9]*$' AND tp.answer ~ '^[0-9]+\.?[0-9]*$'
+                            WHEN t.answer ~ '^[0-9]+\\.?[0-9]*$' AND tp.answer ~ '^[0-9]+\\.?[0-9]*$'
                             THEN ABS(CAST(t.answer AS NUMERIC) - CAST(tp.answer AS NUMERIC))
                             ELSE NULL
                         END as accuracy_diff,
@@ -2415,7 +2443,7 @@ async def get_user_all_past_picks(username: str, filter: str = "overall"):
                     tp.answer as user_answer,
                     tp.points_awarded,
                     CASE 
-                        WHEN t.answer ~ '^[0-9]+\.?[0-9]*$' AND tp.answer ~ '^[0-9]+\.?[0-9]*$'
+                        WHEN t.answer ~ '^[0-9]+\\.?[0-9]*$' AND tp.answer ~ '^[0-9]+\\.?[0-9]*$'
                         THEN ABS(CAST(t.answer AS NUMERIC) - CAST(tp.answer AS NUMERIC))
                         ELSE NULL
                     END as accuracy_diff
