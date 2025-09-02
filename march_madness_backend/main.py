@@ -368,8 +368,9 @@ def check_user_count():
 
 # Add user count to health check
 @app.get("/health/db")
+@app.head("/health/db")
 def health_check():
-    """Comprehensive health check endpoint for 20 users on Basic-1GB."""
+    """Comprehensive health check endpoint for 20 users on Basic-1GB. Supports both GET and HEAD requests."""
     try:
         pool_status = get_pool_status()
         queue_status = get_queue_status()
@@ -582,9 +583,10 @@ app.add_middleware(
 )
 
 @app.get("/")
-def read_root():
-    """Root endpoint to check if API is running."""
-    logger.info("Root endpoint accessed")
+@app.head("/")
+def read_root(request: Request):
+    """Root endpoint to check if API is running. Supports both GET and HEAD requests."""
+    logger.info(f"Root endpoint accessed via {request.method} method")
     logger.info(f"Current working directory: {os.getcwd()}")
     logger.info(f"Python path: {os.environ.get('PYTHONPATH', 'Not set')}")
     logger.info(f"Database URL configured: {'Yes' if database_url else 'No'}")
@@ -629,9 +631,10 @@ def debug_submit_pick_methods(request: Request):
     }
 
 @app.get("/health")
-def health_check():
-    """Health check endpoint."""
-    logger.info("Health check endpoint accessed")
+@app.head("/health")
+def health_check(request: Request):
+    """Health check endpoint. Supports both GET and HEAD requests."""
+    logger.info(f"Health check endpoint accessed via {request.method} method")
     
     # Check database connectivity
     db_status = "unknown"
@@ -1238,9 +1241,9 @@ def get_leaderboard(filter: str = "overall"):
                         ROW_NUMBER() OVER (PARTITION BY tp.user_id ORDER BY t.start_time ASC) as tiebreaker_rank
                     FROM tiebreaker_picks tp
                     JOIN tiebreakers t ON tp.tiebreaker_id = t.id
-                    WHERE t.answer ~ '^[0-9]+\.?[0-9]*$'
+                    WHERE t.answer ~ '^[0-9]+\\.?[0-9]*$'
                     AND t.answer IS NOT NULL
-                    AND tp.answer ~ '^[0-9]+\.?[0-9]*$'
+                    AND tp.answer ~ '^[0-9]+\\.?[0-9]*$'
                     AND tp.answer IS NOT NULL
             """
             
