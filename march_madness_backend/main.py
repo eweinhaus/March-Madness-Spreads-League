@@ -85,6 +85,97 @@ def normalize_datetime(dt):
     # If it's naive, assume it's UTC (from database)
     return dt.replace(tzinfo=timezone.utc)
 
+def update_game_scores(cursor, game_id: int, winning_team: str) -> list:
+    """
+    Centralized scoring function that handles all game scoring logic.
+    
+    This function ensures consistent scoring across all endpoints:
+    - PUSH games: All picks get 0 points
+    - Correct locked picks: 2 points
+    - Correct regular picks: 1 point  
+    - Incorrect picks: 0 points
+    
+    Args:
+        cursor: Database cursor
+        game_id: ID of the game being scored
+        winning_team: The winning team name (or "PUSH")
+    
+    Returns:
+        List of affected picks with their new points
+    """
+    logger.info(f"🎯 Updating scores for game {game_id}, winner: {winning_team}")
+    
+    if winning_team == "PUSH":
+        # Reset all points for PUSH games
+        logger.info(f"📊 PUSH game - resetting all picks to 0 points")
+        cursor.execute(
+            """
+            UPDATE picks 
+            SET points_awarded = 0 
+            WHERE game_id = %s
+            RETURNING user_id, points_awarded, picked_team, lock
+            """,
+            (game_id,)
+        )
+    else:
+        # Update all picks: correct locks = 2, correct regular = 1, incorrect = 0
+        logger.info(f"📊 Regular game - updating all picks with comprehensive scoring")
+        cursor.execute(
+            """
+            UPDATE picks 
+            SET points_awarded = CASE 
+                WHEN TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s) AND lock = TRUE THEN 2 
+                WHEN TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s) AND lock = FALSE THEN 1 
+                ELSE 0 
+            END
+            WHERE game_id = %s
+            RETURNING user_id, points_awarded, picked_team, lock
+            """,
+            (winning_team, winning_team, game_id)
+        )
+    
+    affected_picks = cursor.fetchall()
+    
+    # Log scoring results for transparency
+    correct_locks = sum(1 for pick in affected_picks if pick["lock"] and pick["points_awarded"] == 2)
+    correct_regular = sum(1 for pick in affected_picks if not pick["lock"] and pick["points_awarded"] == 1) 
+    incorrect_picks = sum(1 for pick in affected_picks if pick["points_awarded"] == 0)
+    
+    logger.info(f"📈 Scoring results: {correct_locks} correct locks (2 pts), {correct_regular} correct regular (1 pt), {incorrect_picks} incorrect (0 pts)")
+    
+    return affected_picks
+
+def update_leaderboard_totals(cursor, affected_users: list):
+    """
+    Recalculate total points for affected users.
+    More reliable than incremental updates as it ensures accuracy.
+    
+    Args:
+        cursor: Database cursor
+        affected_users: List of user IDs whose scores changed
+    """
+    logger.info(f"🏆 Updating leaderboard for {len(affected_users)} users")
+    
+    for user_id in affected_users:
+        cursor.execute(
+            """
+            UPDATE leaderboard 
+            SET total_points = (
+                SELECT COALESCE(SUM(points_awarded), 0)
+                FROM picks
+                WHERE user_id = %s
+            ) + (
+                SELECT COALESCE(SUM(points_awarded), 0)
+                FROM tiebreaker_picks
+                WHERE user_id = %s
+            )
+            WHERE user_id = %s
+            """,
+            (user_id, user_id, user_id)
+        )
+    
+    logger.info(f"✅ Leaderboard updated for {len(affected_users)} users")
+
 def get_game_week_bounds(game_date):
     """Get the start and end of the week for a given game date (3:00 AM Tuesday EST/EDT through 2:59 AM Tuesday EST/EDT)."""
     # Ensure game_date is in UTC
@@ -1005,37 +1096,15 @@ def update_score(result: GameResult):
             )
             updated_game = cur.fetchone()
 
-            # If it's a push, no points are awarded
-            if result.winning_team == "PUSH":
-                return {"message": "Game marked as a push", "winning_team": "PUSH"}
-
-            # Update points for correct picks (2 points for locked picks, 1 point for regular picks)
-            # Use normalized team name comparison to handle trailing spaces and asterisks
-            cur.execute(
-                """
-                UPDATE picks 
-                SET points_awarded = CASE 
-                    WHEN lock = TRUE THEN 2 
-                    ELSE 1 
-                END
-                WHERE game_id = %s AND TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s)
-                RETURNING user_id, points_awarded;
-                """,
-                (result.game_id, result.winning_team),
-            )
-            correct_picks = cur.fetchall()
-
-            # Update leaderboard
-            for pick in correct_picks:
-                cur.execute(
-                    """
-                    UPDATE leaderboard 
-                    SET total_points = total_points + %s 
-                    WHERE user_id = %s
-                    """,
-                    (pick["points_awarded"], pick["user_id"]),
-                )
-
+            # Use centralized scoring function for consistent results
+            logger.info(f"🎯 Processing score update via /update_score endpoint")
+            affected_picks = update_game_scores(cur, result.game_id, result.winning_team)
+            
+            # Update leaderboard for all affected users
+            affected_users = list(set(pick["user_id"] for pick in affected_picks))
+            update_leaderboard_totals(cur, affected_users)
+            
+            logger.info(f"✅ Score update completed: {len(affected_picks)} picks updated, {len(affected_users)} users affected")
             return {"message": "Scores updated successfully", "winning_team": result.winning_team}
     except Exception as e:
         logger.error(f"Error updating score: {str(e)}")
@@ -1517,46 +1586,16 @@ async def update_game(
             )
             updated_game = cur.fetchone()
             
-            # If winning team changed, update points
+            # If winning team changed, update points using centralized scoring function
             if game.winning_team != existing_game["winning_team"]:
-                if game.winning_team == "PUSH":
-                    # Reset all points for this game
-                    cur.execute(
-                        "UPDATE picks SET points_awarded = 0 WHERE game_id = %s",
-                        (game_id,)
-                    )
-                else:
-                    # Update points for correct picks (2 points for locked picks, 1 point for regular picks)
-                    # Use normalized team name comparison to handle trailing spaces and asterisks
-                    cur.execute(
-                        """
-                        UPDATE picks 
-                        SET points_awarded = CASE 
-                            WHEN TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s) AND lock = TRUE THEN 2 
-                            WHEN TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s) AND lock = FALSE THEN 1 
-                            ELSE 0 
-                        END
-                        WHERE game_id = %s
-                        RETURNING user_id, points_awarded
-                        """,
-                        (game.winning_team, game.winning_team, game_id)
-                    )
-                    pick_updates = cur.fetchall()
-                    
-                    # Update leaderboard
-                    for pick in pick_updates:
-                        cur.execute(
-                            """
-                            UPDATE leaderboard 
-                            SET total_points = (
-                                SELECT COALESCE(SUM(points_awarded), 0)
-                                FROM picks
-                                WHERE user_id = %s
-                            )
-                            WHERE user_id = %s
-                            """,
-                            (pick["user_id"], pick["user_id"])
-                        )
+                logger.info(f"🎯 Processing score update via /games/{game_id} endpoint")
+                affected_picks = update_game_scores(cur, game_id, game.winning_team)
+                
+                # Update leaderboard for all affected users
+                affected_users = list(set(pick["user_id"] for pick in affected_picks))
+                update_leaderboard_totals(cur, affected_users)
+                
+                logger.info(f"✅ Game update completed: {len(affected_picks)} picks updated, {len(affected_users)} users affected")
             
             return serialize_game_row(updated_game)
     except Exception as e:
