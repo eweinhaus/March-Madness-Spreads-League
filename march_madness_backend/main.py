@@ -573,7 +573,8 @@ app.add_middleware(
         "https://spreads-backend-qyw5.onrender.com/",
         "https://www.spreadpools.com",
         "https://spreadpools.com",
-        "https://*.onrender.com"  # Allow all onrender.com subdomains
+        "https://*.onrender.com",  # Allow all onrender.com subdomains
+        "*"  # Temporary: Allow all origins for debugging
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
@@ -605,7 +606,23 @@ def debug_token(token: str = Depends(oauth2_scheme)):
 @app.get("/test-cors")
 def test_cors():
     """Test endpoint to verify CORS is working."""
+    logger.info("🧪 CORS test endpoint hit")
     return {"message": "CORS is working!", "timestamp": get_current_utc_time().isoformat()}
+
+@app.get("/health")
+def health_check():
+    """Simple health check endpoint."""
+    logger.info("❤️ Health check endpoint hit")
+    return {"status": "healthy", "timestamp": get_current_utc_time().isoformat()}
+
+@app.get("/test-leaderboard")
+def test_leaderboard():
+    """Simple test endpoint that returns mock leaderboard data."""
+    logger.info("🧪 Test leaderboard endpoint hit")
+    return [
+        {"username": "test_user", "full_name": "Test User", "total_points": 10.0, "correct_locks": 1},
+        {"username": "test_user2", "full_name": "Test User 2", "total_points": 8.0, "correct_locks": 0}
+    ]
 
 @app.get("/debug/routes")
 def debug_routes():
@@ -1158,6 +1175,7 @@ def get_available_weeks():
 
 @app.get("/leaderboard")
 def get_leaderboard(filter: str = "overall"):
+    logger.info(f"🏆 Leaderboard request received - Filter: {filter}")
     try:
         with get_db_cursor() as cur:
             # Get the most recent numerical tiebreaker with an answer
@@ -1272,6 +1290,7 @@ def get_leaderboard(filter: str = "overall"):
             
             cur.execute(points_query)
             leaderboard = cur.fetchall()
+            logger.info(f"🏆 Leaderboard query successful - Returned {len(leaderboard)} users")
             return leaderboard
     except Exception as e:
         logger.error(f"Error fetching leaderboard: {str(e)}")

@@ -8,6 +8,16 @@ import { useNavigate } from "react-router-dom";
 export default function Leaderboard() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [error, setError] = useState(null);
+  
+  // Debug environment information
+  console.log('=== LEADERBOARD DEBUG INFO ===');
+  console.log('Environment MODE:', import.meta.env.MODE);
+  console.log('Environment DEV:', import.meta.env.DEV);
+  console.log('Environment PROD:', import.meta.env.PROD);
+  console.log('API_URL from config:', API_URL);
+  console.log('Current window.location:', window.location.href);
+  console.log('User Agent:', navigator.userAgent);
+  console.log('================================');
   const [selectedUser, setSelectedUser] = useState(null);
   const [selectedUserFullName, setSelectedUserFullName] = useState(null);
   const [userPicks, setUserPicks] = useState([]);
@@ -63,6 +73,36 @@ export default function Leaderboard() {
 
   useEffect(() => {
     fetchWeekOptions();
+    
+    // Test simple endpoint first
+    console.log('Testing simple health endpoint...');
+    axios.get(`${API_URL}/health`)
+      .then(res => {
+        console.log('Health check successful:', res.data);
+      })
+      .catch(err => {
+        console.error('Health check failed:', err);
+      });
+      
+    // Test CORS endpoint
+    console.log('Testing CORS endpoint...');
+    axios.get(`${API_URL}/test-cors`)
+      .then(res => {
+        console.log('CORS test successful:', res.data);
+      })
+      .catch(err => {
+        console.error('CORS test failed:', err);
+      });
+      
+    // Test simple leaderboard endpoint
+    console.log('Testing simple leaderboard endpoint...');
+    axios.get(`${API_URL}/test-leaderboard`)
+      .then(res => {
+        console.log('Test leaderboard successful:', res.data);
+      })
+      .catch(err => {
+        console.error('Test leaderboard failed:', err);
+      });
   }, []);
 
   useEffect(() => {
@@ -104,14 +144,38 @@ export default function Leaderboard() {
   };
 
   const fetchLeaderboard = () => {
+    console.log('Fetching leaderboard with API_URL:', API_URL);
+    console.log('Filter:', filter);
+    console.log('Full URL:', `${API_URL}/leaderboard?filter=${filter}`);
+    
     // Leaderboard endpoint doesn't require authentication
     axios.get(`${API_URL}/leaderboard?filter=${filter}`)
       .then(res => {
+        console.log('Leaderboard response received:', res);
+        console.log('Response status:', res.status);
+        console.log('Response data type:', typeof res.data);
+        console.log('Response data length:', Array.isArray(res.data) ? res.data.length : 'Not an array');
+        console.log('First item:', res.data?.[0]);
+        
         setLeaderboard(res.data);
         setError(null);
       })
       .catch(err => {
-        console.error(err);
+        console.error('Leaderboard fetch error details:');
+        console.error('Error object:', err);
+        console.error('Error message:', err.message);
+        console.error('Error code:', err.code);
+        
+        if (err.response) {
+          console.error('Response status:', err.response.status);
+          console.error('Response data:', err.response.data);
+          console.error('Response headers:', err.response.headers);
+        } else if (err.request) {
+          console.error('Request made but no response received:', err.request);
+        } else {
+          console.error('Error setting up request:', err.message);
+        }
+        
         setError('Failed to load leaderboard. Please try again.');
       });
   };
