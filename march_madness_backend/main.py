@@ -103,7 +103,15 @@ def update_game_scores(cursor, game_id: int, winning_team: str) -> list:
     Returns:
         List of affected picks with their new points
     """
-    logger.info(f"🎯 Updating scores for game {game_id}, winner: {winning_team}")
+    logger.info(f"🎯 Updating scores for game {game_id}, winner: '{winning_team}'")
+    
+    # Get all picks for this game for validation logging
+    cursor.execute(
+        "SELECT COUNT(*) as total_picks, COUNT(CASE WHEN lock = TRUE THEN 1 END) as total_locks FROM picks WHERE game_id = %s",
+        (game_id,)
+    )
+    pick_counts = cursor.fetchone()
+    logger.info(f"📊 Game {game_id} has {pick_counts['total_picks']} total picks ({pick_counts['total_locks']} locks)")
     
     if winning_team == "PUSH":
         # Reset all points for PUSH games
@@ -118,6 +126,10 @@ def update_game_scores(cursor, game_id: int, winning_team: str) -> list:
             (game_id,)
         )
     else:
+        # Log team name normalization for debugging
+        normalized_winner = winning_team.rstrip(' *')
+        logger.info(f"🔍 Normalizing winner: '{winning_team}' -> '{normalized_winner}'")
+        
         # Update all picks: correct locks = 2, correct regular = 1, incorrect = 0
         logger.info(f"📊 Regular game - updating all picks with comprehensive scoring")
         cursor.execute(
@@ -136,12 +148,34 @@ def update_game_scores(cursor, game_id: int, winning_team: str) -> list:
     
     affected_picks = cursor.fetchall()
     
-    # Log scoring results for transparency
+    # Enhanced logging for scoring results and validation
     correct_locks = sum(1 for pick in affected_picks if pick["lock"] and pick["points_awarded"] == 2)
     correct_regular = sum(1 for pick in affected_picks if not pick["lock"] and pick["points_awarded"] == 1) 
     incorrect_picks = sum(1 for pick in affected_picks if pick["points_awarded"] == 0)
     
     logger.info(f"📈 Scoring results: {correct_locks} correct locks (2 pts), {correct_regular} correct regular (1 pt), {incorrect_picks} incorrect (0 pts)")
+    
+    # Validation: Log any potential scoring inconsistencies
+    if winning_team != "PUSH":
+        cursor.execute(
+            """
+            SELECT picked_team, lock, points_awarded,
+                   TRIM(TRAILING ' *' FROM picked_team) as normalized_pick,
+                   TRIM(TRAILING ' *' FROM %s) as normalized_winner
+            FROM picks 
+            WHERE game_id = %s 
+            AND TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s)
+            AND points_awarded = 0
+            """,
+            (winning_team, game_id, winning_team)
+        )
+        inconsistent_picks = cursor.fetchall()
+        
+        if inconsistent_picks:
+            logger.warning(f"⚠️ SCORING INCONSISTENCY DETECTED for game {game_id}:")
+            for pick in inconsistent_picks:
+                logger.warning(f"   Pick '{pick['picked_team']}' matches winner '{winning_team}' but got 0 points!")
+                logger.warning(f"   Normalized: '{pick['normalized_pick']}' vs '{pick['normalized_winner']}'")
     
     return affected_picks
 
@@ -623,6 +657,233 @@ def test_leaderboard():
         {"username": "test_user", "full_name": "Test User", "total_points": 10.0, "correct_locks": 1},
         {"username": "test_user2", "full_name": "Test User 2", "total_points": 8.0, "correct_locks": 0}
     ]
+
+@app.get("/debug/user_locks/{username}")
+def debug_user_locks(username: str):
+    """Debug endpoint to check a user's lock picks and points."""
+    try:
+        with get_db_cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    u.username,
+                    u.full_name,
+                    g.id as game_id,
+                    g.home_team,
+                    g.away_team,
+                    g.spread,
+                    g.game_date,
+                    g.winning_team,
+                    p.picked_team,
+                    p.lock,
+                    p.points_awarded,
+                    CASE 
+                        WHEN TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team) 
+                        THEN 'CORRECT' 
+                        ELSE 'INCORRECT' 
+                    END as pick_result
+                FROM users u
+                JOIN picks p ON u.id = p.user_id
+                JOIN games g ON p.game_id = g.id
+                WHERE u.username = %s AND p.lock = TRUE
+                ORDER BY g.game_date DESC
+            """, (username,))
+            
+            lock_picks = cur.fetchall()
+            
+            # Also get summary stats
+            cur.execute("""
+                SELECT 
+                    COUNT(*) as total_locks,
+                    COUNT(CASE WHEN p.points_awarded = 2 THEN 1 END) as locks_with_2_points,
+                    COUNT(CASE WHEN p.points_awarded = 1 THEN 1 END) as locks_with_1_point,
+                    COUNT(CASE WHEN p.points_awarded = 0 THEN 1 END) as locks_with_0_points,
+                    COUNT(CASE WHEN TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team) AND g.winning_team IS NOT NULL AND g.winning_team != 'PUSH' THEN 1 END) as correct_locks_by_comparison
+                FROM users u
+                JOIN picks p ON u.id = p.user_id
+                JOIN games g ON p.game_id = g.id
+                WHERE u.username = %s AND p.lock = TRUE
+            """, (username,))
+            
+            summary = cur.fetchone()
+            
+            return {
+                "username": username,
+                "lock_picks": lock_picks,
+                "summary": summary
+            }
+    except Exception as e:
+        logger.error(f"Error in debug endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/debug/rescore_game/{game_id}")
+def rescore_game(game_id: int):
+    """Debug endpoint to manually re-score a specific game."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Get the game info
+            cur.execute("SELECT id, winning_team FROM games WHERE id = %s", (game_id,))
+            game = cur.fetchone()
+            if not game:
+                raise HTTPException(status_code=404, detail="Game not found")
+            
+            if not game['winning_team']:
+                raise HTTPException(status_code=400, detail="Game has no winner set")
+            
+            # Re-run the scoring logic
+            affected_picks = update_game_scores(cur, game_id, game['winning_team'])
+            
+            return {
+                "game_id": game_id,
+                "winning_team": game['winning_team'],
+                "affected_picks": len(affected_picks),
+                "picks_updated": affected_picks
+            }
+    except Exception as e:
+        logger.error(f"Error re-scoring game: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug/scoring_audit")
+def scoring_audit():
+    """Audit all completed games for scoring inconsistencies."""
+    try:
+        with get_db_cursor() as cur:
+            # Find all games with winners that might have scoring issues
+            cur.execute("""
+                SELECT 
+                    g.id as game_id,
+                    g.home_team,
+                    g.away_team,
+                    g.winning_team,
+                    COUNT(p.id) as total_picks,
+                    COUNT(CASE WHEN p.lock = TRUE THEN 1 END) as total_locks,
+                    COUNT(CASE WHEN TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team) THEN 1 END) as should_be_correct,
+                    COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END) as actually_correct,
+                    COUNT(CASE WHEN TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team) AND p.points_awarded = 0 THEN 1 END) as inconsistent_picks
+                FROM games g
+                LEFT JOIN picks p ON g.id = p.game_id
+                WHERE g.winning_team IS NOT NULL 
+                AND g.winning_team != ''
+                AND g.winning_team != 'PUSH'
+                GROUP BY g.id, g.home_team, g.away_team, g.winning_team
+                HAVING COUNT(CASE WHEN TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team) AND p.points_awarded = 0 THEN 1 END) > 0
+                ORDER BY g.id DESC
+            """)
+            
+            inconsistent_games = cur.fetchall()
+            
+            # Get detailed info for each inconsistent game
+            detailed_issues = []
+            for game in inconsistent_games:
+                cur.execute("""
+                    SELECT 
+                        u.username,
+                        u.full_name,
+                        p.picked_team,
+                        p.lock,
+                        p.points_awarded,
+                        TRIM(TRAILING ' *' FROM p.picked_team) as normalized_pick,
+                        TRIM(TRAILING ' *' FROM %s) as normalized_winner
+                    FROM picks p
+                    JOIN users u ON p.user_id = u.id
+                    WHERE p.game_id = %s
+                    AND TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM %s)
+                    AND p.points_awarded = 0
+                """, (game['winning_team'], game['game_id'], game['winning_team']))
+                
+                affected_picks = cur.fetchall()
+                
+                detailed_issues.append({
+                    "game": game,
+                    "affected_picks": affected_picks
+                })
+            
+            return {
+                "total_inconsistent_games": len(inconsistent_games),
+                "issues": detailed_issues,
+                "summary": {
+                    "total_affected_picks": sum(len(issue["affected_picks"]) for issue in detailed_issues)
+                }
+            }
+    except Exception as e:
+        logger.error(f"Error in scoring audit: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/debug/rescore_all_games")
+def rescore_all_games():
+    """Rescore all completed games to ensure scoring consistency."""
+    try:
+        with get_db_cursor(commit=True) as cur:
+            # Get all games that have a winner set
+            cur.execute("""
+                SELECT id, home_team, away_team, winning_team
+                FROM games 
+                WHERE winning_team IS NOT NULL 
+                AND winning_team != ''
+                ORDER BY id
+            """)
+            
+            completed_games = cur.fetchall()
+            
+            if not completed_games:
+                return {
+                    "message": "No completed games found to rescore",
+                    "games_processed": 0,
+                    "total_picks_updated": 0
+                }
+            
+            logger.info(f"🔄 Starting full rescore of {len(completed_games)} completed games")
+            
+            total_picks_updated = 0
+            all_affected_users = set()
+            rescore_results = []
+            
+            for game in completed_games:
+                game_id = game['id']
+                winning_team = game['winning_team']
+                
+                logger.info(f"🎯 Rescoring game {game_id}: {game['away_team']} @ {game['home_team']} (Winner: {winning_team})")
+                
+                # Use the centralized scoring function
+                affected_picks = update_game_scores(cur, game_id, winning_team)
+                
+                # Track affected users for leaderboard update
+                game_affected_users = set(pick["user_id"] for pick in affected_picks)
+                all_affected_users.update(game_affected_users)
+                
+                total_picks_updated += len(affected_picks)
+                
+                # Log results for this game
+                correct_locks = sum(1 for pick in affected_picks if pick["lock"] and pick["points_awarded"] == 2)
+                correct_regular = sum(1 for pick in affected_picks if not pick["lock"] and pick["points_awarded"] == 1)
+                incorrect_picks = sum(1 for pick in affected_picks if pick["points_awarded"] == 0)
+                
+                rescore_results.append({
+                    "game_id": game_id,
+                    "game_info": f"{game['away_team']} @ {game['home_team']}",
+                    "winning_team": winning_team,
+                    "picks_updated": len(affected_picks),
+                    "correct_locks": correct_locks,
+                    "correct_regular": correct_regular,
+                    "incorrect_picks": incorrect_picks
+                })
+            
+            # Update leaderboard for all affected users
+            logger.info(f"🏆 Updating leaderboard for {len(all_affected_users)} affected users")
+            update_leaderboard_totals(cur, list(all_affected_users))
+            
+            logger.info(f"✅ Full rescore completed: {len(completed_games)} games processed, {total_picks_updated} picks updated")
+            
+            return {
+                "message": "All games rescored successfully",
+                "games_processed": len(completed_games),
+                "total_picks_updated": total_picks_updated,
+                "users_affected": len(all_affected_users),
+                "detailed_results": rescore_results
+            }
+            
+    except Exception as e:
+        logger.error(f"Error rescoring all games: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/debug/routes")
 def debug_routes():
@@ -1233,9 +1494,7 @@ def get_leaderboard(filter: str = "overall"):
                     FROM picks p
                     JOIN games g ON p.game_id = g.id
                     WHERE p.lock = TRUE 
-                    AND TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team)
-                    AND g.winning_team IS NOT NULL
-                    AND g.winning_team != 'PUSH'
+                    AND p.points_awarded = 2
             """
             
             # Add time filter for correct locks using week-based filtering
