@@ -33,7 +33,7 @@ const AdminTiebreakers = () => {
 
   const fetchTiebreakers = async () => {
     try {
-      const response = await axios.get(`${API_URL}/tiebreakers?is_active=true`, {
+      const response = await axios.get(`${API_URL}/admin/tiebreakers`, {
         headers: getAuthHeaders()
       });
       setTiebreakers(response.data);

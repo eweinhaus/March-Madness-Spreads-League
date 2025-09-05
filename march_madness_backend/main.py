@@ -1544,8 +1544,15 @@ def get_leaderboard(filter: str = "overall"):
                 LEFT JOIN tiebreaker_accuracy ta1 ON u.id = ta1.user_id AND ta1.tiebreaker_rank = 1
                 LEFT JOIN tiebreaker_accuracy ta2 ON u.id = ta2.user_id AND ta2.tiebreaker_rank = 2
                 LEFT JOIN tiebreaker_accuracy ta3 ON u.id = ta3.user_id AND ta3.tiebreaker_rank = 3
-                ORDER BY total_points DESC, correct_locks DESC, first_tiebreaker_diff ASC, second_tiebreaker_diff ASC, third_tiebreaker_diff ASC
             """
+            
+            # Different sorting logic based on filter
+            if filter == "overall":
+                # For overall category, only sort by total points and correct locks
+                points_query += "ORDER BY total_points DESC, correct_locks DESC"
+            else:
+                # For all other categories, include tiebreaker sorting
+                points_query += "ORDER BY total_points DESC, correct_locks DESC, first_tiebreaker_diff ASC, second_tiebreaker_diff ASC, third_tiebreaker_diff ASC"
             
             cur.execute(points_query)
             leaderboard = cur.fetchall()
@@ -2178,6 +2185,19 @@ def get_tiebreakers():
             return [serialize_tiebreaker_row(t) for t in tiebreakers]
     except Exception as e:
         logger.error(f"Error fetching tiebreakers: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/tiebreakers")
+async def get_admin_tiebreakers(current_user: User = Depends(get_current_admin_user)):
+    """Get all tiebreakers for admin management (includes past, present, and future)."""
+    try:
+        with get_db_cursor() as cur:
+            # Fetch all tiebreakers, ordered by start_time descending (most recent first)
+            cur.execute("SELECT * FROM tiebreakers ORDER BY start_time DESC")
+            tiebreakers = cur.fetchall()
+            return [serialize_tiebreaker_row(t) for t in tiebreakers]
+    except Exception as e:
+        logger.error(f"Error fetching admin tiebreakers: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/live_tiebreakers")
