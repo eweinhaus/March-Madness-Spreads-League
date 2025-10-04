@@ -2852,6 +2852,56 @@ def get_traffic_status():
         "timestamp": get_current_utc_time().isoformat()
     }
 
+def normalize_team_name_for_matching(team_name):
+    """
+    Normalize team names for better matching between CBS Sports and database.
+    Handles common variations, mascots, and abbreviations.
+    """
+    if not team_name:
+        return ''
+    
+    import re
+    
+    # Remove common mascot names and suffixes (case-insensitive)
+    mascots = [
+        'Crimson Tide', 'Commodores', 'Bulldogs', 'Tigers', 'Wildcats', 'Eagles', 
+        'Bears', 'Cowboys', 'Trojans', 'Spartans', 'Volunteers', 'Aggies', 
+        'Longhorns', 'Sooners', 'Buckeyes', 'Wolverines', 'Fighting Irish', 
+        'Golden Bears', 'Blue Devils', 'Tar Heels', 'Seminoles', 'Hurricanes', 
+        'Hokies', 'Cavaliers', 'Demon Deacons', 'Yellow Jackets', 'Orange', 
+        'Cardinals', 'Panthers', 'Huskies', 'Cougars', 'Sun Devils', 'Ducks', 
+        'Beavers', 'Utes', 'Buffaloes', 'Buffs', 'Bruins', 'Mountaineers', 
+        'Jayhawks', 'Cyclones', 'Red Raiders', 'Horned Frogs', 'Cornhuskers', 
+        'Badgers', 'Gophers', 'Hawkeyes', 'Illini', 'Hoosiers', 'Terrapins', 
+        'Nittany Lions', 'Scarlet Knights', 'Boilermakers'
+    ]
+    
+    normalized = team_name
+    for mascot in mascots:
+        normalized = re.sub(rf'\b{re.escape(mascot)}\b', '', normalized, flags=re.IGNORECASE)
+    
+    # Handle common abbreviations and variations
+    replacements = {
+        r'\bSt\.': 'State',
+        r'\bVandy\b': 'Vanderbilt',
+        r'\bBama\b': 'Alabama',
+        r'\bW\.': 'Western',
+        r'\bE\.': 'Eastern',
+        r'\bN\.': 'Northern',
+        r'\bS\.': 'Southern',
+        r'\bC\.': 'Central',
+        r'\bMiami \(FL\)': 'Miami',
+        r'\bMiami-FL\b': 'Miami',
+    }
+    
+    for pattern, replacement in replacements.items():
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+    
+    # Remove extra whitespace and convert to lowercase
+    normalized = ' '.join(normalized.split()).strip().lower()
+    
+    return normalized
+
 @app.get("/api/gamescores")
 async def get_game_scores(request: Request):
     # Check cache first
@@ -2902,9 +2952,12 @@ async def get_game_scores(request: Request):
                         'HomeTeam': home_team,
                         'AwayScore': away_score,
                         'HomeScore': home_score,
-                        'Time': time_left
+                        'Time': time_left,
+                        # Add normalized versions for easier matching on frontend
+                        'AwayTeamNormalized': normalize_team_name_for_matching(away_team),
+                        'HomeTeamNormalized': normalize_team_name_for_matching(home_team)
                     })
-                    logger.debug(f"Processed game: {away_team} @ {home_team}")
+                    logger.debug(f"Processed game: {away_team} @ {home_team} (normalized: {normalize_team_name_for_matching(away_team)} @ {normalize_team_name_for_matching(home_team)})")
                 except Exception as e:
                     logger.debug(f"Error processing individual game: {str(e)}")
                     continue
