@@ -309,6 +309,12 @@ export default function Live() {
     // Remove extra whitespace
     normalized = normalized.replace(/\s+/g, ' ').trim();
     
+    // CRITICAL: If normalization resulted in empty string (team name was only a mascot),
+    // return the original name to prevent false positive matches
+    if (normalized === '') {
+      return teamName.toLowerCase().trim();
+    }
+    
     return normalized;
   }, []);
 

@@ -2900,6 +2900,11 @@ def normalize_team_name_for_matching(team_name):
     # Remove extra whitespace and convert to lowercase
     normalized = ' '.join(normalized.split()).strip().lower()
     
+    # CRITICAL: If normalization resulted in empty string (team name was only a mascot),
+    # return the original name to prevent false positive matches
+    if not normalized:
+        return team_name.strip().lower()
+    
     return normalized
 
 @app.get("/api/gamescores")
