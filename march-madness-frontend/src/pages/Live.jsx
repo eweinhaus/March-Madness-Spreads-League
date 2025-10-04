@@ -267,7 +267,10 @@ export default function Live() {
   // Memoized team name normalization function
   const normalizeTeamName = useCallback((teamName) => {
     if (!teamName) return '';
-    return teamName
+    
+    let normalized = teamName
+      // Remove common mascot names and suffixes
+      .replace(/\b(Crimson Tide|Commodores|Bulldogs|Tigers|Wildcats|Eagles|Bears|Cowboys|Trojans|Spartans|Volunteers|Aggies|Longhorns|Sooners|Buckeyes|Wolverines|Fighting Irish|Golden Bears|Blue Devils|Tar Heels|Seminoles|Hurricanes|Hokies|Cavaliers|Demon Deacons|Yellow Jackets|Orange|Cardinals|Panthers|Huskies|Cougars|Sun Devils|Ducks|Beavers|Utes|Buffaloes|Buffs|Bruins|Mountaineers|Jayhawks|Cyclones|Red Raiders|Horned Frogs|Mountaineers|Cornhuskers|Badgers|Gophers|Hawkeyes|Illini|Hoosiers|Terrapins|Nittany Lions|Scarlet Knights|Boilermakers)\b/gi, '')
       // Handle "St." at the beginning (like "St. Mary's" -> "Saint Mary's")
       .replace(/^St\.\s+/g, 'Saint ')
       // Handle "St." in the middle or end (like "Iowa St." -> "Iowa State")
@@ -284,6 +287,11 @@ export default function Live() {
       .replace(/\bArk\b/g, 'Arkansas')
       // Handle regional abbreviations (only standalone SE, not part of words like Tennessee)
       .replace(/\bSE\b/g, 'Southeast')
+      // Handle common team name variations
+      .replace(/\bVandy\b/gi, 'Vanderbilt')
+      .replace(/\bBama\b/gi, 'Alabama')
+      .replace(/\bMiami \(FL\)/gi, 'Miami')
+      .replace(/\bMiami-FL\b/gi, 'Miami')
       // Normalize full words to be consistent
       .replace(/\bState\b/g, 'State')
       .replace(/\bWestern\b/g, 'Western')
@@ -297,6 +305,17 @@ export default function Live() {
       .replace(/\bSoutheast\b/g, 'Southeast')
       .toLowerCase()
       .trim();
+    
+    // Remove extra whitespace
+    normalized = normalized.replace(/\s+/g, ' ').trim();
+    
+    // CRITICAL: If normalization resulted in empty string (team name was only a mascot),
+    // return the original name to prevent false positive matches
+    if (normalized === '') {
+      return teamName.toLowerCase().trim();
+    }
+    
+    return normalized;
   }, []);
 
   // Memoized team name matching function
@@ -322,7 +341,19 @@ export default function Live() {
         return true;
       }
       
-      // Check normalized matches (handling St./State variations)
+      // Use backend-provided normalized names if available
+      const scoreAwayNorm = score.AwayTeamNormalized || normalizeTeamName(score.AwayTeam);
+      const scoreHomeNorm = score.HomeTeamNormalized || normalizeTeamName(score.HomeTeam);
+      const gameAwayNorm = normalizeTeamName(game.away_team);
+      const gameHomeNorm = normalizeTeamName(game.home_team);
+      
+      // Check normalized matches (exact match after normalization)
+      if ((scoreAwayNorm === gameAwayNorm && scoreHomeNorm === gameHomeNorm) ||
+          (scoreAwayNorm === gameHomeNorm && scoreHomeNorm === gameAwayNorm)) {
+        return true;
+      }
+      
+      // Check if normalized names contain each other (for partial matches)
       if (teamNamesMatch(score.AwayTeam, game.away_team) && teamNamesMatch(score.HomeTeam, game.home_team)) {
         return true;
       }
@@ -331,11 +362,9 @@ export default function Live() {
         return true;
       }
       
-      // Fallback to partial matching
-      return (score.AwayTeam.includes(game.away_team) || score.AwayTeam.includes(game.home_team)) ||
-             (score.HomeTeam.includes(game.away_team) || score.HomeTeam.includes(game.home_team));
+      return false;
     });
-  }, [gameScores, teamNamesMatch]);
+  }, [gameScores, teamNamesMatch, normalizeTeamName]);
 
   // Memoized game picks data for selected game
   const selectedGamePicks = useMemo(() => {
