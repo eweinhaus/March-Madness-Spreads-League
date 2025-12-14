@@ -10,6 +10,7 @@ import { API_URL } from "./config";
 import Home from './pages/Home';
 import Picks from './pages/Picks';
 import Leaderboard from './pages/Leaderboard';
+import Stats from './pages/Stats';
 import AdminGames from './pages/AdminGames';
 import AdminUserPicks from './pages/AdminUserPicks';
 import AdminTiebreakers from './pages/AdminTiebreakers';
@@ -174,6 +175,7 @@ function AppContent() {
               <Nav.Link as={Link} to="/" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Home</Nav.Link>
               <Nav.Link as={Link} to="/picks" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Picks</Nav.Link>
               <Nav.Link as={Link} to="/leaderboard" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Leaderboard</Nav.Link>
+              <Nav.Link as={Link} to="/stats" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Stats</Nav.Link>
               <Nav.Link as={Link} to="/live" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}>Live</Nav.Link>
               {isAuthenticated && isAdmin && (
                 <Nav.Link as={Link} to="/admin/games" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler').click()}><FaLock className="me-1" />Games</Nav.Link>
@@ -215,6 +217,7 @@ function AppContent() {
           } />
           <Route path="/live" element={<Live />} />
           <Route path="/leaderboard" element={<Leaderboard />} />
+          <Route path="/stats" element={<Stats />} />
           <Route path="/admin/games" element={
             <ProtectedRoute adminOnly={true}>
               <AdminGames />

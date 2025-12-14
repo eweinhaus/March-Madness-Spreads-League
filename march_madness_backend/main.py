@@ -3186,16 +3186,487 @@ async def admin_reset_password(username: str, new_password: str, current_user: U
         logger.error(f"Error resetting password: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/stats")
+def get_player_stats():
+    """Get detailed statistics for all players."""
+    logger.info("📊 Stats request received")
+    try:
+        with get_db_cursor() as cur:
+            # Get comprehensive stats for all users
+            cur.execute("""
+                WITH user_stats AS (
+                    SELECT
+                        u.username,
+                        u.full_name,
+                        u.created_at as joined_date,
+                        -- Overall picks stats
+                        COUNT(p.id) as total_picks,
+                        COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END) as correct_picks,
+                        COUNT(CASE WHEN p.points_awarded = 0 AND g.winning_team != 'PUSH' THEN 1 END) as incorrect_picks,
+                        COUNT(CASE WHEN g.winning_team = 'PUSH' THEN 1 END) as push_games,
+                        -- Lock stats
+                        COUNT(CASE WHEN p.lock = TRUE THEN 1 END) as total_locks,
+                        COUNT(CASE WHEN p.lock = TRUE AND p.points_awarded = 2 THEN 1 END) as correct_locks,
+                        COUNT(CASE WHEN p.lock = TRUE AND p.points_awarded = 0 AND g.winning_team != 'PUSH' THEN 1 END) as incorrect_locks,
+                        -- Points
+                        COALESCE(SUM(p.points_awarded), 0) as total_points
+                    FROM users u
+                    LEFT JOIN picks p ON u.id = p.user_id
+                    LEFT JOIN games g ON p.game_id = g.id
+                    WHERE u.make_picks = TRUE
+                      AND u.created_at >= '2025-06-01T00:00:00Z'
+                    GROUP BY u.id, u.username, u.full_name, u.created_at
+                )
+                SELECT
+                    username,
+                    full_name,
+                    joined_date,
+                    total_picks,
+                    correct_picks,
+                    incorrect_picks,
+                    push_games,
+                    total_locks,
+                    correct_locks,
+                    incorrect_locks,
+                    total_points,
+                    -- Calculated fields
+                    CASE
+                        WHEN total_picks > 0 THEN ROUND((correct_picks::numeric / total_picks) * 100, 1)
+                        ELSE 0
+                    END as win_percentage,
+                    CASE
+                        WHEN total_locks > 0 THEN ROUND((correct_locks::numeric / total_locks) * 100, 1)
+                        ELSE 0
+                    END as lock_success_rate,
+                    CASE
+                        WHEN total_picks > 0 THEN ROUND(total_points::numeric / total_picks, 2)
+                        ELSE 0
+                    END as avg_points_per_pick
+                FROM user_stats
+                ORDER BY total_points DESC, correct_locks DESC, win_percentage DESC
+            """)
+
+            stats = cur.fetchall()
+            logger.info(f"📊 Stats query successful - Returned {len(stats)} players")
+
+            return stats
+    except Exception as e:
+        logger.error(f"Error fetching player stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/stats/{username}")
+def get_player_detailed_stats(username: str):
+    """Get detailed statistics for a specific player."""
+    logger.info(f"📊 Detailed stats request for user: {username}")
+    try:
+        with get_db_cursor() as cur:
+            # First check if user exists
+            cur.execute("SELECT id, username FROM users WHERE username = %s", (username,))
+            user = cur.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            # Get recent picks with game details
+            cur.execute("""
+                SELECT
+                    p.picked_team,
+                    p.points_awarded,
+                    p.lock,
+                    g.home_team,
+                    g.away_team,
+                    g.spread,
+                    g.winning_team,
+                    g.game_date
+                FROM picks p
+                JOIN games g ON p.game_id = g.id
+                JOIN users u ON p.user_id = u.id
+                WHERE u.username = %s
+                ORDER BY g.game_date DESC
+                LIMIT 20
+            """, (username,))
+
+            recent_picks = cur.fetchall()
+
+            # Get current streak (calculate from recent picks)
+            cur.execute("""
+                SELECT
+                    CASE
+                        WHEN p.points_awarded > 0 THEN 'W'
+                        WHEN p.points_awarded = 0 AND g.winning_team = 'PUSH' THEN 'P'
+                        ELSE 'L'
+                    END as result
+                FROM picks p
+                JOIN games g ON p.game_id = g.id
+                JOIN users u ON p.user_id = u.id
+                WHERE u.username = %s
+                ORDER BY g.game_date DESC
+                LIMIT 20
+            """, (username,))
+
+            streak_picks = cur.fetchall()
+
+            # Calculate current streak in Python
+            current_streak = None
+            if streak_picks and len(streak_picks) > 0:
+                current_result = streak_picks[0]['result']
+                streak_count = 1
+
+                for pick in streak_picks[1:]:
+                    if pick['result'] == current_result:
+                        streak_count += 1
+                    else:
+                        break
+
+                current_streak = {'result': current_result, 'streak_length': streak_count}
+            else:
+                current_streak = {'result': 'N/A', 'streak_length': 0}
+
+            # Calculate best and worst streaks
+            best_streak = {'result': 'W', 'streak_length': 0}
+            worst_streak = {'result': 'L', 'streak_length': 0}
+
+            if streak_picks:
+                current_win_streak = 0
+                current_loss_streak = 0
+                max_win_streak = 0
+                max_loss_streak = 0
+
+                for pick in streak_picks:
+                    if pick['result'] == 'W':
+                        current_win_streak += 1
+                        current_loss_streak = 0
+                        max_win_streak = max(max_win_streak, current_win_streak)
+                    elif pick['result'] == 'L':
+                        current_loss_streak += 1
+                        current_win_streak = 0
+                        max_loss_streak = max(max_loss_streak, current_loss_streak)
+                    else:  # Push
+                        current_win_streak = 0
+                        current_loss_streak = 0
+
+                best_streak = {'result': 'W', 'streak_length': max_win_streak}
+                worst_streak = {'result': 'L', 'streak_length': max_loss_streak}
+
+            # Get favorite teams
+            cur.execute("""
+                SELECT
+                    picked_team,
+                    COUNT(*) as pick_count,
+                    ROUND(
+                        (COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END)::numeric /
+                         NULLIF(COUNT(*), 0)) * 100, 1
+                    ) as success_rate
+                FROM picks p
+                JOIN users u ON p.user_id = u.id
+                WHERE u.username = %s
+                GROUP BY picked_team
+                ORDER BY pick_count DESC
+                LIMIT 5
+            """, (username,))
+
+            favorite_teams = cur.fetchall()
+
+            # Get least favorite teams (teams picked against most often)
+            cur.execute("""
+                SELECT
+                    CASE
+                        WHEN p.picked_team = g.home_team THEN g.away_team
+                        ELSE g.home_team
+                    END as picked_against_team,
+                    COUNT(*) as pick_count,
+                    ROUND(
+                        (COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END)::numeric /
+                         NULLIF(COUNT(*), 0)) * 100, 1
+                    ) as success_rate
+                FROM picks p
+                JOIN games g ON p.game_id = g.id
+                JOIN users u ON p.user_id = u.id
+                WHERE u.username = %s
+                GROUP BY picked_against_team
+                ORDER BY pick_count DESC
+                LIMIT 1
+            """, (username,))
+
+            least_favorite_team = cur.fetchone()
+
+            # Get Best Game: correct pick where least group members were with him
+            cur.execute("""
+                WITH user_correct_picks AS (
+                    SELECT
+                        p.id as pick_id,
+                        p.picked_team,
+                        p.points_awarded,
+                        p.lock,
+                        g.id as game_id,
+                        g.home_team,
+                        g.away_team,
+                        g.spread,
+                        g.game_date,
+                        g.winning_team
+                    FROM picks p
+                    JOIN games g ON p.game_id = g.id
+                    JOIN users u ON p.user_id = u.id
+                    WHERE u.username = %s AND p.points_awarded > 0
+                ),
+                group_picks_per_game AS (
+                    SELECT
+                        g.id as game_id,
+                        p.picked_team,
+                        COUNT(*) as pick_count
+                    FROM picks p
+                    JOIN games g ON p.game_id = g.id
+                    GROUP BY g.id, p.picked_team
+                )
+                SELECT
+                    ucp.picked_team,
+                    ucp.points_awarded,
+                    ucp.lock,
+                    ucp.home_team,
+                    ucp.away_team,
+                    ucp.spread,
+                    ucp.game_date,
+                    COALESCE(gpp.pick_count - 1, 0) as consensus_count
+                FROM user_correct_picks ucp
+                LEFT JOIN group_picks_per_game gpp ON ucp.game_id = gpp.game_id AND ucp.picked_team = gpp.picked_team
+                ORDER BY consensus_count ASC, ucp.points_awarded DESC, ucp.game_date DESC
+                LIMIT 1
+            """, (username,))
+
+            best_game_result = cur.fetchone()
+            best_game = None
+            if best_game_result:
+                best_game = {
+                    'type': 'best',
+                    'picked_team': best_game_result['picked_team'],
+                    'points_awarded': best_game_result['points_awarded'],
+                    'lock': best_game_result['lock'],
+                    'home_team': best_game_result['home_team'],
+                    'away_team': best_game_result['away_team'],
+                    'spread': best_game_result['spread'],
+                    'game_date': best_game_result['game_date'],
+                    'consensus_count': best_game_result['consensus_count']
+                }
+
+            # Get Worst Game: incorrect pick where most group members were against him
+            cur.execute("""
+                WITH user_incorrect_picks AS (
+                    SELECT
+                        p.id as pick_id,
+                        p.picked_team,
+                        p.points_awarded,
+                        p.lock,
+                        g.id as game_id,
+                        g.home_team,
+                        g.away_team,
+                        g.spread,
+                        g.game_date,
+                        g.winning_team
+                    FROM picks p
+                    JOIN games g ON p.game_id = g.id
+                    JOIN users u ON p.user_id = u.id
+                    WHERE u.username = %s AND p.points_awarded = 0 AND g.winning_team != 'PUSH'
+                ),
+                group_picks_per_game AS (
+                    SELECT
+                        g.id as game_id,
+                        p.picked_team,
+                        COUNT(*) as pick_count
+                    FROM picks p
+                    JOIN games g ON p.game_id = g.id
+                    GROUP BY g.id, p.picked_team
+                )
+                SELECT
+                    uip.picked_team,
+                    uip.points_awarded,
+                    uip.lock,
+                    uip.home_team,
+                    uip.away_team,
+                    uip.spread,
+                    uip.game_date,
+                    uip.winning_team,
+                    COALESCE(gpp.pick_count, 0) as against_count
+                FROM user_incorrect_picks uip
+                LEFT JOIN group_picks_per_game gpp ON uip.game_id = gpp.game_id AND uip.winning_team = gpp.picked_team
+                ORDER BY against_count DESC, uip.game_date DESC
+                LIMIT 1
+            """, (username,))
+
+            worst_game_result = cur.fetchone()
+            worst_game = None
+            if worst_game_result:
+                worst_game = {
+                    'type': 'worst',
+                    'picked_team': worst_game_result['picked_team'],
+                    'points_awarded': worst_game_result['points_awarded'],
+                    'lock': worst_game_result['lock'],
+                    'home_team': worst_game_result['home_team'],
+                    'away_team': worst_game_result['away_team'],
+                    'spread': worst_game_result['spread'],
+                    'game_date': worst_game_result['game_date'],
+                    'winning_team': worst_game_result['winning_team'],
+                    'against_count': worst_game_result['against_count']
+                }
+
+            # Calculate best and worst weeks based on predefined week ranges
+            week_ranges = get_week_ranges()
+
+            # Create a CTE to map games to their week labels
+            week_cases = []
+            for week_key, week_info in week_ranges.items():
+                if week_key != "overall" and week_info['start'] and week_info['end']:
+                    week_cases.append(f"""
+                        WHEN g.game_date >= '{week_info['start']}' AND g.game_date <= '{week_info['end']}'
+                        THEN '{week_key}'
+                    """)
+
+            week_case_sql = "\n".join(week_cases)
+
+            # Best week query (highest total points)
+            cur.execute(f"""
+                WITH game_weeks AS (
+                    SELECT
+                        g.id as game_id,
+                        CASE {week_case_sql}
+                        ELSE 'unknown'
+                        END as week_key
+                    FROM games g
+                )
+                SELECT
+                    gw.week_key,
+                    wr.label as week_label,
+                    SUM(p.points_awarded) as total_points,
+                    COUNT(*) as total_picks,
+                    COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END) as correct_picks,
+                    COUNT(CASE WHEN p.lock = true THEN 1 END) as locks_used,
+                    MIN(g.game_date) as week_start,
+                    MAX(g.game_date) as week_end
+                FROM picks p
+                JOIN games g ON p.game_id = g.id
+                JOIN game_weeks gw ON g.id = gw.game_id
+                JOIN users u ON p.user_id = u.id
+                LEFT JOIN LATERAL (
+                    SELECT label FROM (VALUES {', '.join([f"('{k}', '{v['label']}')" for k, v in week_ranges.items() if k != 'overall'])}) as wr(week_key, label)
+                    WHERE wr.week_key = gw.week_key
+                ) wr ON true
+                WHERE u.username = %s AND gw.week_key != 'unknown'
+                GROUP BY gw.week_key, wr.label
+                ORDER BY total_points DESC
+                LIMIT 1
+            """, (username,))
+
+            best_week_result = cur.fetchone()
+
+            # Worst week query (lowest win rate)
+            cur.execute(f"""
+                WITH game_weeks AS (
+                    SELECT
+                        g.id as game_id,
+                        CASE {week_case_sql}
+                        ELSE 'unknown'
+                        END as week_key
+                    FROM games g
+                )
+                SELECT
+                    gw.week_key,
+                    wr.label as week_label,
+                    SUM(p.points_awarded) as total_points,
+                    COUNT(*) as total_picks,
+                    COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END) as correct_picks,
+                    COUNT(CASE WHEN p.lock = true THEN 1 END) as locks_used,
+                    MIN(g.game_date) as week_start,
+                    MAX(g.game_date) as week_end
+                FROM picks p
+                JOIN games g ON p.game_id = g.id
+                JOIN game_weeks gw ON g.id = gw.game_id
+                JOIN users u ON p.user_id = u.id
+                LEFT JOIN LATERAL (
+                    SELECT label FROM (VALUES {', '.join([f"('{k}', '{v['label']}')" for k, v in week_ranges.items() if k != 'overall'])}) as wr(week_key, label)
+                    WHERE wr.week_key = gw.week_key
+                ) wr ON true
+                WHERE u.username = %s AND gw.week_key != 'unknown'
+                GROUP BY gw.week_key, wr.label
+                HAVING COUNT(*) > 0
+                ORDER BY (COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END)::float / COUNT(*)::float) ASC, total_points ASC
+                LIMIT 1
+            """, (username,))
+
+            worst_week_result = cur.fetchone()
+
+            best_week = None
+            worst_week = None
+
+            if best_week_result and best_week_result['total_picks'] > 0:
+                best_week = {
+                    'week_key': best_week_result['week_key'],
+                    'week_label': best_week_result['week_label'],
+                    'total_points': best_week_result['total_points'],
+                    'total_picks': best_week_result['total_picks'],
+                    'correct_picks': best_week_result['correct_picks'],
+                    'locks_used': best_week_result['locks_used'],
+                    'win_percentage': round((best_week_result['correct_picks'] / best_week_result['total_picks']) * 100, 1),
+                    'week_start': best_week_result['week_start'],
+                    'week_end': best_week_result['week_end']
+                }
+
+            if worst_week_result and worst_week_result['total_picks'] > 0:
+                worst_week = {
+                    'week_key': worst_week_result['week_key'],
+                    'week_label': worst_week_result['week_label'],
+                    'total_points': worst_week_result['total_points'],
+                    'total_picks': worst_week_result['total_picks'],
+                    'correct_picks': worst_week_result['correct_picks'],
+                    'locks_used': worst_week_result['locks_used'],
+                    'win_percentage': round((worst_week_result['correct_picks'] / worst_week_result['total_picks']) * 100, 1),
+                    'week_start': worst_week_result['week_start'],
+                    'week_end': worst_week_result['week_end']
+                }
+
+            # Add pick_result to recent_picks
+            for pick in recent_picks:
+                if pick['points_awarded'] > 0:
+                    pick['pick_result'] = 'correct'
+                elif pick['points_awarded'] == 0 and pick['winning_team'] == 'PUSH':
+                    pick['pick_result'] = 'push'
+                else:
+                    pick['pick_result'] = 'incorrect'
+
+            logger.info(f"📊 Successfully retrieved data for user {username}")
+            logger.info(f"📊 Recent picks: {len(recent_picks)}")
+            logger.info(f"📊 Current streak: {current_streak}")
+            logger.info(f"📊 Favorite teams: {len(favorite_teams)}")
+            logger.info(f"📊 Least favorite team: {least_favorite_team is not None}")
+            logger.info(f"📊 Best game: {best_game is not None}")
+            logger.info(f"📊 Worst game: {worst_game is not None}")
+            logger.info(f"📊 Best week: {best_week is not None} ({best_week['week_label'] if best_week else 'N/A'})")
+            logger.info(f"📊 Worst week: {worst_week is not None} ({worst_week['week_label'] if worst_week else 'N/A'})")
+
+            return {
+                "recent_picks": recent_picks,
+                "current_streak": current_streak,
+                "best_streak": best_streak,
+                "worst_streak": worst_streak,
+                "favorite_teams": favorite_teams,
+                "least_favorite_team": least_favorite_team,
+                "best_game": best_game,
+                "worst_game": worst_game,
+                "best_week": best_week,
+                "worst_week": worst_week
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching detailed player stats for {username}: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/emergency-admin-reset")
 async def emergency_admin_reset(username: str, new_password: str, emergency_key: str):
     """Emergency admin password reset (requires emergency key)."""
     # This is for emergency access when admin can't log in
     expected_key = os.getenv("EMERGENCY_RESET_KEY", "emergency-key-not-set")
 
-    # TEMPORARY: Allow reset with specific key for adminEthan password change
-    if emergency_key == "temp-admin-reset-2025" or (emergency_key == expected_key and expected_key != "emergency-key-not-set"):
-        pass  # Allow the reset
-    else:
+    if emergency_key != expected_key or expected_key == "emergency-key-not-set":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid emergency key"

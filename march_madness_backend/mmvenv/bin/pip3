@@ -1,4 +1,4 @@
-#!/Users/ethan/Desktop/Github/march_madness_backend/mmvenv/bin/python
+#!/Users/user/Desktop/Github/March-Madness-Spreads-League/march_madness_backend/mmvenv/bin/python3
 # -*- coding: utf-8 -*-
 import re
 import sys
