@@ -10,6 +10,13 @@ const NY_TZ = "America/New_York";
 /** Must match backend PICK_LOCK_BEFORE_TIP (submit_pick, tiebreaker_picks). */
 const PICKS_LOCK_MS_BEFORE_TIPOFF = 60_000;
 
+/**
+ * Lock-of-the-day UI (button, copy) and whether submit prompts for a lock per game day.
+ * When false: users are not prompted or blocked for missing a lock; only games/questions warnings apply.
+ * Temporary: hide lock controls without removing backend/state logic.
+ */
+const SHOW_LOCK_OF_THE_DAY_UI = false;
+
 /** Inline so it works on Vercel (SPA rewrite serves HTML for /basketball.svg). */
 function BasketballSpinnerIcon({ size = 56 }) {
   return (
@@ -231,25 +238,28 @@ export default function Picks() {
           });
         }
 
-        const { dayKey, label } = getLockDayCached(game.game_date, boundsCache);
-        let bucket = dayBuckets.get(dayKey);
-        if (!bucket) {
-          bucket = { label, games: [] };
-          dayBuckets.set(dayKey, bucket);
+        if (SHOW_LOCK_OF_THE_DAY_UI) {
+          const { dayKey, label } = getLockDayCached(game.game_date, boundsCache);
+          let bucket = dayBuckets.get(dayKey);
+          if (!bucket) {
+            bucket = { label, games: [] };
+            dayBuckets.set(dayKey, bucket);
+          }
+          bucket.games.push(game);
         }
-        bucket.games.push(game);
       }
 
       const missingLockDays = [];
-      for (const { label, games } of dayBuckets.values()) {
-        const hasLockOnDay = games.some((g) => {
-          const id = String(g.game_id);
-          return locks[id] !== undefined ? locks[id] : Boolean(existingLocks[id]);
-        });
-        if (!hasLockOnDay) missingLockDays.push({ label });
+      if (SHOW_LOCK_OF_THE_DAY_UI) {
+        for (const { label, games } of dayBuckets.values()) {
+          const hasLockOnDay = games.some((g) => {
+            const id = String(g.game_id);
+            return locks[id] !== undefined ? locks[id] : Boolean(existingLocks[id]);
+          });
+          if (!hasLockOnDay) missingLockDays.push({ label });
+        }
+        missingLockDays.sort((a, b) => a.label.localeCompare(b.label));
       }
-
-      missingLockDays.sort((a, b) => a.label.localeCompare(b.label));
 
       const missingQuestions = [];
       for (const t of tbList) {
@@ -370,9 +380,10 @@ export default function Picks() {
       requestAnimationFrame(() => {
         const w = computeSubmitWarnings(games, tbs);
         setIsCheckingWarnings(false);
+        const needsLockWarning = SHOW_LOCK_OF_THE_DAY_UI && w.missingLockDays.length > 0;
         if (
           w.missingGames.length > 0 ||
-          w.missingLockDays.length > 0 ||
+          needsLockWarning ||
           w.missingQuestions.length > 0
         ) {
           setSubmitWarnings(w);
@@ -438,7 +449,13 @@ export default function Picks() {
                 <Col>
                   <h3 className="text-center text-md-start">Games</h3>
                   <p className="text-muted text-center text-md-start mb-0">
-                    Click the lock icon on a game to set your lock of the day — if that pick wins, it scores double points. Note: The lock goes with the day the game is played, not with the day you make your picks.
+                    {SHOW_LOCK_OF_THE_DAY_UI ? (
+                      <>
+                        Click the lock icon on a game to set your lock of the day — if that pick wins, it scores double points. Note: The lock goes with the day the game is played, not with the day you make your picks.
+                      </>
+                    ) : (
+                      <>Pick the team you think will cover the spread for each game.</>
+                    )}
                   </p>
                 </Col>
               </Row>
@@ -448,21 +465,23 @@ export default function Picks() {
                   const existingPick = existingPicks[gid];
                   const currentPick = picks[gid];
                   const selectedTeam = currentPick || existingPick;
-                  const isLocked = (locks[gid] !== undefined ? locks[gid] : (existingLocks[gid] || false));
+                  const isLocked = SHOW_LOCK_OF_THE_DAY_UI && (locks[gid] !== undefined ? locks[gid] : (existingLocks[gid] || false));
 
                   return (
                     <Col key={`game-${game.game_id}`}>
                       <Card className={`h-100 shadow-sm ${isLocked ? 'border-warning border-3' : 'border-3'}`} style={isLocked ? {} : {borderColor: 'transparent'}}>
                         <Card.Body className="d-flex flex-column">
-                          <Card.Title className="d-flex justify-content-between align-items-center mb-3">
+                          <Card.Title className={`d-flex ${SHOW_LOCK_OF_THE_DAY_UI ? 'justify-content-between' : ''} align-items-center mb-3`}>
                             <div className="d-flex align-items-center">
                               <span className="text-truncate me-1">{game.away_team}</span>
                               <small className="text-muted mx-1">@</small>
                               <span className="text-truncate ms-1">{game.home_team}</span>
                             </div>
-                            <Button variant="outline-secondary" size="sm" onClick={() => handleLockToggle(game.game_id)} className="p-2" title={isLocked ? "Unlock pick" : "Lock pick"}>
-                              {isLocked ? <FaLock className="text-warning" size={16} /> : <FaUnlock className="text-muted" size={16} />}
-                            </Button>
+                            {SHOW_LOCK_OF_THE_DAY_UI && (
+                              <Button variant="outline-secondary" size="sm" onClick={() => handleLockToggle(game.game_id)} className="p-2" title={isLocked ? "Unlock pick" : "Lock pick"}>
+                                {isLocked ? <FaLock className="text-warning" size={16} /> : <FaUnlock className="text-muted" size={16} />}
+                              </Button>
+                            )}
                           </Card.Title>
                           <Card.Text className="mb-3">
                             <div className="mb-1"><strong>Spread:</strong> {game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} -${Math.abs(game.spread)}`}</div>
@@ -552,7 +571,7 @@ export default function Picks() {
         </Modal.Header>
         <Modal.Body>
           {(submitWarnings.missingGames.length > 0 ||
-            submitWarnings.missingLockDays.length > 0 ||
+            (SHOW_LOCK_OF_THE_DAY_UI && submitWarnings.missingLockDays.length > 0) ||
             submitWarnings.missingQuestions.length > 0) && (
             <p className="text-muted small mb-3">
               You still have incomplete entries. You can go back to finish them, or save anyway — only games and answers you&apos;ve changed will be saved.
@@ -571,7 +590,7 @@ export default function Picks() {
               </ul>
             </>
           )}
-          {submitWarnings.missingLockDays.length > 0 && (
+          {SHOW_LOCK_OF_THE_DAY_UI && submitWarnings.missingLockDays.length > 0 && (
             <>
               <h6 className="fw-bold">Game days without a lock of the day</h6>
               <ul className="small mb-3 ps-3">
