@@ -1,12 +1,74 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
-import axios from "axios";
-import { Container, Row, Col, Card, Button, Alert, Form } from "react-bootstrap";
-import { API_URL } from "../config";
+import { Container, Row, Col, Card, Button, Alert, Form, Modal } from "react-bootstrap";
 import { useNavigate } from "react-router-dom";
 import { FaLock, FaUnlock } from "react-icons/fa";
+import api from "../api";
+import { sameLockDay, getLockDayBounds } from "../utils/etLockDay";
+
+const NY_TZ = "America/New_York";
+
+/** Must match backend PICK_LOCK_BEFORE_TIP (submit_pick, tiebreaker_picks). */
+const PICKS_LOCK_MS_BEFORE_TIPOFF = 60_000;
+
+/** Inline so it works on Vercel (SPA rewrite serves HTML for /basketball.svg). */
+function BasketballSpinnerIcon({ size = 56 }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 32 32"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+      className="picks-check-spin"
+    >
+      <circle cx="16" cy="16" r="15" fill="#FF6B00" stroke="#000" strokeWidth="2" />
+      <path
+        d="M16 1C7.716 1 1 7.716 1 16s6.716 15 15 15 15-6.716 15-15S24.284 1 16 1z"
+        stroke="#000"
+        strokeWidth="2"
+      />
+      <path d="M16 1v30M1 16h30" stroke="#000" strokeWidth="2" />
+      <path d="M8 8l16 16M24 8L8 24" stroke="#000" strokeWidth="2" />
+    </svg>
+  );
+}
+
+/** One getLockDayBounds() per unique game_date string (tip times often repeat). */
+function getLockDayCached(iso, cache) {
+  let row = cache.get(iso);
+  if (!row) {
+    const { dayStart } = getLockDayBounds(iso);
+    row = {
+      dayKey: dayStart.getTime(),
+      label: dayStart.toLocaleDateString("en-US", {
+        timeZone: NY_TZ,
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }),
+    };
+    cache.set(iso, row);
+  }
+  return row;
+}
+
+function tiebreakerIsAnswered(tid, tiebreakerPicks, existingTiebreakerPicks) {
+  if (Object.prototype.hasOwnProperty.call(tiebreakerPicks, tid)) {
+    const v = tiebreakerPicks[tid];
+    if (v === null || v === undefined) return false;
+    if (typeof v === "number" && Number.isNaN(v)) return false;
+    if (typeof v === "string" && v.trim() === "") return false;
+    return true;
+  }
+  const e = existingTiebreakerPicks[tid];
+  if (e === null || e === undefined) return false;
+  if (typeof e === "string" && e.trim() === "") return false;
+  return true;
+}
 
 export default function Picks() {
-  console.log('Picks component is mounting...');
   const [games, setGames] = useState([]);
   const [picks, setPicks] = useState({});
   const [existingPicks, setExistingPicks] = useState({});
@@ -18,175 +80,64 @@ export default function Picks() {
   const [tiebreakers, setTiebreakers] = useState([]);
   const [tiebreakerPicks, setTiebreakerPicks] = useState({});
   const [existingTiebreakerPicks, setExistingTiebreakerPicks] = useState({});
+  const [showSubmitWarning, setShowSubmitWarning] = useState(false);
+  const [submitWarnings, setSubmitWarnings] = useState({
+    missingGames: [],
+    missingLockDays: [],
+    missingQuestions: [],
+  });
+  const [isCheckingWarnings, setIsCheckingWarnings] = useState(false);
   const navigate = useNavigate();
 
-  // Helper function to format date for display
   const formatDateForDisplay = (dateString) => {
     const date = new Date(dateString);
     return date.toLocaleString('en-US', {
-      year: 'numeric',
-      month: 'numeric',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
+      year: 'numeric', month: 'numeric', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', hour12: true
     });
   };
 
-  // Helper function to get week start for a game date (Tuesday 3:00 AM ET)
-  const getWeekStart = (gameDate) => {
-    const date = new Date(gameDate);
-    
-    // Convert UTC to Eastern Time (handles EST/EDT automatically)
-    // We'll approximate ET offset: -5 hours (EST) or -4 hours (EDT)
-    const year = date.getUTCFullYear();
-    const month = date.getUTCMonth();
-    
-    // Simple DST approximation: EDT from March to November, EST otherwise
-    // This is simplified but covers most cases for US Eastern Time
-    const isDST = month >= 2 && month <= 10; // March (2) through November (10)
-    const etOffset = isDST ? -4 : -5; // EDT is UTC-4, EST is UTC-5
-    
-    // Convert to Eastern Time
-    const etDate = new Date(date.getTime() + (etOffset * 60 * 60 * 1000));
-    
-    // Find the Tuesday that starts the week containing this game
-    const dayOfWeek = etDate.getDay(); // 0=Sunday, 2=Tuesday
-    let daysSinceTuesday = (dayOfWeek - 2 + 7) % 7;
-    
-    // If it's Tuesday but before 3:00 AM ET, it belongs to the previous week
-    if (dayOfWeek === 2 && etDate.getHours() < 3) {
-      daysSinceTuesday = 7;
-    }
-    // If it's Tuesday at or after 3:00 AM ET, it starts the current week
-    else if (dayOfWeek === 2 && etDate.getHours() >= 3) {
-      daysSinceTuesday = 0; // This Tuesday is the start of the week
-    }
-    
-    // Calculate the Tuesday that starts the week
-    const weekStartDate = new Date(etDate);
-    weekStartDate.setDate(etDate.getDate() - daysSinceTuesday);
-    
-    // Set to 3:00 AM ET on that Tuesday
-    const weekStart = new Date(weekStartDate.getFullYear(), weekStartDate.getMonth(), weekStartDate.getDate(), 3, 0, 0, 0);
-    
-    // Convert back to UTC for consistency
-    const weekStartUTC = new Date(weekStart.getTime() - (etOffset * 60 * 60 * 1000));
-    
-    return weekStartUTC;
-  };
-
-  // Helper function to get game week bounds (Tuesday 3:00 AM to Tuesday 2:59 AM ET)
-  const getGameWeekBounds = (gameDate) => {
-    const weekStart = getWeekStart(gameDate);
-    
-    // Week ends at the start of the next week (Tuesday 3:00 AM, 7 days later)
-    // We use 2:59:59.999 to create an exclusive end bound [start, end)
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 7);
-    weekEnd.setHours(2, 59, 59, 999);
-    
-    return { weekStart, weekEnd };
-  };
-
-  // Function to handle authentication errors
   const handleAuthError = (err) => {
-    console.error('Auth check - Error loading data:', err);
-    
-    // Log token information for debugging (without exposing the full token)
-    const token = localStorage.getItem('token');
-    console.log('Auth check - Token exists:', !!token);
-    if (token) {
-      console.log('Auth check - Token length:', token.length);
-      console.log('Auth check - Token starts with:', token.substring(0, 10) + '...');
+    if (err.response && err.response.status === 401) {
+      navigate('/login');
+      return true;
     }
-    
-    // Add detailed logging for debugging
-    if (err.response) {
-      console.error('Auth check - Response data:', err.response.data);
-      console.error('Auth check - Response status:', err.response.status);
-      console.error('Auth check - Response headers:', err.response.headers);
-      
-      // Handle 401 Unauthorized errors - treat ALL 401s as authentication failures
-      if (err.response.status === 401) {
-        // Check if message explicitly mentions token expiration, but handle all 401s the same way
-        const isTokenExpired = 
-          (err.response.data && 
-           typeof err.response.data === 'object' &&
-           err.response.data.detail && 
-           typeof err.response.data.detail === 'string' &&
-           err.response.data.detail.includes("Token expired"));
-
-        // Log the token expiration evaluation
-        console.log('Auth check - Is explicit token expiration message present?', isTokenExpired);
-        console.log('Auth check - Error response message:', 
-          err.response.data && err.response.data.detail ? err.response.data.detail : 'No detail message');
-        
-        // All 401 errors should redirect to login regardless of the specific message
-        console.log('Auth check - 401 error, redirecting to login');
-        localStorage.removeItem('token');
-        navigate('/login');
-        return true; // Indicate error was handled
-      }
-    } else {
-      console.error('Auth check - No response object in error');
-    }
-    return false; // Error wasn't handled as auth error
+    return false;
   };
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    const headers = {
-      'Authorization': `Bearer ${token}`
-    };
-
     setIsLoading(true);
-    // Fetch all data in a single optimized call
-    axios.get(`${API_URL}/picks_data`, { headers })
-      .then((response) => {        
+    api.get('/picks_data')
+      .then((response) => {
         const { games, tiebreakers } = response.data;
-        
-        // Verify game IDs are properly formatted
-        games.forEach(game => {
-        });
-        
         setGames(games);
-        
-        // Convert picks array to object for easier lookup
+
         const picksObj = {};
         const locksObj = {};
         games.forEach(game => {
-          const gameIdStr = String(game.game_id);
-          if (game.picked_team) {
-            picksObj[gameIdStr] = game.picked_team;
-          }
-          if (game.lock) {
-            locksObj[gameIdStr] = game.lock;
-          }
+          const gid = String(game.game_id);
+          if (game.picked_team) picksObj[gid] = game.picked_team;
+          if (game.lock) locksObj[gid] = game.lock;
         });
         setExistingPicks(picksObj);
         setExistingLocks(locksObj);
 
-        // Set tiebreakers and convert tiebreaker picks to object for easier lookup
         setTiebreakers(tiebreakers);
         const tiebreakerPicksObj = {};
-        tiebreakers.forEach(tiebreaker => {
-          const tiebreakerIdStr = String(tiebreaker.tiebreaker_id);
-          if (tiebreaker.user_answer !== null) {
-            tiebreakerPicksObj[tiebreakerIdStr] = tiebreaker.user_answer;
+        tiebreakers.forEach(t => {
+          const tid = String(t.tiebreaker_id);
+          if (t.user_answer !== null && t.user_answer !== undefined) {
+            tiebreakerPicksObj[tid] = t.user_answer;
           }
         });
         setExistingTiebreakerPicks(tiebreakerPicksObj);
         setIsLoading(false);
       })
       .catch(err => {
-        // Try to handle as auth error first
         if (!handleAuthError(err)) {
-          // Check for permission error
           if (err.response && err.response.status === 403) {
             setError('You do not have permission to make picks. Please contact an administrator.');
           } else {
-            // If not an auth error, show the general error
             setError('Failed to load games, picks, and tiebreakers');
           }
         }
@@ -195,403 +146,309 @@ export default function Picks() {
   }, [navigate]);
 
   const handlePick = useCallback((gameId, team) => {
-    // Ensure gameId is stored as a string for consistency
-    const gameIdStr = String(gameId);
-    console.log(`Setting pick for game ID: ${gameIdStr}, team: ${team}`);
-    setPicks(prevPicks => ({ ...prevPicks, [gameIdStr]: team }));
+    const gid = String(gameId);
+    setPicks(prev => ({ ...prev, [gid]: team }));
   }, []);
 
   const handleTiebreakerPick = useCallback((tiebreakerId, answer, isNumeric = true) => {
-    // Ensure tiebreakerId is stored as a string for consistency
-    const tiebreakerIdStr = String(tiebreakerId);
-    setTiebreakerPicks(prevPicks => ({ 
-      ...prevPicks, 
-      [tiebreakerIdStr]: isNumeric ? parseFloat(answer) : answer 
+    const tid = String(tiebreakerId);
+    setTiebreakerPicks(prev => ({
+      ...prev,
+      [tid]: isNumeric ? parseFloat(answer) : answer
     }));
   }, []);
 
+  const picksFrozenForGame = useCallback((gameDate) => {
+    const tip = new Date(gameDate).getTime();
+    return new Date().getTime() >= tip - PICKS_LOCK_MS_BEFORE_TIPOFF;
+  }, []);
+
+  const tiebreakerPickStillOpen = useCallback((startTime) => {
+    const lockAt = new Date(startTime).getTime() - PICKS_LOCK_MS_BEFORE_TIPOFF;
+    return new Date().getTime() < lockAt;
+  }, []);
+
   const handleLockToggle = (gameId) => {
-    // Ensure gameId is stored as a string for consistency
-    const gameIdStr = String(gameId);
-    
-    // Check if this game is currently locked (either in current locks or existing locks)
-    const isCurrentlyLocked = locks[gameIdStr] !== undefined ? locks[gameIdStr] : (existingLocks[gameIdStr] || false);
-    
-    console.log('Lock toggle for game', gameIdStr, {
-      currentLocks: locks,
-      existingLocks: existingLocks,
-      isCurrentlyLocked
-    });
-    
+    const gid = String(gameId);
+    const isCurrentlyLocked = locks[gid] !== undefined ? locks[gid] : (existingLocks[gid] || false);
+
     if (isCurrentlyLocked) {
-      // If this pick is currently locked, unlock it
-      console.log('Unlocking game', gameIdStr);
-      setLocks(prevLocks => ({
-        ...prevLocks,
-        [gameIdStr]: false
-      }));
+      setLocks(prev => ({ ...prev, [gid]: false }));
     } else {
-      // If this pick is not locked, check if we can lock it
-      const targetGame = games.find(g => g.game_id === gameId);
-      if (!targetGame) {
-        setError('Game not found');
-        return;
-      }
-      
-      // Check if there's a started locked game in the same week
+      const targetGame = games.find(g => String(g.game_id) === gid);
+      if (!targetGame) { setError('Game not found'); return; }
+
       const allLocks = { ...existingLocks, ...locks };
-      let startedLockedGameInSameWeek = null;
-      
-      for (const [lockGameIdStr, isLocked] of Object.entries(allLocks)) {
+      let startedLockedGameInSameDay = null;
+
+      for (const [lockGid, isLocked] of Object.entries(allLocks)) {
         if (isLocked) {
-          const lockGame = games.find(g => g.game_id === Number(lockGameIdStr));
+          const lockGame = games.find(g => String(g.game_id) === lockGid);
           if (lockGame) {
-            const { weekStart: targetWeekStart, weekEnd: targetWeekEnd } = getGameWeekBounds(targetGame.game_date);
-            const lockGameDate = new Date(lockGame.game_date);
-            const isInSameWeek = lockGameDate >= targetWeekStart && lockGameDate <= targetWeekEnd;
-            const hasStarted = hasGameStarted(lockGame.game_date);
-            
-            console.log(`Checking locked game ${lockGameIdStr}:`, {
-              gameDate: lockGame.game_date,
-              lockGameDate: lockGameDate.toISOString(),
-              targetWeekStart: targetWeekStart.toISOString(),
-              targetWeekEnd: targetWeekEnd.toISOString(),
-              isInSameWeek,
-              hasStarted,
-              currentTime: new Date().toISOString()
-            });
-            
-            // Check if this locked game is in the same week and has started
-            if (isInSameWeek && hasStarted) {
-              startedLockedGameInSameWeek = lockGame;
+            if (sameLockDay(lockGame.game_date, targetGame.game_date) && picksFrozenForGame(lockGame.game_date)) {
+              startedLockedGameInSameDay = lockGame;
               break;
             }
           }
         }
       }
-      
-      if (startedLockedGameInSameWeek) {
-        const gameInfo = `${startedLockedGameInSameWeek.away_team} @ ${startedLockedGameInSameWeek.home_team}`;
-        setError(`Your locked game (${gameInfo}) has already started and cannot be changed.`);
-        return; // Don't allow the lock
+
+      if (startedLockedGameInSameDay) {
+        setError(`Your locked game (${startedLockedGameInSameDay.away_team} @ ${startedLockedGameInSameDay.home_team}) has passed the pick cutoff (1 minute before tip) and cannot be changed.`);
+        return;
       }
-      
-      // If this pick is not locked, lock it and unlock all others IN THE SAME WEEK
-      console.log('Locking game', gameIdStr, 'and unlocking others in same week');
-      const newLocks = {};
-      
-      // Find the target game's week bounds
-      const { weekStart, weekEnd } = getGameWeekBounds(targetGame.game_date);
-      
-      // Only unlock locks that are in the same week as the target game
-      Object.keys(locks).forEach(id => {
-        const game = games.find(g => g.game_id === Number(id));
-        if (game) {
-          const gameDate = new Date(game.game_date);
-          if (gameDate >= weekStart && gameDate <= weekEnd) {
-            // This game is in the same week, so unlock it
-            newLocks[id] = false;
-          }
-          // If game is in a different week, don't touch it (don't add to newLocks)
-        }
-      });
-      
-      // Only unlock existing locks from database that are in the same week
-      Object.keys(existingLocks).forEach(id => {
-        const game = games.find(g => g.game_id === Number(id));
-        if (game) {
-          const gameDate = new Date(game.game_date);
-          if (gameDate >= weekStart && gameDate <= weekEnd) {
-            // This game is in the same week, so unlock it
-            newLocks[id] = false;
-          }
-          // If game is in a different week, don't touch it (don't add to newLocks)
-        }
-      });
-      
-      // Lock only this pick
-      newLocks[gameIdStr] = true;
+
+      const newLocks = { ...locks };
+
+      const unlockSameLockDay = (lockSource) => {
+        Object.keys(lockSource).forEach(id => {
+          const game = games.find(g => String(g.game_id) === id);
+          if (game && sameLockDay(game.game_date, targetGame.game_date)) newLocks[id] = false;
+        });
+      };
+      unlockSameLockDay(newLocks);
+      unlockSameLockDay(existingLocks);
+      newLocks[gid] = true;
       setLocks(newLocks);
-      
-      // Clear any previous error messages
       setError(null);
     }
   };
 
-  const submitPicks = async () => {
-    const token = localStorage.getItem('token');
-    setIsSubmitting(true);
-    setError(null);
-    
-    try {
-      // Validate game picks before submitting
-      for (const [gameId, pickedTeam] of Object.entries(picks)) {
-        const game_id = Number(gameId);
-        if (isNaN(game_id)) {
-          throw new Error(`Invalid game ID format: ${gameId}`);
+  /** Single pass; cached lock-day bounds per unique tipoff string. */
+  const computeSubmitWarnings = useCallback(
+    (gameList, tbList) => {
+      const missingGames = [];
+      const dayBuckets = new Map();
+      const boundsCache = new Map();
+
+      for (const game of gameList) {
+        const gid = String(game.game_id);
+        if (!picks[gid] && !existingPicks[gid]) {
+          missingGames.push({
+            gid,
+            label: `${game.away_team} @ ${game.home_team}`,
+            time: formatDateForDisplay(game.game_date),
+          });
         }
-        
-        if (!pickedTeam || typeof pickedTeam !== 'string') {
-          throw new Error(`Invalid team selection for game ${gameId}: ${pickedTeam}`);
+
+        const { dayKey, label } = getLockDayCached(game.game_date, boundsCache);
+        let bucket = dayBuckets.get(dayKey);
+        if (!bucket) {
+          bucket = { label, games: [] };
+          dayBuckets.set(dayKey, bucket);
+        }
+        bucket.games.push(game);
+      }
+
+      const missingLockDays = [];
+      for (const { label, games } of dayBuckets.values()) {
+        const hasLockOnDay = games.some((g) => {
+          const id = String(g.game_id);
+          return locks[id] !== undefined ? locks[id] : Boolean(existingLocks[id]);
+        });
+        if (!hasLockOnDay) missingLockDays.push({ label });
+      }
+
+      missingLockDays.sort((a, b) => a.label.localeCompare(b.label));
+
+      const missingQuestions = [];
+      for (const t of tbList) {
+        const tid = String(t.tiebreaker_id);
+        if (!tiebreakerIsAnswered(tid, tiebreakerPicks, existingTiebreakerPicks)) {
+          missingQuestions.push({
+            tid,
+            question: t.question,
+            deadline: formatDateForDisplay(t.start_time),
+          });
         }
       }
-      
-      // Submit game picks
-      const gamesToSubmit = new Set([
-        ...Object.keys(picks),
-        ...Object.keys(locks)
-      ]);
-      
-      console.log('Submitting games:', {
-        picks: Object.keys(picks),
-        locks: Object.keys(locks),
-        gamesToSubmit: Array.from(gamesToSubmit)
-      });
-      
+
+      return { missingGames, missingLockDays, missingQuestions };
+    },
+    [picks, existingPicks, locks, existingLocks, tiebreakerPicks, existingTiebreakerPicks]
+  );
+
+  const runSubmitPicks = async () => {
+    setIsSubmitting(true);
+    setError(null);
+
+    try {
+      const gamesToSubmit = new Set([...Object.keys(picks), ...Object.keys(locks)]);
+
       const gamePickResponses = await Promise.all(
-        Array.from(gamesToSubmit).map(gameId => {
-          // Ensure game_id is a valid integer
-          const game_id = Number(gameId);
-          
-          if (isNaN(game_id)) {
-            throw new Error(`Invalid game ID: ${gameId}`);
-          }
-          
-          // Get the picked team (either new pick or existing pick)
-          const pickedTeam = picks[gameId] || existingPicks[gameId];
-          
-          if (!pickedTeam) {
-            throw new Error(`No pick found for game ${gameId}`);
-          }
-          
-          // Check if this pick is locked (only send lock changes, not current status)
-          const gameIdStr = String(gameId);
-          const hasLockChange = locks[gameIdStr] !== undefined;
-          const isLocked = hasLockChange ? locks[gameIdStr] : (existingLocks[gameIdStr] || false);
-          
-          console.log(`Submitting pick for game ${gameId}:`, {
-            game_id,
-            picked_team: pickedTeam,
-            lock: isLocked,
-            isNewPick: !!picks[gameId],
-            isLockChange: hasLockChange,
-            existingLock: existingLocks[gameIdStr]
-          });
-          
-          // Only send lock information if there's a lock change
-          const requestData = {
-            game_id: game_id,
-            picked_team: pickedTeam
-          };
-          
-          // Only include lock field if there's a lock change
-          if (hasLockChange) {
-            requestData.lock = isLocked;
-          }
-          
-          return axios.post(`${API_URL}/submit_pick`, 
-            requestData,
-            {
-              headers: {
-                'Authorization': `Bearer ${token}`
-              }
-            }
-          );
+        Array.from(gamesToSubmit).map((gid) => {
+          const pickedTeam = picks[gid] || existingPicks[gid];
+          if (!pickedTeam) throw new Error(`No pick found for game ${gid}`);
+
+          const hasLockChange = locks[gid] !== undefined;
+          const isLocked = hasLockChange ? locks[gid] : (existingLocks[gid] || false);
+
+          const data = { game_id: gid, picked_team: pickedTeam };
+          if (hasLockChange) data.lock = isLocked;
+
+          return api.post("/submit_pick", data);
         })
       );
 
-      // Submit tiebreaker picks
       const tiebreakerPickResponses = await Promise.all(
-        Object.entries(tiebreakerPicks).map(([tiebreakerId, answer]) => {
-          // Ensure tiebreaker_id is a valid integer
-          const tiebreaker_id = Number(tiebreakerId);
-          
-          if (isNaN(tiebreaker_id)) {
-            throw new Error(`Invalid tiebreaker ID: ${tiebreakerId}`);
-          }
-          
-          return axios.post(`${API_URL}/tiebreaker_picks`,
-            {
-              tiebreaker_id: tiebreaker_id,
-              answer: answer
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${token}`
-              }
-            }
-          );
-        })
+        Object.entries(tiebreakerPicks).map(([tid, answer]) =>
+          api.post("/tiebreaker_picks", { tiebreaker_id: tid, answer })
+        )
       );
-      
-      // Get all success messages
-      const gameMessages = gamePickResponses.map(res => res.data.message).filter(Boolean);
-      const tiebreakerMessages = tiebreakerPickResponses.map(res => res.data.message).filter(Boolean);
-      
-      console.log('Success messages:', { gameMessages, tiebreakerMessages });
-      
-      // Create a single consolidated message
-      let consolidatedMessage = '';
-      
+
+      const gameMessages = gamePickResponses.map((r) => r.data.message).filter(Boolean);
+      const tbMessages = tiebreakerPickResponses.map((r) => r.data.message).filter(Boolean);
+
+      let msg = "";
       if (gameMessages.length > 0) {
-        // If all game messages are the same, just show one
-        const uniqueGameMessages = [...new Set(gameMessages)];
-        if (uniqueGameMessages.length === 1) {
-          consolidatedMessage = uniqueGameMessages[0];
-        } else {
-          consolidatedMessage = `Updated ${gameMessages.length} picks successfully`;
-        }
+        const unique = [...new Set(gameMessages)];
+        msg = unique.length === 1 ? unique[0] : `Updated ${gameMessages.length} picks successfully`;
       }
-      
-      if (tiebreakerMessages.length > 0) {
-        if (consolidatedMessage) {
-          consolidatedMessage += '\n';
-        }
-        // If all tiebreaker messages are the same, just show one
-        const uniqueTiebreakerMessages = [...new Set(tiebreakerMessages)];
-        if (uniqueTiebreakerMessages.length === 1) {
-          consolidatedMessage += uniqueTiebreakerMessages[0];
-        } else {
-          consolidatedMessage += `Updated ${tiebreakerMessages.length} tiebreakers successfully`;
-        }
+      if (tbMessages.length > 0) {
+        if (msg) msg += "\n";
+        const unique = [...new Set(tbMessages)];
+        msg += unique.length === 1 ? unique[0] : `Updated ${tbMessages.length} tiebreakers successfully`;
       }
-      
-      // Hide the submitting popup immediately when successful
+
       setIsSubmitting(false);
-      
-      if (consolidatedMessage) {
-        alert(consolidatedMessage);
-      }
-      
-      // Clear error message on successful submission
+      if (msg) alert(msg);
       setError(null);
-      
-      // Update existing picks with new picks
       setExistingPicks({ ...existingPicks, ...picks });
       setExistingTiebreakerPicks({ ...existingTiebreakerPicks, ...tiebreakerPicks });
-      // Update existing locks with new locks
       setExistingLocks({ ...existingLocks, ...locks });
-      // Clear picks and locks after successful submission
       setPicks({});
       setTiebreakerPicks({});
       setLocks({});
     } catch (err) {
-      console.error(err);
-      // Try to handle auth error first
       if (!handleAuthError(err)) {
-        // Check for permission error
         if (err.response && err.response.status === 403) {
-          setError('You do not have permission to make picks. Please contact an administrator.');
-        } else if (err.response && err.response.data && err.response.data.detail) {
-          const errorMessage = err.response.data.detail;
-          
-          // Check if it's a lock-specific error
-          if (errorMessage.includes("Cannot change lock") || errorMessage.includes("Your Locked game")) {
-            setError(errorMessage); // Show the full lock error message without "Error:" prefix
-            setLocks({}); // Clear lock state
-            console.log('Lock error detected, cleared lock state. Current state:', {
-              picks: Object.keys(picks),
-              locks: {},
-              tiebreakerPicks: Object.keys(tiebreakerPicks)
-            });
+          setError("You do not have permission to make picks. Please contact an administrator.");
+        } else if (err.response?.data?.detail) {
+          const detail = err.response.data.detail;
+          if (
+            detail.includes("Cannot change lock") ||
+            detail.includes("Your Locked game") ||
+            detail.includes("Cannot unlock") ||
+            detail.includes("Your lock cannot be changed")
+          ) {
+            setError(detail);
+            setLocks({});
           } else {
-            setError(`Error: ${errorMessage}`);
+            setError(`Error: ${detail}`);
           }
         } else if (err.message) {
           setError(`Error: ${err.message}`);
         } else {
-          setError('Failed to submit picks. Please try again.');
+          setError("Failed to submit picks. Please try again.");
         }
       }
       setIsSubmitting(false);
     }
   };
 
-  const hasGameStarted = useCallback((gameDate) => {
-    // Use UTC comparison for consistency with backend
-    const now = new Date();
-    const gameTime = new Date(gameDate);
-    return now.getTime() >= gameTime.getTime();
-  }, []);
+  const availableGames = useMemo(() =>
+    games.filter(g => g?.game_date && !picksFrozenForGame(g.game_date))
+      .sort((a, b) => new Date(a.game_date) - new Date(b.game_date)),
+    [games, picksFrozenForGame]
+  );
 
-  const availableGames = useMemo(() => {
-    return games.filter(game => {
-      // Ensure game data is valid
-      if (!game || !game.game_date) {
-        console.warn('Invalid game data:', game);
-        return false;
-      }
-      return !hasGameStarted(game.game_date);
-    }).sort((a, b) => new Date(a.game_date) - new Date(b.game_date));
-  }, [games, hasGameStarted]);
+  const availableTiebreakers = useMemo(() =>
+    tiebreakers.filter(t => t?.start_time && tiebreakerPickStillOpen(t.start_time) && t.is_active)
+      .sort((a, b) => new Date(a.start_time) - new Date(b.start_time)),
+    [tiebreakers, tiebreakerPickStillOpen]
+  );
 
-  const availableTiebreakers = useMemo(() => {
-    return tiebreakers.filter(tiebreaker => {
-      // Ensure tiebreaker data is valid
-      if (!tiebreaker || !tiebreaker.start_time) {
-        console.warn('Invalid tiebreaker data:', tiebreaker);
-        return false;
-      }
-      return !hasGameStarted(tiebreaker.start_time) && tiebreaker.is_active;
-    }).sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
-  }, [tiebreakers, hasGameStarted]);
+  const onSubmitClick = () => {
+    const games = availableGames;
+    const tbs = availableTiebreakers;
+    if (games.length === 0 && tbs.length === 0) {
+      runSubmitPicks();
+      return;
+    }
+    setIsCheckingWarnings(true);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const w = computeSubmitWarnings(games, tbs);
+        setIsCheckingWarnings(false);
+        if (
+          w.missingGames.length > 0 ||
+          w.missingLockDays.length > 0 ||
+          w.missingQuestions.length > 0
+        ) {
+          setSubmitWarnings(w);
+          setShowSubmitWarning(true);
+        } else {
+          runSubmitPicks();
+        }
+      });
+    });
+  };
+
+  const hasUnsavedChanges = useMemo(
+    () =>
+      Object.keys(picks).length > 0 ||
+      Object.keys(locks).length > 0 ||
+      Object.keys(tiebreakerPicks).length > 0,
+    [picks, locks, tiebreakerPicks]
+  );
+
+  /* beforeunload only — useBlocker requires createBrowserRouter/RouterProvider, not BrowserRouter */
+  useEffect(() => {
+    if (!hasUnsavedChanges) return undefined;
+    const onBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  const confirmSubmitDespiteWarnings = () => {
+    setShowSubmitWarning(false);
+    runSubmitPicks();
+  };
 
   return (
     <Container fluid="md" className="px-2 px-md-3">
       <Row className="mb-3 mb-md-4">
         <Col>
           <h2 className="text-center text-md-start">Make Your Picks</h2>
-          <p className="text-muted text-center text-md-start">Select your picks for upcoming games and answer any tiebreaker questions. All picks must be submitted before game time.</p>
+          <p className="text-muted text-center text-md-start">Select your picks for upcoming games and answer any tiebreaker questions. Game picks and tiebreaker answers lock 1 minute before the scheduled time.</p>
         </Col>
       </Row>
 
       {error && (
-        <Row className="mb-3 mb-md-4">
-          <Col>
-            <Alert variant="danger">{error}</Alert>
-          </Col>
-        </Row>
+        <Row className="mb-3 mb-md-4"><Col><Alert variant="danger">{error}</Alert></Col></Row>
       )}
 
       {isLoading ? (
-        <Row>
-          <Col className="text-center">
-            <div className="d-flex justify-content-center align-items-center" style={{ minHeight: '200px' }}>
-              <div className="spinner-border text-primary" role="status">
-                <span className="visually-hidden">Loading...</span>
-              </div>
-              <span className="ms-3">Loading picks data...</span>
-            </div>
-          </Col>
-        </Row>
-      ) : error ? (
-        // Don't show anything else if there's an error - the error message is already displayed above
-        null
-      ) : (availableGames.length === 0 && availableTiebreakers.length === 0) ? (
-        <Row>
-          <Col>
-            <Alert variant="info">No available contests to pick at this time</Alert>
-          </Col>
-        </Row>
+        <Row><Col className="text-center">
+          <div className="d-flex justify-content-center align-items-center" style={{ minHeight: '200px' }}>
+            <div className="spinner-border text-primary" role="status"><span className="visually-hidden">Loading...</span></div>
+            <span className="ms-3">Loading picks data...</span>
+          </div>
+        </Col></Row>
+      ) : error ? null : (availableGames.length === 0 && availableTiebreakers.length === 0) ? (
+        <Row><Col><Alert variant="info">No available contests to pick at this time</Alert></Col></Row>
       ) : (
         <>
-          {/* Games Section */}
           {availableGames.length > 0 && (
             <>
               <Row className="mb-3">
                 <Col>
                   <h3 className="text-center text-md-start">Games</h3>
+                  <p className="text-muted text-center text-md-start mb-0">
+                    Click the lock icon on a game to set your lock of the day — if that pick wins, it scores double points. Note: The lock goes with the day the game is played, not with the day you make your picks.
+                  </p>
                 </Col>
               </Row>
               <Row xs={1} sm={2} lg={3} className="g-3 g-md-4 mb-4">
                 {availableGames.map(game => {
-                  const gameIdStr = String(game.game_id);
-                  const existingPick = existingPicks[gameIdStr];
-                  const currentPick = picks[gameIdStr];
+                  const gid = String(game.game_id);
+                  const existingPick = existingPicks[gid];
+                  const currentPick = picks[gid];
                   const selectedTeam = currentPick || existingPick;
-                  const existingLock = existingLocks[gameIdStr];
-                  const currentLock = locks[gameIdStr];
-                  const isLocked = currentLock !== undefined ? currentLock : (existingLock || false);
+                  const isLocked = (locks[gid] !== undefined ? locks[gid] : (existingLocks[gid] || false));
 
                   return (
                     <Col key={`game-${game.game_id}`}>
@@ -603,13 +460,7 @@ export default function Picks() {
                               <small className="text-muted mx-1">@</small>
                               <span className="text-truncate ms-1">{game.home_team}</span>
                             </div>
-                            <Button
-                              variant="outline-secondary"
-                              size="sm"
-                              onClick={() => handleLockToggle(game.game_id)}
-                              className="p-2"
-                              title={isLocked ? "Unlock pick" : "Lock pick"}
-                            >
+                            <Button variant="outline-secondary" size="sm" onClick={() => handleLockToggle(game.game_id)} className="p-2" title={isLocked ? "Unlock pick" : "Lock pick"}>
                               {isLocked ? <FaLock className="text-warning" size={16} /> : <FaUnlock className="text-muted" size={16} />}
                             </Button>
                           </Card.Title>
@@ -619,23 +470,15 @@ export default function Picks() {
                             {existingPick && (
                               <div className="mt-2 text-success">
                                 <strong>Your pick: {existingPick}</strong>
-                                {isLocked && <span className="ms-2 text-warning"><FaLock /> Lock of the week</span>}
+                                {isLocked && <span className="ms-2 text-warning"><FaLock /> Lock of the day</span>}
                               </div>
                             )}
                           </Card.Text>
                           <div className="d-grid gap-2 mt-auto">
-                            <Button
-                              variant={selectedTeam === game.away_team ? "success" : "outline-primary"}
-                              onClick={() => handlePick(game.game_id, game.away_team)}
-                              className="py-2"
-                            >
+                            <Button variant={selectedTeam === game.away_team ? "success" : "outline-primary"} onClick={() => handlePick(game.game_id, game.away_team)} className="py-2">
                               {game.away_team} {game.spread > 0 ? `+${game.spread}` : `-${Math.abs(game.spread)}`}
                             </Button>
-                            <Button
-                              variant={selectedTeam === game.home_team ? "success" : "outline-primary"}
-                              onClick={() => handlePick(game.game_id, game.home_team)}
-                              className="py-2"
-                            >
+                            <Button variant={selectedTeam === game.home_team ? "success" : "outline-primary"} onClick={() => handlePick(game.game_id, game.home_team)} className="py-2">
                               {game.home_team} {game.spread > 0 ? `-${game.spread}` : `+${Math.abs(game.spread)}`}
                             </Button>
                           </div>
@@ -648,61 +491,43 @@ export default function Picks() {
             </>
           )}
 
-          {/* Tiebreakers Section */}
           {availableTiebreakers.length > 0 && (
-            <><br></br>
-              <Row className="mb-3">
-                <Col>
-                  <h3 className="text-center text-md-start">Questions</h3>
-                </Col>
-              </Row>
+            <><br />
+              <Row className="mb-3"><Col><h3 className="text-center text-md-start">Questions</h3></Col></Row>
               <Row xs={1} sm={2} lg={3} className="g-3 g-md-4">
                 {availableTiebreakers.map(tiebreaker => {
-                  const tiebreakerIdStr = String(tiebreaker.tiebreaker_id);
-                  const existingAnswer = existingTiebreakerPicks[tiebreakerIdStr];
-                  const currentAnswer = tiebreakerPicks[tiebreakerIdStr];
+                  const tid = String(tiebreaker.tiebreaker_id);
+                  const existingAnswer = existingTiebreakerPicks[tid];
+                  const currentAnswer = tiebreakerPicks[tid];
                   const answer = currentAnswer !== undefined ? currentAnswer : existingAnswer;
-                  
-                  // Determine if the question likely requires a numeric or text answer
-                  const isNumericQuestion = tiebreaker.question.toLowerCase().includes('how many') || 
-                                           tiebreaker.question.toLowerCase().includes('score') ||
-                                           tiebreaker.question.toLowerCase().includes('points') ||
-                                           tiebreaker.question.toLowerCase().includes('total');
+                  const q = tiebreaker.question.toLowerCase();
+                  const looksLikeNumeric = q.includes('how many') || q.includes('score') || q.includes('points') || q.includes('total');
+                  const asksForEntity = q.includes('which team') || q.includes('which player') || q.includes('who will') || q.includes('who wins') || q.includes('name the') || q.includes('what team');
+                  const isNumeric = looksLikeNumeric && !asksForEntity;
 
                   return (
                     <Col key={`tiebreaker-${tiebreaker.tiebreaker_id}`}>
                       <Card className="h-100 shadow-sm">
                         <Card.Body className="d-flex flex-column">
-                          <Card.Title className="mb-3">
-                            {tiebreaker.question}
-                          </Card.Title>
+                          <Card.Title className="mb-3">{tiebreaker.question}</Card.Title>
                           <Card.Text className="mb-3">
-                            <div className="mb-1"><strong>Deadline:</strong> {formatDateForDisplay(tiebreaker.start_time)}</div>
+                            <div className="mb-1">
+                              <strong>Scheduled start:</strong> {formatDateForDisplay(tiebreaker.start_time)}
+                              <span className="text-muted"> (answers lock 1 minute before)</span>
+                            </div>
                             {existingAnswer !== undefined && (
-                              <div className="mt-2 text-success">
-                                <strong>Your answer: {existingAnswer}</strong>
-                              </div>
+                              <div className="mt-2 text-success"><strong>Your answer: {existingAnswer}</strong></div>
                             )}
                           </Card.Text>
                           <Form.Group className="mt-auto">
-                            {isNumericQuestion ? (
-                              <Form.Control
-                                type="number"
-                                step="0.1"
-                                placeholder="Enter your answer"
-                                value={answer !== undefined ? answer : ''}
-                                onChange={(e) => handleTiebreakerPick(tiebreaker.tiebreaker_id, e.target.value, true)}
-                                className="text-center"
-                              />
-                            ) : (
-                              <Form.Control
-                                type="text"
-                                placeholder="Enter your answer"
-                                value={answer !== undefined ? answer : ''}
-                                onChange={(e) => handleTiebreakerPick(tiebreaker.tiebreaker_id, e.target.value, false)}
-                                className="text-center"
-                              />
-                            )}
+                            <Form.Control
+                              type={isNumeric ? "number" : "text"}
+                              step={isNumeric ? "0.1" : undefined}
+                              placeholder="Enter your answer"
+                              value={answer !== undefined ? answer : ''}
+                              onChange={(e) => handleTiebreakerPick(tiebreaker.tiebreaker_id, e.target.value, isNumeric)}
+                              className="text-center"
+                            />
                           </Form.Group>
                         </Card.Body>
                       </Card>
@@ -714,45 +539,98 @@ export default function Picks() {
           )}
 
           {(Object.keys(picks).length > 0 || Object.keys(tiebreakerPicks).length > 0 || Object.keys(locks).length > 0) && (
-            <Row className="mt-4">
-              <Col className="d-flex justify-content-center">
-                <Button variant="success" size="lg" onClick={submitPicks} disabled={isSubmitting} className="px-4 py-2">
-                  Submit Picks
-                </Button>
-              </Col>
-            </Row>
+            <Row className="mt-4"><Col className="d-flex justify-content-center">
+              <Button variant="success" size="lg" onClick={onSubmitClick} disabled={isSubmitting || isCheckingWarnings} className="px-4 py-2">Save Picks</Button>
+            </Col></Row>
           )}
         </>
       )}
 
-{/* Submission Modal - temporarily commented out for debugging */}
-      {isSubmitting && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 9999
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '2rem',
-            borderRadius: '0.5rem',
-            textAlign: 'center',
-            minWidth: '300px'
-          }}>
-            <div className="mb-3">
-              <div className="spinner-border text-primary" style={{ width: '3rem', height: '3rem' }} role="status">
-                <span className="visually-hidden">Loading...</span>
-              </div>
+      <Modal show={showSubmitWarning} onHide={() => setShowSubmitWarning(false)} centered>
+        <Modal.Header closeButton>
+          <Modal.Title>Before you submit</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          {(submitWarnings.missingGames.length > 0 ||
+            submitWarnings.missingLockDays.length > 0 ||
+            submitWarnings.missingQuestions.length > 0) && (
+            <p className="text-muted small mb-3">
+              You still have incomplete entries. You can go back to finish them, or save anyway — only games and answers you&apos;ve changed will be saved.
+            </p>
+          )}
+          {submitWarnings.missingGames.length > 0 && (
+            <>
+              <h6 className="fw-bold">Games without a pick</h6>
+              <ul className="small mb-3 ps-3">
+                {submitWarnings.missingGames.map((g) => (
+                  <li key={g.gid}>
+                    <strong>{g.label}</strong>
+                    <span className="text-muted"> — {g.time}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {submitWarnings.missingLockDays.length > 0 && (
+            <>
+              <h6 className="fw-bold">Game days without a lock of the day</h6>
+              <ul className="small mb-3 ps-3">
+                {submitWarnings.missingLockDays.map((d) => (
+                  <li key={d.label}>{d.label}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          {submitWarnings.missingQuestions.length > 0 && (
+            <>
+              <h6 className="fw-bold">Questions without an answer</h6>
+              <ul className="small mb-0 ps-3">
+                {submitWarnings.missingQuestions.map((q) => (
+                  <li key={q.tid}>
+                    <strong className="d-block">{q.question}</strong>
+                    <span className="text-muted">Scheduled: {q.deadline} (locks 1 min before)</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </Modal.Body>
+        <Modal.Footer className="d-flex flex-wrap gap-2 justify-content-between">
+          <Button variant="outline-secondary" onClick={() => setShowSubmitWarning(false)}>
+            Go back
+          </Button>
+          <Button variant="success" onClick={confirmSubmitDespiteWarnings}>
+            Save anyway
+          </Button>
+        </Modal.Footer>
+      </Modal>
+
+      {isCheckingWarnings && (
+        <div
+          className="d-flex align-items-center justify-content-center"
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(0,0,0,0.5)",
+            zIndex: 9998,
+          }}
+        >
+          <div className="bg-white rounded-3 p-4 text-center shadow" style={{ minWidth: "280px" }}>
+            <div className="mb-3 d-flex justify-content-center">
+              <BasketballSpinnerIcon size={56} />
             </div>
-            <h5 className="mb-2">Submitting Your Picks</h5>
-            <p className="text-muted mb-0">Please wait your selections are saved...</p>
+            <h5 className="mb-2">Checking your picks…</h5>
+            <p className="text-muted small mb-0">Hang on a moment.</p>
+          </div>
+        </div>
+      )}
+
+      {isSubmitting && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+          <div style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '0.5rem', textAlign: 'center', minWidth: '300px' }}>
+            <div className="mb-3"><div className="spinner-border text-primary" style={{ width: '3rem', height: '3rem' }} role="status"><span className="visually-hidden">Loading...</span></div></div>
+            <h5 className="mb-2">Saving your picks</h5>
+            <p className="text-muted mb-0">Please wait…</p>
           </div>
         </div>
       )}

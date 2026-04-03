@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Container, Table, Alert, Card, Row, Col } from 'react-bootstrap';
-import axios from 'axios';
+import { Container, Table, Alert, Card, Button } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
-import { API_URL } from '../config';
+import api from '../api';
 import UserPicksModal from '../components/UserPicksModal';
 
 const AdminUserPicks = () => {
@@ -11,26 +10,27 @@ const AdminUserPicks = () => {
   const [error, setError] = useState(null);
   const [selectedUserPicks, setSelectedUserPicks] = useState(null);
   const [showModal, setShowModal] = useState(false);
+  const [copyEmailsFeedback, setCopyEmailsFeedback] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
     const fetchUserPicksStatus = async () => {
       try {
-        const token = localStorage.getItem('token');
-        if (!token) {
-          navigate('/login');
-          return;
-        }
-
-        const response = await axios.get(`${API_URL}/admin/user_picks_status`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const response = await api.get('/admin/user_picks_status');
         setUserPicksStatus(response.data);
       } catch (err) {
         if (err.response?.status === 401) {
           navigate('/login');
         } else {
-          setError('Failed to fetch user picks status');
+          const detail =
+            err.response?.data?.detail ||
+            err.response?.data?.message ||
+            err.message;
+          setError(
+            detail
+              ? `Failed to fetch user picks status: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+              : 'Failed to fetch user picks status'
+          );
         }
       } finally {
         setLoading(false);
@@ -40,24 +40,43 @@ const AdminUserPicks = () => {
     fetchUserPicksStatus();
   }, [navigate]);
 
-  const handleUserClick = async (username) => {
+  const handleUserClick = async (uid) => {
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get(`${API_URL}/admin/user_all_picks/${username}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const response = await api.get(`/admin/user_all_picks/${uid}`);
       setSelectedUserPicks(response.data);
       setShowModal(true);
     } catch (err) {
       if (err.response?.status === 401) {
         navigate('/login');
       } else if (err.response?.status === 404) {
-        // User not found or doesn't have make_picks permission
         setError('User not found or does not have permission to make picks');
       } else {
         setError('Failed to fetch user picks');
       }
     }
+  };
+
+  const copyAllUserEmails = async () => {
+    const emails = [
+      ...new Set(
+        userPicksStatus
+          .map((u) => (u.email || '').trim().toLowerCase())
+          .filter(Boolean)
+      ),
+    ].sort();
+    if (emails.length === 0) {
+      setCopyEmailsFeedback('No emails on file for these users.');
+      setTimeout(() => setCopyEmailsFeedback(null), 4000);
+      return;
+    }
+    const text = emails.join(', ');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyEmailsFeedback(`Copied ${emails.length} email${emails.length === 1 ? '' : 's'} to clipboard. Paste into Gmail To or Bcc.`);
+    } catch {
+      setCopyEmailsFeedback('Could not copy — try a secure (HTTPS) page or copy manually.');
+    }
+    setTimeout(() => setCopyEmailsFeedback(null), 5000);
   };
 
   if (loading) {
@@ -85,12 +104,10 @@ const AdminUserPicks = () => {
   const completedUsers = userPicksStatus.filter(user => user.is_complete).length;
   const completionRate = ((completedUsers / totalUsers) * 100).toFixed(1);
 
-  // Calculate total games required (for reference, though not displayed in progress bars anymore)
   const totalGamesRequired = userPicksStatus.length > 0 ? userPicksStatus[0].total_games : 0;
 
-  // Calculate locks progress
-  const usersWithCurrentWeekLock = userPicksStatus.filter(user => user.has_current_week_lock).length;
-  const locksProgressPercentage = totalUsers > 0 ? ((usersWithCurrentWeekLock / totalUsers) * 100).toFixed(1) : 0;
+  const usersWithCurrentDayLock = userPicksStatus.filter(user => user.has_current_day_lock).length;
+  const locksProgressPercentage = totalUsers > 0 ? ((usersWithCurrentDayLock / totalUsers) * 100).toFixed(1) : 0;
 
   return (
     <Container className="mt-4">
@@ -144,11 +161,11 @@ const AdminUserPicks = () => {
                   aria-valuemin="0"
                   aria-valuemax="100"
                 >
-                  {usersWithCurrentWeekLock} / {totalUsers} users
+                  {usersWithCurrentDayLock} / {totalUsers} users
                 </div>
               </div>
               <div className="text-muted small">
-                Users who have locked a game for the current week (resets Tuesdays 3am ET)
+                Users who have a lock of the day for the current 3am ET–3am ET window
               </div>
             </div>
           </div>
@@ -157,6 +174,19 @@ const AdminUserPicks = () => {
 
       <Card>
         <Card.Body>
+          <div className="d-flex flex-wrap align-items-center gap-2 mb-3">
+            <Button variant="outline-secondary" size="sm" onClick={copyAllUserEmails}>
+              Copy all user emails
+            </Button>
+            <span className="text-muted small">
+              Comma-separated — paste into Gmail <strong>To</strong> or <strong>Bcc</strong> for a blast.
+            </span>
+          </div>
+          {copyEmailsFeedback && (
+            <Alert variant="info" className="py-2 small mb-3" dismissible onClose={() => setCopyEmailsFeedback(null)}>
+              {copyEmailsFeedback}
+            </Alert>
+          )}
           <Table striped bordered hover responsive size="sm">
             <thead>
               <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
@@ -169,30 +199,25 @@ const AdminUserPicks = () => {
             <tbody className="small">
               {userPicksStatus
                 .sort((a, b) => {
-                  // First priority: users without all picks made (incomplete picks)
                   if (a.is_complete !== b.is_complete) {
                     return a.is_complete ? 1 : -1;
                   }
-                  
-                  // Second priority: among users with complete picks, show those with unsubmitted locks first
                   if (a.is_complete && b.is_complete) {
-                    if (a.has_current_week_lock !== b.has_current_week_lock) {
-                      return a.has_current_week_lock ? 1 : -1;
+                    if (a.has_current_day_lock !== b.has_current_day_lock) {
+                      return a.has_current_day_lock ? 1 : -1;
                     }
                   }
-                  
-                  // Finally sort by name alphabetically
-                  return a.full_name.localeCompare(b.full_name);
+                  return a.display_name.localeCompare(b.display_name);
                 })
                 .map((user) => (
                 <tr 
-                  key={user.username}
-                  onClick={() => handleUserClick(user.username)}
+                  key={user.uid}
+                  onClick={() => handleUserClick(user.uid)}
                   style={{ cursor: 'pointer', fontSize: '0.85rem', lineHeight: '1.2' }}
                   className="user-row"
                 >
                   <td className="py-2">
-                    {user.full_name} <span className="text-muted" style={{ fontSize: '0.8rem' }}>({user.username})</span>
+                    {user.display_name}
                   </td>
                   <td className="py-2">
                     {user.total_games > 0 ? (
@@ -228,10 +253,10 @@ const AdminUserPicks = () => {
                   </td>
                   <td className="py-2">
                     <span
-                      className={`badge ${user.has_current_week_lock ? 'bg-success' : 'bg-danger'}`}
+                      className={`badge ${user.has_current_day_lock ? 'bg-success' : 'bg-danger'}`}
                       style={{ fontSize: '0.75rem', padding: '0.25em 0.5em' }}
                     >
-                      {user.has_current_week_lock ? 'Submitted' : 'Unsubmitted'}
+                      {user.has_current_day_lock ? 'Submitted' : 'Unsubmitted'}
                     </span>
                   </td>
                 </tr>
@@ -257,4 +282,4 @@ const AdminUserPicks = () => {
   );
 };
 
-export default AdminUserPicks; 
+export default AdminUserPicks;

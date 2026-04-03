@@ -1,1 +1,6 @@
 .env
+.env.production
+.vercel
+mmvenv
+.venv
+venv

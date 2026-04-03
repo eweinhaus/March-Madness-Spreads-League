@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import axios from "axios";
 import { Card, Row, Col, Alert, Badge, ProgressBar, Modal, Table } from "react-bootstrap";
 import { FaLock, FaTrophy, FaFire, FaHeart, FaStar, FaArrowUp, FaArrowDown, FaChartLine } from "react-icons/fa";
-import { API_URL } from "../config";
+import { useNavigate } from "react-router-dom";
+import api from "../api";
 
 export default function Stats() {
   const [stats, setStats] = useState([]);
@@ -11,18 +11,23 @@ export default function Stats() {
   const [playerDetails, setPlayerDetails] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     fetchStats();
   }, []);
 
   const fetchStats = () => {
-    axios.get(`${API_URL}/stats`)
+    api.get('/stats')
       .then(res => {
         setStats(res.data);
         setError(null);
       })
       .catch(err => {
+        if (err.response?.status === 401) {
+          navigate('/login');
+          return;
+        }
         console.error('Failed to load stats:', err);
         setError('Failed to load player statistics. Please try again.');
       });
@@ -34,16 +39,15 @@ export default function Stats() {
     setLoadingDetails(true);
 
     try {
-      console.log('Fetching detailed stats for:', player.username);
-      const encodedUsername = encodeURIComponent(player.username);
-      const response = await axios.get(`${API_URL}/stats/${encodedUsername}`);
-      console.log('Detailed stats response:', response.data);
+      const response = await api.get(`/stats/${player.uid}`);
       setPlayerDetails(response.data);
     } catch (err) {
+      if (err.response?.status === 401) {
+        navigate('/login');
+        return;
+      }
       console.error('Failed to load player details:', err);
-      console.error('Error response:', err.response?.data);
-      console.error('Error status:', err.response?.status);
-      setPlayerDetails(null); // This will trigger the error alert
+      setPlayerDetails(null);
     } finally {
       setLoadingDetails(false);
     }
@@ -92,7 +96,7 @@ export default function Stats() {
       ) : (
         <Row>
           {stats.map((player, index) => (
-            <Col key={player.username} lg={4} xl={3} className="mb-4">
+            <Col key={player.uid} lg={4} xl={3} className="mb-4">
               <Card
                 className="h-100 shadow-sm"
                 style={{ cursor: 'pointer' }}
@@ -100,7 +104,7 @@ export default function Stats() {
               >
                 <Card.Header className="bg-primary text-white py-3">
                   <div className="d-flex justify-content-between align-items-center">
-                    <h5 className="mb-0" style={{ fontSize: '1.25rem' }}>{player.full_name}</h5>
+                    <h5 className="mb-0" style={{ fontSize: '1.25rem' }}>{player.display_name}</h5>
                     <Badge bg="light" text="dark" className="fs-6">
                       #{index + 1}
                     </Badge>
@@ -108,7 +112,6 @@ export default function Stats() {
                 </Card.Header>
 
                 <Card.Body className="pb-2">
-                  {/* Overall Record Section */}
                   <div className="mb-4">
                     <h6 className="d-flex align-items-center mb-3">
                       <FaTrophy className="me-2 text-warning" />
@@ -147,7 +150,6 @@ export default function Stats() {
                     </div>
                   </div>
 
-                  {/* Lock Record Section */}
                   <div className="mb-4">
                     <h6 className="d-flex align-items-center mb-3">
                       <FaLock className="me-2 text-danger" />
@@ -183,7 +185,6 @@ export default function Stats() {
                     </div>
                   </div>
 
-                  {/* Additional Stats */}
                   <div className="border-top pt-2">
                     <Row className="text-center">
                       <Col xs={6}>
@@ -203,7 +204,6 @@ export default function Stats() {
         </Row>
       )}
 
-      {/* Mobile-specific styles */}
       <style>{`
         @media (max-width: 767.98px) {
           .stats-modal .modal-header {
@@ -276,7 +276,7 @@ export default function Stats() {
             <FaChartLine className="me-2 me-md-3 text-primary icon-size" style={{ fontSize: '1.5rem' }} />
             <div>
               <div className="fw-bold" style={{ fontSize: '1.25rem' }}>
-                {selectedPlayer?.full_name}'s Detailed Stats
+                {selectedPlayer?.display_name}'s Detailed Stats
               </div>
             </div>
           </Modal.Title>
@@ -291,7 +291,6 @@ export default function Stats() {
             </div>
           ) : playerDetails ? (
             <div>
-              {/* Show message if no data */}
               {(!playerDetails.favorite_teams || playerDetails.favorite_teams.length === 0) &&
                !playerDetails.least_favorite_team &&
                (!playerDetails.current_streak || playerDetails.current_streak.result === 'N/A') &&
@@ -306,7 +305,6 @@ export default function Stats() {
                 </Alert>
               )}
 
-              {/* Streaks Section - Enhanced */}
               {(playerDetails.current_streak || playerDetails.best_streak || playerDetails.worst_streak) && (
                 <div className="mb-section mb-md-3">
                   <h6 className="mb-1 mb-md-2 fw-bold text-dark" style={{ fontSize: '1rem' }}>Streak Performance</h6>
@@ -420,7 +418,6 @@ export default function Stats() {
                 </div>
               )}
 
-              {/* Favorite Team and Least Favorite Team - Enhanced */}
               <div className="mb-section mb-md-3">
                 <h6 className="mb-1 mb-md-2 fw-bold text-dark" style={{ fontSize: '1rem' }}>Team Preferences</h6>
                 <Row className="g-1 g-md-2">
@@ -498,10 +495,9 @@ export default function Stats() {
                 </Row>
               </div>
 
-              {/* Weekly Performance - Best and Worst Weeks */}
               {(playerDetails.best_week || playerDetails.worst_week) && (
                 <div className="mb-section mb-md-3">
-                  <h6 className="mb-1 mb-md-2 fw-bold text-dark" style={{ fontSize: '1rem' }}>Weekly Performance</h6>
+                  <h6 className="mb-1 mb-md-2 fw-bold text-dark" style={{ fontSize: '1rem' }}>First / second half</h6>
                   <Row className="g-1 g-md-2">
                     {playerDetails.best_week && (
                       <Col xs={12} md={6}>
@@ -515,7 +511,7 @@ export default function Stats() {
                           <Card.Body className="p-1 p-md-2">
                             <div className="d-flex align-items-center mb-card mb-md-2">
                               <FaChartLine className="me-1 text-success icon-size" style={{ fontSize: '0.9rem' }} />
-                              <small className="fw-semibold text-success" style={{ fontSize: '0.85rem' }}>Best Week</small>
+                              <small className="fw-semibold text-success" style={{ fontSize: '0.85rem' }}>Best half</small>
                             </div>
                             <div className="mb-card mb-md-2">
                               <div className="fw-bold mb-1" style={{ fontSize: '1.1rem', color: '#155724' }}>
@@ -568,7 +564,7 @@ export default function Stats() {
                           <Card.Body className="p-1 p-md-2">
                             <div className="d-flex align-items-center mb-card mb-md-2">
                               <FaArrowDown className="me-1 text-danger icon-size" style={{ fontSize: '0.9rem' }} />
-                              <small className="fw-semibold text-danger" style={{ fontSize: '0.85rem' }}>Worst Week</small>
+                              <small className="fw-semibold text-danger" style={{ fontSize: '0.85rem' }}>Worst half</small>
                             </div>
                             <div className="mb-card mb-md-2">
                               <div className="fw-bold mb-1" style={{ fontSize: '1.1rem', color: '#721c24' }}>
@@ -613,7 +609,6 @@ export default function Stats() {
                 </div>
               )}
 
-              {/* Best Game and Worst Game - Enhanced */}
               {(playerDetails.best_game || playerDetails.worst_game) && (
                 <div className="mb-section mb-md-2">
                   <h6 className="mb-1 mb-md-2 fw-bold text-dark" style={{ fontSize: '1rem' }}>Notable Games</h6>

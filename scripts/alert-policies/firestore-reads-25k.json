@@ -1,0 +1,24 @@
+{
+  "displayName": "Firestore: 25k reads per day",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Daily document reads >= 25,000",
+      "conditionThreshold": {
+        "aggregations": [
+          {
+            "alignmentPeriod": "86400s",
+            "perSeriesAligner": "ALIGN_SUM"
+          }
+        ],
+        "comparison": "COMPARISON_GE",
+        "duration": "0s",
+        "filter": "resource.type=\"firestore_instance\" AND metric.type=\"firestore.googleapis.com/document/read_count\"",
+        "thresholdValue": 25000,
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ]
+}

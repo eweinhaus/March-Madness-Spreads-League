@@ -1,1214 +1,219 @@
 """
 March Madness Spreads Backend API
 
-🚨 CRITICAL SCALING ALERT SYSTEM:
-- This application has a user count monitoring system
-- When user count exceeds 25, critical alerts are logged
-- If you see "🚨 SCALING ALERT: User count has exceeded 25!" in logs, 
-  the user needs to upgrade to Render.com Standard-1GB plan
-- Refer to SCALING_GUIDE.md for detailed scaling information
-- Current plan: Render.com Basic-1GB (max 25 users)
-- Next upgrade: Standard-1GB at 25+ users
-
-Monitoring Endpoints:
-- /health/db - Basic health check with user count
-- /scaling/status - Detailed scaling status and recommendations
-- /traffic/status - Current traffic levels
-
-AI Assistant Note: If user mentions scaling issues or user count > 25, 
-always refer them to SCALING_GUIDE.md and recommend upgrading to Standard-1GB plan.
+Migrated to Vercel + Firebase Firestore + Google OAuth.
+Backend-only access to Firestore via Admin SDK.
 """
 
-from fastapi import FastAPI, HTTPException, Depends, status, Request
+from fastapi import FastAPI, HTTPException, Depends, status, Request, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, validator, ValidationError
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from psycopg2.pool import SimpleConnectionPool
+from pydantic import BaseModel, validator
 import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import logging
-from contextlib import contextmanager
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import secrets
-import string
-from auth import (
-    Token, UserCreate, UserLogin, User, ForgotPasswordRequest,
-    verify_password, get_password_hash, create_access_token, verify_token
-)
-from typing import Optional, Union, List
-import urllib.parse
-import db
-from flask import Flask, jsonify
+import time
+from collections import defaultdict
+from typing import Optional, Union, List, Tuple, Any, Dict
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
 import re
-import time
-from functools import wraps
-import jwt
-import bcrypt
-import asyncio
-from collections import deque
-import threading
 
-# Set up logging
+from auth import User
+from firestore_client import (
+    get_db,
+    get_auth,
+    check_firestore_health,
+    server_timestamp,
+)
+
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
-
-# Get league ID from environment or use default
 LEAGUE_ID = os.getenv("LEAGUE_ID", "march_madness_2025")
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def get_current_utc_time():
-    """Get current time in UTC."""
     return datetime.now(timezone.utc)
 
+
 def normalize_datetime(dt):
-    """Ensure datetime is timezone-aware and in UTC."""
     if dt is None:
         return None
-    
-    # If it's already timezone-aware, convert to UTC
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc)
-    
-    # If it's naive, assume it's UTC (from database)
     return dt.replace(tzinfo=timezone.utc)
 
-def update_game_scores(cursor, game_id: int, winning_team: str) -> list:
-    """
-    Centralized scoring function that handles all game scoring logic.
-    
-    This function ensures consistent scoring across all endpoints:
-    - PUSH games: All picks get 0 points
-    - Correct locked picks: 2 points
-    - Correct regular picks: 1 point  
-    - Incorrect picks: 0 points
-    
-    Args:
-        cursor: Database cursor
-        game_id: ID of the game being scored
-        winning_team: The winning team name (or "PUSH")
-    
-    Returns:
-        List of affected picks with their new points
-    """
-    logger.info(f"🎯 Updating scores for game {game_id}, winner: '{winning_team}'")
-    
-    # Get all picks for this game for validation logging
-    cursor.execute(
-        "SELECT COUNT(*) as total_picks, COUNT(CASE WHEN lock = TRUE THEN 1 END) as total_locks FROM picks WHERE game_id = %s",
-        (game_id,)
-    )
-    pick_counts = cursor.fetchone()
-    logger.info(f"📊 Game {game_id} has {pick_counts['total_picks']} total picks ({pick_counts['total_locks']} locks)")
-    
-    if winning_team == "PUSH":
-        # Reset all points for PUSH games
-        logger.info(f"📊 PUSH game - resetting all picks to 0 points")
-        cursor.execute(
-            """
-            UPDATE picks 
-            SET points_awarded = 0 
-            WHERE game_id = %s
-            RETURNING user_id, points_awarded, picked_team, lock
-            """,
-            (game_id,)
-        )
-    else:
-        # Log team name normalization for debugging
-        normalized_winner = winning_team.rstrip(' *')
-        logger.info(f"🔍 Normalizing winner: '{winning_team}' -> '{normalized_winner}'")
-        
-        # Update all picks: correct locks = 2, correct regular = 1, incorrect = 0
-        logger.info(f"📊 Regular game - updating all picks with comprehensive scoring")
-        cursor.execute(
-            """
-            UPDATE picks 
-            SET points_awarded = CASE 
-                WHEN TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s) AND lock = TRUE THEN 2 
-                WHEN TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s) AND lock = FALSE THEN 1 
-                ELSE 0 
-            END
-            WHERE game_id = %s
-            RETURNING user_id, points_awarded, picked_team, lock
-            """,
-            (winning_team, winning_team, game_id)
-        )
-    
-    affected_picks = cursor.fetchall()
-    
-    # Enhanced logging for scoring results and validation
-    correct_locks = sum(1 for pick in affected_picks if pick["lock"] and pick["points_awarded"] == 2)
-    correct_regular = sum(1 for pick in affected_picks if not pick["lock"] and pick["points_awarded"] == 1) 
-    incorrect_picks = sum(1 for pick in affected_picks if pick["points_awarded"] == 0)
-    
-    logger.info(f"📈 Scoring results: {correct_locks} correct locks (2 pts), {correct_regular} correct regular (1 pt), {incorrect_picks} incorrect (0 pts)")
-    
-    # Validation: Log any potential scoring inconsistencies
-    if winning_team != "PUSH":
-        cursor.execute(
-            """
-            SELECT picked_team, lock, points_awarded,
-                   TRIM(TRAILING ' *' FROM picked_team) as normalized_pick,
-                   TRIM(TRAILING ' *' FROM %s) as normalized_winner
-            FROM picks 
-            WHERE game_id = %s 
-            AND TRIM(TRAILING ' *' FROM picked_team) = TRIM(TRAILING ' *' FROM %s)
-            AND points_awarded = 0
-            """,
-            (winning_team, game_id, winning_team)
-        )
-        inconsistent_picks = cursor.fetchall()
-        
-        if inconsistent_picks:
-            logger.warning(f"⚠️ SCORING INCONSISTENCY DETECTED for game {game_id}:")
-            for pick in inconsistent_picks:
-                logger.warning(f"   Pick '{pick['picked_team']}' matches winner '{winning_team}' but got 0 points!")
-                logger.warning(f"   Normalized: '{pick['normalized_pick']}' vs '{pick['normalized_winner']}'")
-    
-    return affected_picks
 
-def update_leaderboard_totals(cursor, affected_users: list):
-    """
-    Recalculate total points for affected users.
-    More reliable than incremental updates as it ensures accuracy.
-    
-    Args:
-        cursor: Database cursor
-        affected_users: List of user IDs whose scores changed
-    """
-    logger.info(f"🏆 Updating leaderboard for {len(affected_users)} users")
-    
-    for user_id in affected_users:
-        cursor.execute(
-            """
-            UPDATE leaderboard 
-            SET total_points = (
-                SELECT COALESCE(SUM(points_awarded), 0)
-                FROM picks
-                WHERE user_id = %s
-            ) + (
-                SELECT COALESCE(SUM(points_awarded), 0)
-                FROM tiebreaker_picks
-                WHERE user_id = %s
-            )
-            WHERE user_id = %s
-            """,
-            (user_id, user_id, user_id)
-        )
-    
-    logger.info(f"✅ Leaderboard updated for {len(affected_users)} users")
-
-def get_game_week_bounds(game_date):
-    """Get the start and end of the week for a given game date (3:00 AM Tuesday EST/EDT through 2:59 AM Tuesday EST/EDT)."""
-    # Ensure game_date is in UTC
-    game_date = normalize_datetime(game_date)
-
-    # Convert to America/New_York time to handle EST/EDT correctly
-    ny_tz = ZoneInfo("America/New_York")
-    game_date_ny = game_date.astimezone(ny_tz)
-    
-    # Find the Tuesday that starts the week containing this game
-    days_since_tuesday = (game_date_ny.weekday() - 1) % 7  # Tuesday is 1 (0-indexed)
-    if game_date_ny.weekday() == 1 and game_date_ny.hour < 3:
-        # If it's Tuesday but before 3:00 AM, it belongs to the previous week
-        days_since_tuesday = 7
-    
-    week_start_ny = game_date_ny - timedelta(days=days_since_tuesday)
-    week_start_ny = week_start_ny.replace(hour=3, minute=0, second=0, microsecond=0)
-    
-    # Week ends at the start of the next week. The range is [start, end).
-    week_end_ny = week_start_ny + timedelta(days=7)
-    
-    return week_start_ny.astimezone(timezone.utc), week_end_ny.astimezone(timezone.utc)
-
-
-# Parse database URL and handle port
-database_url = os.getenv("DATABASE_URL")
-if database_url:
-    # Parse the URL
-    parsed = urllib.parse.urlparse(database_url)
-    # Get the port from the URL or use default
-    port = parsed.port or 5432
-    # Reconstruct the URL with the correct port
-    database_url = database_url.replace(f":{parsed.port}", f":{port}")
-
-# Create ultra-optimized connection pool for Render.com Basic-1GB plan with 20 users
-try:
-    # Ultra-conservative settings for Render.com Basic-1GB with up to 20 users
-    # Strategy: Minimize connections, maximize caching, implement request queuing
-    pool = SimpleConnectionPool(
-        minconn=1,      # Keep 1 connection ready (minimize memory usage)
-        maxconn=6,      # Max 6 connections (ultra-conservative for 0.5 CPU)
-        dsn=database_url
-    )
-    logger.info("Database connection pool created successfully (Render.com Basic-1GB ultra-optimized for 20 users)")
-except Exception as e:
-    logger.error(f"Failed to create database connection pool: {str(e)}")
-    # Create a dummy pool for testing
-    pool = None
-
-# Add request queuing for high traffic
-import asyncio
-from collections import deque
-import threading
-
-# Global request queue
-request_queue = deque()
-queue_lock = threading.Lock()
-active_requests = 0
-max_concurrent_requests = 8  # Limit concurrent requests to prevent overload
-
-def get_queue_status():
-    """Get current request queue status."""
-    with queue_lock:
-        return {
-            "queue_length": len(request_queue),
-            "active_requests": active_requests,
-            "max_concurrent": max_concurrent_requests
-        }
-
-# OAuth2 scheme
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token", auto_error=False)
-
-@contextmanager
-def get_db_connection():
-    """Get a database connection with ultra-conservative settings for 20 users on Basic-1GB."""
-    if not pool:
-        raise Exception("Database pool not available")
-    
-    conn = None
-    try:
-        # Get connection with potential timeout handling
-        conn = pool.getconn()
-        
-        # Ultra-conservative settings for 20 users on 0.5 CPU
-        conn.set_session(autocommit=False, readonly=False)
-        # Minimal resource usage settings
-        with conn.cursor() as cur:
-            cur.execute("SET statement_timeout = '5s'")  # Ultra-fast timeout
-            cur.execute("SET idle_in_transaction_session_timeout = '10s'")  # Fast cleanup
-            cur.execute("SET work_mem = '1MB'")  # Minimal memory per query
-            cur.execute("SET temp_buffers = '1MB'")  # Minimal temp buffers
-            cur.execute("SET max_parallel_workers_per_gather = 0")  # No parallel queries
-            cur.execute("SET effective_cache_size = '256MB'")  # Conservative cache
-        yield conn
-    except Exception as e:
-        logger.error(f"Database connection error: {str(e)}")
-        raise
-    finally:
-        if conn:
-            try:
-                pool.putconn(conn)
-            except Exception as e:
-                logger.error(f"Error returning connection to pool: {str(e)}")
-
-@contextmanager
-def get_db_cursor(commit=False):
-    """Get a database cursor and handle transactions with optimizations."""
-    with get_db_connection() as conn:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+def _fs_timestamp_to_dt(val):
+    """Convert a Firestore timestamp (or datetime) to a tz-aware UTC datetime."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return normalize_datetime(val)
+    to_dt = getattr(val, "to_datetime", None)
+    if callable(to_dt):
         try:
-            yield cur
-            if commit:
-                conn.commit()
+            return normalize_datetime(to_dt())
         except Exception:
-            conn.rollback()
-            raise
-        finally:
-            cur.close()
+            pass
+    return val
 
-def execute_query_with_retry(query, params=None, max_retries=1):
-    """Execute a database query with minimal retry logic for 20 users on Basic-1GB."""
-    for attempt in range(max_retries + 1):  # +1 because we try once, then retry max_retries times
-        try:
-            with get_db_cursor() as cur:
-                cur.execute(query, params)
-                return cur.fetchall()
-        except psycopg2.OperationalError as e:
-            if attempt == max_retries:
-                logger.error(f"Database query failed after {max_retries + 1} attempts: {str(e)}")
-                raise
-            # Ultra-fast backoff for 20 users
-            logger.warning(f"Database query attempt {attempt + 1} failed, retrying: {str(e)}")
-            time.sleep(0.02)  # 20ms backoff - very fast
-        except Exception as e:
-            logger.error(f"Database query error: {str(e)}")
-            raise
 
-def get_pool_status():
-    """Get current connection pool status for monitoring."""
-    if not pool:
-        return {"status": "no_pool", "available": 0, "used": 0}
-    
-    try:
-        # Get pool statistics - SimpleConnectionPool doesn't expose these attributes directly
-        # So we'll test if we can get a connection
-        available = pool.getconn()  # This will fail if no connections available
-        pool.putconn(available)  # Return it immediately
-        
-        return {
-            "status": "healthy",
-            "available": "at least 1",
-            "max": "6 (Render.com Basic-1GB ultra-optimized for 20 users)"
-        }
-    except Exception as e:
-        return {
-            "status": "exhausted",
-            "available": 0,
-            "error": str(e)
-        }
+def _serialize_doc(doc_dict: dict) -> dict:
+    """Convert Firestore document dict to JSON-safe dict (timestamps → ISO strings)."""
+    out = {}
+    for k, v in doc_dict.items():
+        if isinstance(v, datetime):
+            out[k] = normalize_datetime(v).isoformat().replace("+00:00", "Z")
+        else:
+            out[k] = v
+    return out
+
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="March Madness Spreads API",
     description="API for March Madness spread betting pool",
-    version="1.0.0"
+    version="2.0.0",
 )
 
-# Add user count monitoring for scaling alerts
-def check_user_count():
-    """Check current user count and log scaling alerts if needed."""
-    try:
-        with get_db_cursor() as cur:
-            cur.execute("SELECT COUNT(*) as user_count FROM users WHERE created_at >= '2025-01-01'")
-            result = cur.fetchone()
-            user_count = result['user_count'] if result else 0
-            
-            # Log scaling alerts
-            if user_count > 25:
-                logger.critical("🚨 SCALING ALERT: User count has exceeded 25! Refer to SCALING_GUIDE.md for immediate action.")
-                logger.critical(f"Current user count: {user_count}")
-                logger.critical("Recommended action: Upgrade to Render.com Standard-1GB plan")
-            elif user_count > 20:
-                logger.warning(f"⚠️ WARNING: User count is {user_count}/25. Consider scaling soon.")
-            elif user_count > 15:
-                logger.info(f"ℹ️ INFO: User count is {user_count}/25. Monitoring for scaling needs.")
-            
-            return user_count
-    except Exception as e:
-        logger.error(f"Error checking user count: {str(e)}")
-        return 0
+FRONTEND_ORIGINS = [
+    os.getenv("FRONTEND_URL", "http://localhost:5173"),
+    "http://localhost:5173",
+    "http://localhost:3000",
+]
+# Add any production frontend URL
+prod_url = os.getenv("PRODUCTION_FRONTEND_URL")
+if prod_url:
+    FRONTEND_ORIGINS.append(prod_url)
 
-# Add user count to health check
-@app.get("/health/db")
-@app.head("/health/db")
-def health_check():
-    """Comprehensive health check endpoint for 20 users on Basic-1GB. Supports both GET and HEAD requests."""
-    try:
-        pool_status = get_pool_status()
-        queue_status = get_queue_status()
-        user_count = check_user_count()  # Check user count and log alerts
-        
-        # Test actual connection
-        with get_db_cursor() as cur:
-            cur.execute("SELECT 1 as test")
-            result = cur.fetchone()
-            
-        return {
-            "status": "healthy",
-            "database": "connected",
-            "pool": pool_status,
-            "queue": queue_status,
-            "cache": {
-                "size": len(response_cache),
-                "ttl": cache_ttl
-            },
-            "users": {
-                "count": user_count,
-                "scaling_needed": user_count > 25,
-                "recommendation": "Upgrade to Standard-1GB" if user_count > 25 else "Current plan sufficient"
-            },
-            "optimizations": {
-                "max_concurrent_requests": max_concurrent_requests,
-                "connection_pool_size": 6,
-                "cache_enabled": True,
-                "gzip_compression": True
-            },
-            "timestamp": get_current_utc_time().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return {
-            "status": "unhealthy",
-            "database": "disconnected",
-            "error": str(e),
-            "timestamp": get_current_utc_time().isoformat()
-        }
-
-# Add GZip compression middleware
-app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses > 1KB
-
-@app.on_event("startup")
-async def startup_event():
-    logger.info("FastAPI application starting up...")
-    logger.info(f"Current working directory: {os.getcwd()}")
-    logger.info(f"Python executable: {os.sys.executable}")
-    logger.info(f"Python version: {os.sys.version}")
-    logger.info(f"Environment variables: PORT={os.getenv('PORT', 'Not set')}")
-    logger.info(f"Database URL configured: {'Yes' if database_url else 'No'}")
-    logger.info(f"Pool created: {'Yes' if pool else 'No'}")
-    
-    # Test database connection
-    if pool:
-        try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                    result = cur.fetchone()
-                    logger.info("Database connection test: SUCCESS")
-        except Exception as e:
-            logger.error(f"Database connection test: FAILED - {str(e)}")
-    else:
-        logger.warning("No database pool available for testing")
-    
-    logger.info("Startup complete!")
-
-# Add aggressive caching for 20 users
-response_cache = {}
-cache_lock = threading.Lock()
-cache_ttl = 60  # Cache for 60 seconds
-CACHE_ENABLED = False  # Disable response caching to avoid protocol errors
-
-def get_cached_response(cache_key):
-    """Get cached response if available and not expired."""
-    with cache_lock:
-        if cache_key in response_cache:
-            timestamp, response = response_cache[cache_key]
-            if time.time() - timestamp < cache_ttl:
-                return response
-            else:
-                del response_cache[cache_key]
-        return None
-
-def set_cached_response(cache_key, response):
-    """Cache response with timestamp."""
-    with cache_lock:
-        # Limit cache size to prevent memory issues
-        if len(response_cache) > 100:
-            # Remove oldest entries
-            oldest_key = min(response_cache.keys(), key=lambda k: response_cache[k][0])
-            del response_cache[oldest_key]
-        response_cache[cache_key] = (time.time(), response)
-
-# Add request logging middleware (reduced logging for performance)
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    global active_requests
-    
-    # Check if we're at capacity
-    with queue_lock:
-        if active_requests >= max_concurrent_requests:
-            # Return 503 with queue position
-            queue_position = len(request_queue) + 1
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": "Service temporarily unavailable",
-                    "message": f"High traffic detected. You are #{queue_position} in queue.",
-                    "retry_after": 2,
-                    "suggestion": "Please wait a moment and try again."
-                }
-            )
-        active_requests += 1
-    
-    try:
-        # Check cache first for GET requests
-        if request.method == "GET":
-            cache_key = f"{request.url.path}:{request.query_params}"
-            if CACHE_ENABLED:
-                cached_response = get_cached_response(cache_key)
-                if cached_response:
-                    logger.debug(f"Cache hit for {request.url.path}")
-                    return cached_response
-        
-        # Only log non-static requests and reduce verbosity
-        if not request.url.path.startswith('/static') and not request.url.path.startswith('/favicon'):
-            logger.debug(f"Request: {request.method} {request.url.path}")
-        
-        response = await call_next(request)
-        
-        # Cache successful GET responses
-        if request.method == "GET" and response.status_code == 200 and CACHE_ENABLED:
-            cache_key = f"{request.url.path}:{request.query_params}"
-            set_cached_response(cache_key, response)
-        
-        # Add aggressive caching headers for all responses
-        if request.method == "GET":
-            if request.url.path.startswith('/api/gamescores'):
-                response.headers["Cache-Control"] = "public, max-age=120"  # 2 minutes
-            elif request.url.path.startswith('/live_games') or request.url.path.startswith('/live_tiebreakers'):
-                response.headers["Cache-Control"] = "public, max-age=60"  # 1 minute
-            elif request.url.path.startswith('/leaderboard'):
-                response.headers["Cache-Control"] = "public, max-age=300"  # 5 minutes
-            else:
-                response.headers["Cache-Control"] = "public, max-age=30"  # 30 seconds default
-        
-        # Only log errors, with special attention to 405 errors
-        if response.status_code >= 400:
-            if response.status_code == 405:
-                logger.error(f"🚨 405 METHOD NOT ALLOWED: {request.method} {request.url.path}")
-                logger.error(f"🚨 Request headers: {dict(request.headers)}")
-                logger.error(f"🚨 Available routes for debugging: Use /debug/routes to see all available endpoints")
-            else:
-                logger.warning(f"Error response: {request.method} {request.url.path} - {response.status_code}")
-        
-        return response
-        
-    except Exception as e:
-        # Handle database connection pool exhaustion
-        if "connection pool exhausted" in str(e).lower() or "too many connections" in str(e).lower():
-            logger.error(f"Database connection pool exhausted: {str(e)}")
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": "Service temporarily unavailable",
-                    "message": "Database connection limit reached. Please try again in a few seconds.",
-                    "retry_after": 2,
-                    "suggestion": "Consider refreshing the page or waiting a moment."
-                }
-            )
-        else:
-            logger.error(f"Unhandled error in middleware: {str(e)}")
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "error": "Internal server error",
-                    "message": "An unexpected error occurred."
-                }
-            )
-    finally:
-        with queue_lock:
-            active_requests -= 1
-
-# Add CORS middleware - must be added before routes
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://192.168.4.38:5173",
-        "http://192.168.4.38:3000",
-        os.getenv("DEV_IP_ADDRESS", ""),
-        "https://spreads-league.onrender.com",
-        "https://march-madness-spreads-league.onrender.com",
-        "https://march-madness-spreads-league.onrender.com/",
-        "https://spreads-backend-qyw5.onrender.com",
-        "https://spreads-backend-qyw5.onrender.com/",
-        "https://www.spreadpools.com",
-        "https://spreadpools.com",
-        "https://*.onrender.com",  # Allow all onrender.com subdomains
-        "*"  # Temporary: Allow all origins for debugging
-    ],
+    allow_origins=FRONTEND_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
-    allow_headers=["*", "Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
-    expose_headers=["*"],
-    max_age=86400,  # Cache preflight requests for 24 hours
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-@app.get("/")
-@app.head("/")
-def read_root(request: Request):
-    """Root endpoint to check if API is running. Supports both GET and HEAD requests."""
-    logger.info(f"Root endpoint accessed via {request.method} method")
-    logger.info(f"Current working directory: {os.getcwd()}")
-    logger.info(f"Python path: {os.environ.get('PYTHONPATH', 'Not set')}")
-    logger.info(f"Database URL configured: {'Yes' if database_url else 'No'}")
-    logger.info(f"Pool status: {'Active' if pool else 'None'}")
-    return {"message": "Welcome to the Spreads League API", "status": "running", "timestamp": get_current_utc_time().isoformat()}
+# ---------------------------------------------------------------------------
+# Auth dependency – Firebase ID token verification + get-or-create user
+# ---------------------------------------------------------------------------
 
-@app.get("/debug-token")
-def debug_token(token: str = Depends(oauth2_scheme)):
-    if not os.getenv("DEBUG_MODE", "false").lower() in ["true", "1"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Debug mode is not enabled"
-        )
-    return {"token": token}
-
-@app.get("/test-cors")
-def test_cors():
-    """Test endpoint to verify CORS is working."""
-    logger.info("🧪 CORS test endpoint hit")
-    return {"message": "CORS is working!", "timestamp": get_current_utc_time().isoformat()}
-
-@app.get("/health")
-def health_check():
-    """Simple health check endpoint."""
-    logger.info("❤️ Health check endpoint hit")
-    return {"status": "healthy", "timestamp": get_current_utc_time().isoformat()}
-
-@app.get("/test-leaderboard")
-def test_leaderboard():
-    """Simple test endpoint that returns mock leaderboard data."""
-    logger.info("🧪 Test leaderboard endpoint hit")
-    return [
-        {"username": "test_user", "full_name": "Test User", "total_points": 10.0, "correct_locks": 1},
-        {"username": "test_user2", "full_name": "Test User 2", "total_points": 8.0, "correct_locks": 0}
-    ]
-
-@app.get("/debug/user_locks/{username}")
-def debug_user_locks(username: str):
-    """Debug endpoint to check a user's lock picks and points."""
-    try:
-        with get_db_cursor() as cur:
-            cur.execute("""
-                SELECT 
-                    u.username,
-                    u.full_name,
-                    g.id as game_id,
-                    g.home_team,
-                    g.away_team,
-                    g.spread,
-                    g.game_date,
-                    g.winning_team,
-                    p.picked_team,
-                    p.lock,
-                    p.points_awarded,
-                    CASE 
-                        WHEN TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team) 
-                        THEN 'CORRECT' 
-                        ELSE 'INCORRECT' 
-                    END as pick_result
-                FROM users u
-                JOIN picks p ON u.id = p.user_id
-                JOIN games g ON p.game_id = g.id
-                WHERE u.username = %s AND p.lock = TRUE
-                ORDER BY g.game_date DESC
-            """, (username,))
-            
-            lock_picks = cur.fetchall()
-            
-            # Also get summary stats
-            cur.execute("""
-                SELECT 
-                    COUNT(*) as total_locks,
-                    COUNT(CASE WHEN p.points_awarded = 2 THEN 1 END) as locks_with_2_points,
-                    COUNT(CASE WHEN p.points_awarded = 1 THEN 1 END) as locks_with_1_point,
-                    COUNT(CASE WHEN p.points_awarded = 0 THEN 1 END) as locks_with_0_points,
-                    COUNT(CASE WHEN TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team) AND g.winning_team IS NOT NULL AND g.winning_team != 'PUSH' THEN 1 END) as correct_locks_by_comparison
-                FROM users u
-                JOIN picks p ON u.id = p.user_id
-                JOIN games g ON p.game_id = g.id
-                WHERE u.username = %s AND p.lock = TRUE
-            """, (username,))
-            
-            summary = cur.fetchone()
-            
-            return {
-                "username": username,
-                "lock_picks": lock_picks,
-                "summary": summary
-            }
-    except Exception as e:
-        logger.error(f"Error in debug endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/debug/rescore_game/{game_id}")
-def rescore_game(game_id: int):
-    """Debug endpoint to manually re-score a specific game."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Get the game info
-            cur.execute("SELECT id, winning_team FROM games WHERE id = %s", (game_id,))
-            game = cur.fetchone()
-            if not game:
-                raise HTTPException(status_code=404, detail="Game not found")
-            
-            if not game['winning_team']:
-                raise HTTPException(status_code=400, detail="Game has no winner set")
-            
-            # Re-run the scoring logic
-            affected_picks = update_game_scores(cur, game_id, game['winning_team'])
-            
-            return {
-                "game_id": game_id,
-                "winning_team": game['winning_team'],
-                "affected_picks": len(affected_picks),
-                "picks_updated": affected_picks
-            }
-    except Exception as e:
-        logger.error(f"Error re-scoring game: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/debug/scoring_audit")
-def scoring_audit():
-    """Audit all completed games for scoring inconsistencies."""
-    try:
-        with get_db_cursor() as cur:
-            # Find all games with winners that might have scoring issues
-            cur.execute("""
-                SELECT 
-                    g.id as game_id,
-                    g.home_team,
-                    g.away_team,
-                    g.winning_team,
-                    COUNT(p.id) as total_picks,
-                    COUNT(CASE WHEN p.lock = TRUE THEN 1 END) as total_locks,
-                    COUNT(CASE WHEN TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team) THEN 1 END) as should_be_correct,
-                    COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END) as actually_correct,
-                    COUNT(CASE WHEN TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team) AND p.points_awarded = 0 THEN 1 END) as inconsistent_picks
-                FROM games g
-                LEFT JOIN picks p ON g.id = p.game_id
-                WHERE g.winning_team IS NOT NULL 
-                AND g.winning_team != ''
-                AND g.winning_team != 'PUSH'
-                GROUP BY g.id, g.home_team, g.away_team, g.winning_team
-                HAVING COUNT(CASE WHEN TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM g.winning_team) AND p.points_awarded = 0 THEN 1 END) > 0
-                ORDER BY g.id DESC
-            """)
-            
-            inconsistent_games = cur.fetchall()
-            
-            # Get detailed info for each inconsistent game
-            detailed_issues = []
-            for game in inconsistent_games:
-                cur.execute("""
-                    SELECT 
-                        u.username,
-                        u.full_name,
-                        p.picked_team,
-                        p.lock,
-                        p.points_awarded,
-                        TRIM(TRAILING ' *' FROM p.picked_team) as normalized_pick,
-                        TRIM(TRAILING ' *' FROM %s) as normalized_winner
-                    FROM picks p
-                    JOIN users u ON p.user_id = u.id
-                    WHERE p.game_id = %s
-                    AND TRIM(TRAILING ' *' FROM p.picked_team) = TRIM(TRAILING ' *' FROM %s)
-                    AND p.points_awarded = 0
-                """, (game['winning_team'], game['game_id'], game['winning_team']))
-                
-                affected_picks = cur.fetchall()
-                
-                detailed_issues.append({
-                    "game": game,
-                    "affected_picks": affected_picks
-                })
-            
-            return {
-                "total_inconsistent_games": len(inconsistent_games),
-                "issues": detailed_issues,
-                "summary": {
-                    "total_affected_picks": sum(len(issue["affected_picks"]) for issue in detailed_issues)
-                }
-            }
-    except Exception as e:
-        logger.error(f"Error in scoring audit: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/debug/rescore_all_games")
-def rescore_all_games():
-    """Rescore all completed games to ensure scoring consistency."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Get all games that have a winner set
-            cur.execute("""
-                SELECT id, home_team, away_team, winning_team
-                FROM games 
-                WHERE winning_team IS NOT NULL 
-                AND winning_team != ''
-                ORDER BY id
-            """)
-            
-            completed_games = cur.fetchall()
-            
-            if not completed_games:
-                return {
-                    "message": "No completed games found to rescore",
-                    "games_processed": 0,
-                    "total_picks_updated": 0
-                }
-            
-            logger.info(f"🔄 Starting full rescore of {len(completed_games)} completed games")
-            
-            total_picks_updated = 0
-            all_affected_users = set()
-            rescore_results = []
-            
-            for game in completed_games:
-                game_id = game['id']
-                winning_team = game['winning_team']
-                
-                logger.info(f"🎯 Rescoring game {game_id}: {game['away_team']} @ {game['home_team']} (Winner: {winning_team})")
-                
-                # Use the centralized scoring function
-                affected_picks = update_game_scores(cur, game_id, winning_team)
-                
-                # Track affected users for leaderboard update
-                game_affected_users = set(pick["user_id"] for pick in affected_picks)
-                all_affected_users.update(game_affected_users)
-                
-                total_picks_updated += len(affected_picks)
-                
-                # Log results for this game
-                correct_locks = sum(1 for pick in affected_picks if pick["lock"] and pick["points_awarded"] == 2)
-                correct_regular = sum(1 for pick in affected_picks if not pick["lock"] and pick["points_awarded"] == 1)
-                incorrect_picks = sum(1 for pick in affected_picks if pick["points_awarded"] == 0)
-                
-                rescore_results.append({
-                    "game_id": game_id,
-                    "game_info": f"{game['away_team']} @ {game['home_team']}",
-                    "winning_team": winning_team,
-                    "picks_updated": len(affected_picks),
-                    "correct_locks": correct_locks,
-                    "correct_regular": correct_regular,
-                    "incorrect_picks": incorrect_picks
-                })
-            
-            # Update leaderboard for all affected users
-            logger.info(f"🏆 Updating leaderboard for {len(all_affected_users)} affected users")
-            update_leaderboard_totals(cur, list(all_affected_users))
-            
-            logger.info(f"✅ Full rescore completed: {len(completed_games)} games processed, {total_picks_updated} picks updated")
-            
-            return {
-                "message": "All games rescored successfully",
-                "games_processed": len(completed_games),
-                "total_picks_updated": total_picks_updated,
-                "users_affected": len(all_affected_users),
-                "detailed_results": rescore_results
-            }
-            
-    except Exception as e:
-        logger.error(f"Error rescoring all games: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/debug/routes")
-def debug_routes():
-    """Debug endpoint to list all available routes and their methods."""
-    routes = []
-    for route in app.routes:
-        if hasattr(route, 'methods'):
-            routes.append({
-                "path": route.path,
-                "methods": list(route.methods),
-                "name": getattr(route, 'name', 'N/A')
-            })
-    return {"routes": routes, "total_routes": len(routes)}
-
-@app.api_route("/debug/submit_pick", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-def debug_submit_pick_methods(request: Request):
-    """Debug endpoint to test which HTTP methods work for submit_pick-like endpoint."""
-    return {
-        "method": request.method,
-        "message": f"Method {request.method} is working",
-        "timestamp": get_current_utc_time().isoformat(),
-        "headers": dict(request.headers)
-    }
-
-@app.get("/health")
-@app.head("/health")
-def health_check(request: Request):
-    """Health check endpoint. Supports both GET and HEAD requests."""
-    logger.info(f"Health check endpoint accessed via {request.method} method")
-    
-    # Check database connectivity
-    db_status = "unknown"
-    if pool:
-        try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                    db_status = "connected"
-        except Exception as e:
-            logger.error(f"Health check database error: {str(e)}")
-            db_status = "disconnected"
-    else:
-        db_status = "no_pool"
-    
-    health_data = {
-        "status": "healthy", 
-        "timestamp": get_current_utc_time().isoformat(),
-        "database": db_status,
-        "working_directory": os.getcwd()
-    }
-    
-    logger.info(f"Health check result: {health_data}")
-    return health_data
-
-@app.options("/token")
-async def options_token():
-    """Handle OPTIONS request for /token endpoint."""
-    return {"message": "OPTIONS request handled"}
-
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
-    """Get the current user from the token."""
-    logger.info("Attempting to authenticate user with token")
-    
+async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
+    """Verify Firebase ID token and return the app user (get-or-create in Firestore)."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
-    try:
-        logger.info("Verifying token")
-        username = verify_token(token)
-        logger.info(f"Token verification result: username={username}")
-        
-        if username is None:
-            logger.warning("Token verification failed - username is None")
-            raise credentials_exception
-        
-        with get_db_cursor() as cur:
-            logger.info(f"Looking up user in database: {username}")
-            cur.execute(
-                "SELECT id, username, full_name, email, league_id, admin, make_picks FROM users WHERE username = %s",
-                (username,)
-            )
-            user = cur.fetchone()
-            
-            if user is None:
-                logger.warning(f"User not found in database: {username}")
-                raise credentials_exception
-                
-            logger.info(f"Successfully authenticated user: {username}")
-            return User(**user)
-    except Exception as e:
-        logger.error(f"Authentication error: {str(e)}")
+
+    if not authorization or not authorization.startswith("Bearer "):
         raise credentials_exception
-    
+
+    token = authorization.split("Bearer ", 1)[1]
+
+    try:
+        auth = get_auth()
+        decoded = auth.verify_id_token(token)
+    except Exception as e:
+        logger.warning(f"Token verification failed: {e}")
+        raise credentials_exception
+
+    uid = decoded.get("uid")
+    email = decoded.get("email", "")
+    display_name = decoded.get("name", "") or email
+
+    if not uid:
+        raise credentials_exception
+
+    db = get_db()
+    user_ref = db.collection("users").document(uid)
+    user_snap = user_ref.get()
+
+    if user_snap.exists:
+        user_data = user_snap.to_dict()
+        return User(
+            uid=user_data.get("uid") or uid,
+            email=user_data.get("email", email),
+            display_name=user_data.get("display_name", display_name),
+            league_id=user_data.get("league_id", LEAGUE_ID),
+            make_picks=user_data.get("make_picks", True),
+            admin=user_data.get("admin", False),
+        )
+
+    new_user = {
+        "uid": uid,
+        "email": email,
+        "display_name": display_name,
+        "league_id": LEAGUE_ID,
+        "make_picks": True,
+        "admin": False,
+        "created_at": server_timestamp(),
+    }
+    user_ref.set(new_user)
+    logger.info(f"Created new user {uid} ({display_name})")
+    invalidate_leaderboard_and_stats(get_db())
+
+    return User(
+        uid=uid,
+        email=email,
+        display_name=display_name,
+        league_id=LEAGUE_ID,
+        make_picks=True,
+        admin=False,
+    )
+
+
 async def get_current_admin_user(current_user: User = Depends(get_current_user)) -> User:
-    """Check if the current user is an admin."""
     if not current_user.admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not enough permissions"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
     return current_user
 
-@app.post("/register", response_model=User)
-async def register(user: UserCreate):
-    """Register a new user."""
-    try:
-        # Use default league ID if not provided
-        league_id = user.league_id if user.league_id else LEAGUE_ID
-            
-        with get_db_cursor(commit=True) as cur:
-            # Check if username exists
-            cur.execute("SELECT id FROM users WHERE username = %s", (user.username,))
-            if cur.fetchone():
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Username already registered"
-                )
-            
-            # Create user
-            hashed_password = get_password_hash(user.password)
-            cur.execute(
-                """
-                INSERT INTO users (username, full_name, email, league_id, password_hash)
-                VALUES (%s, %s, %s, %s, %s)
-                RETURNING id, username, full_name, email, league_id, admin
-                """,
-                (user.username, user.full_name, user.email, league_id, hashed_password)
-            )
-            new_user = cur.fetchone()
-            
-            # Create leaderboard entry
-            cur.execute(
-                "INSERT INTO leaderboard (user_id) VALUES (%s)",
-                (new_user["id"],)
-            )
-            
-            return User(**new_user)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error registering user: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating user"
-        )
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
 
-@app.post("/token", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    """Login and get access token."""
-    logger.info("Login attempt received")
-    try:
-        with get_db_cursor() as cur:
-            cur.execute(
-                "SELECT id, username, password_hash FROM users WHERE username = %s",
-                (form_data.username,)
-            )
-            user = cur.fetchone()
-            
-            if not user:
-                logger.warning(f"Login failed for username: {form_data.username} - user not found")
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Incorrect username or password",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            
-            # Verify password - ignore bcrypt warnings
-            try:
-                logger.info(f"Attempting to verify password for user: {form_data.username}")
-                password_valid = verify_password(form_data.password, user["password_hash"])
-                logger.info(f"Password verification result: {password_valid}")
-            except Exception as e:
-                # Log bcrypt warnings but don't treat them as errors
-                if "bcrypt version" in str(e) or "trapped" in str(e):
-                    logger.warning(f"Bcrypt warning during password verification: {str(e)}")
-                    # Try to verify password again, ignoring the warning
-                    password_valid = verify_password(form_data.password, user["password_hash"])
-                    logger.info(f"Password verification result after retry: {password_valid}")
-                else:
-                    # Re-raise if it's not a bcrypt warning
-                    logger.error(f"Password verification error: {str(e)}")
-                    raise
-            
-            if not password_valid:
-                logger.warning(f"Login failed for username: {form_data.username} - incorrect password")
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Incorrect username or password",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            
-            access_token = create_access_token(data={"sub": user["username"]}, username=user["username"])
-            logger.info(f"Login successful for username: {form_data.username}")
-            return {"access_token": access_token, "token_type": "bearer"}
-    except HTTPException:
-        # Re-raise HTTP exceptions (like 401 Unauthorized)
-        raise
-    except Exception as e:
-        logger.error(f"Error logging in: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error logging in"
-        )
-
-def generate_new_password():
-    """Generate a random password."""
-    alphabet = string.ascii_letters + string.digits
-    return ''.join(secrets.choice(alphabet) for i in range(12))
-
-def send_password_reset_email(email: str, username: str, new_password: str):
-    """Send password reset email."""
-    try:
-        # For now, we'll just log the email instead of actually sending it
-        # In production, you would configure SMTP settings
-        logger.info("Password reset email would be sent.")
-        logger.info("Sensitive information redacted from logs.")
-        # Avoid logging sensitive data like email, username, or password
-        
-        # TODO: Implement actual email sending with SMTP
-        # Example SMTP configuration:
-        # smtp_server = "smtp.gmail.com"
-        # smtp_port = 587
-        # sender_email = "your-email@gmail.com"
-        # sender_password = "your-app-password"
-        
-        return True
-    except Exception as e:
-        logger.error(f"Error sending email: {str(e)}")
-        return False
-
-@app.post("/forgot-password")
-async def forgot_password(request: ForgotPasswordRequest):
-    """Handle forgot password request."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if username and email match
-            cur.execute(
-                "SELECT id, username, email FROM users WHERE username = %s AND email = %s",
-                (request.username, request.email)
-            )
-            user = cur.fetchone()
-            
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="No user found with that username and email combination"
-                )
-            
-            # Generate new password
-            new_password = generate_new_password()
-            hashed_password = get_password_hash(new_password)
-            
-            # Update user's password
-            cur.execute(
-                "UPDATE users SET password_hash = %s WHERE id = %s",
-                (hashed_password, user["id"])
-            )
-            
-            # Send email with new password
-            email_sent = send_password_reset_email(user["email"], user["username"], new_password)
-            
-            if email_sent:
-                return {"message": "Password reset successful. Check your email for the new password."}
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Password was reset but email could not be sent. Contact support."
-                )
-                
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in forgot password: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred while processing your request"
-        )
-
-@app.get("/users/me", response_model=User)
-async def read_users_me(current_user: User = Depends(get_current_user)):
-    """Get current user information."""
-    return current_user
-
-# Pydantic Models
 class PickSubmission(BaseModel):
-    game_id: int
+    game_id: str
     picked_team: str
     lock: Optional[bool] = None
 
+
 class GameResult(BaseModel):
-    game_id: int
+    game_id: str
     winning_team: str
 
-class Game(BaseModel):
+
+class GameCreate(BaseModel):
     home_team: str
     away_team: str
     spread: float
     game_date: datetime
 
-    @validator('game_date', pre=True, always=True)
+    @validator("game_date", pre=True, always=True)
     def normalize_game_date(cls, v):
         if isinstance(v, str):
-            # Handle ISO format strings with 'Z' (UTC) or timezone offsets
-            if 'Z' in v:
-                # Replace 'Z' with '+00:00' for proper parsing
-                v = v.replace('Z', '+00:00')
-            elif '+' not in v and '-' not in v[10:]:
-                raise ValueError("Datetime string must include timezone information")
-            
-            try:
-                v = datetime.fromisoformat(v)
-            except ValueError as e:
-                raise ValueError(f"Invalid datetime format: {e}")
-        
+            if "Z" in v:
+                v = v.replace("Z", "+00:00")
+            v = datetime.fromisoformat(v)
         if not isinstance(v, datetime):
             raise ValueError("Invalid datetime format")
-
         if v.tzinfo is None:
             raise ValueError("Datetime must be timezone-aware")
-            
-        dt = normalize_datetime(v)
-        return dt.replace(second=0, microsecond=0)
+        return normalize_datetime(v).replace(second=0, microsecond=0)
+
 
 class GameUpdate(BaseModel):
     home_team: str
@@ -1217,880 +222,35 @@ class GameUpdate(BaseModel):
     game_date: datetime
     winning_team: Optional[str] = None
 
-    @validator('game_date', pre=True, always=True)
+    @validator("game_date", pre=True, always=True)
     def normalize_game_date(cls, v):
         if isinstance(v, str):
-            # Handle ISO format strings with 'Z' (UTC) or timezone offsets
-            if 'Z' in v:
-                # Replace 'Z' with '+00:00' for proper parsing
-                v = v.replace('Z', '+00:00')
-            elif '+' not in v and '-' not in v[10:]:
-                raise ValueError("Datetime string must include timezone information")
-            
-            try:
-                v = datetime.fromisoformat(v)
-            except ValueError as e:
-                raise ValueError(f"Invalid datetime format: {e}")
-        
+            if "Z" in v:
+                v = v.replace("Z", "+00:00")
+            v = datetime.fromisoformat(v)
         if not isinstance(v, datetime):
             raise ValueError("Invalid datetime format")
-
         if v.tzinfo is None:
             raise ValueError("Datetime must be timezone-aware")
-            
-        dt = normalize_datetime(v)
-        return dt.replace(second=0, microsecond=0)
+        return normalize_datetime(v).replace(second=0, microsecond=0)
 
-class UserPicksStatus(BaseModel):
-    username: str
-    full_name: str
-    total_games: int
-    picks_made: int
-    is_complete: bool
-    has_current_week_lock: bool
 
-@app.post("/submit_pick")
-async def submit_pick(
-    pick: PickSubmission,
-    current_user: User = Depends(get_current_user)
-):
-    """Submit a pick for a game."""
-    # Check if user has permission to make picks
-    if not current_user.make_picks:
-        raise HTTPException(
-            status_code=403, 
-            detail="You do not have permission to make picks"
-        )
-    
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Get game details
-            cur.execute("SELECT * FROM games WHERE id = %s", (pick.game_id,))
-            game = cur.fetchone()
-            if not game:
-                raise HTTPException(status_code=404, detail="Game not found")
-
-            # Get existing pick, if any
-            cur.execute(
-                "SELECT * FROM picks WHERE user_id = %s AND game_id = %s",
-                (current_user.id, pick.game_id),
-            )
-            existing_pick = cur.fetchone()
-
-            current_time = get_current_utc_time()
-            
-            # Ensure game_date is timezone-aware for comparison
-            game_date = normalize_datetime(game["game_date"])
-            
-            # Use UTC comparison for consistency across all timezones
-            game_has_started = current_time >= game_date
-
-            # Handle lock logic if lock status is being changed
-            if pick.lock is not None:
-                # Get all user's picks to check lock constraints
-                cur.execute(
-                    "SELECT p.*, g.game_date FROM picks p JOIN games g ON p.game_id = g.id WHERE p.user_id = %s AND p.lock = TRUE",
-                    (current_user.id,)
-                )
-                existing_locks = cur.fetchall()
-                
-                # If trying to lock a pick
-                if pick.lock:
-                    # Check if this game is in the same week as any existing locked game
-                    target_week_start, target_week_end = get_game_week_bounds(game_date)
-                    logger.info(f"Locking game {pick.game_id}, week bounds: {target_week_start} to {target_week_end}")
-                    
-                    for lock in existing_locks:
-                        if lock["game_id"] != pick.game_id:  # Skip the current game
-                            lock_game_date = normalize_datetime(lock["game_date"])
-                            
-                            lock_week_start, lock_week_end = get_game_week_bounds(lock_game_date)
-                            logger.info(f"Checking against locked game {lock['game_id']}, week bounds: {lock_week_start} to {lock_week_end}")
-                            
-                            # Check if games are in the same week (weeks are [start, end))
-                            if not (target_week_start >= lock_week_end or target_week_end <= lock_week_start):
-                                # Games are in the same week
-                                logger.info(f"Games {pick.game_id} and {lock['game_id']} are in the same week")
-                                
-                                # Check if the existing locked game has started
-                                if current_time >= lock_game_date:
-                                    logger.info(f"Locked game {lock['game_id']} has started, cannot lock new game")
-                                    raise HTTPException(
-                                        status_code=400,
-                                        detail="Cannot lock this game because you already have a locked game that has started in the same week."
-                                    )
-                                
-                                # Unlock the existing game in the same week
-                                logger.info(f"Unlocking existing game {lock['game_id']} to lock new game {pick.game_id}")
-                                cur.execute(
-                                    "UPDATE picks SET lock = FALSE WHERE user_id = %s AND game_id = %s",
-                                    (current_user.id, lock["game_id"])
-                                )
-                
-                # If trying to unlock a pick
-                elif not pick.lock and existing_pick and existing_pick["lock"]:
-                    # Check if the game has started
-                    if game_has_started:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Cannot unlock a game that has already started."
-                        )
-
-            # Only prevent changes to started games
-            if game_has_started:
-                is_new_pick = existing_pick is None
-                if is_new_pick:
-                    raise HTTPException(status_code=400, detail="Cannot submit a new pick for a game that has already started.")
-
-                # Check for attempted changes
-                team_changed = pick.picked_team != existing_pick["picked_team"]
-                lock_status_changed = pick.lock is not None and pick.lock != existing_pick["lock"]
-
-                if lock_status_changed:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Your locked game has already started and cannot be changed."
-                    )
-                
-                if team_changed:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Your pick for this game cannot be changed because the game has already started."
-                    )
-
-                # If no changes, just return.
-                return {"message": "No changes made for a started game.", "pick": existing_pick}
-
-            # Perform the database update/insert
-            if existing_pick:
-                lock_value = pick.lock if pick.lock is not None else existing_pick["lock"]
-                cur.execute(
-                    "UPDATE picks SET picked_team = %s, lock = %s WHERE user_id = %s AND game_id = %s RETURNING *",
-                    (pick.picked_team, lock_value, current_user.id, pick.game_id),
-                )
-                updated_pick = cur.fetchone()
-                return {"message": "Pick updated successfully", "pick": updated_pick}
-            else:
-                # New pick
-                lock_value = pick.lock if pick.lock is not None else False
-                cur.execute(
-                    "INSERT INTO picks (user_id, game_id, picked_team, lock) VALUES (%s, %s, %s, %s) RETURNING *",
-                    (current_user.id, pick.game_id, pick.picked_team, lock_value),
-                )
-                new_pick = cur.fetchone()
-                return {"message": "Pick submitted successfully", "pick": new_pick}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error submitting pick: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail="An error occurred while submitting your pick"
-        )
-
-@app.post("/update_score")
-def update_score(result: GameResult):
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if game exists
-            cur.execute("SELECT * FROM games WHERE id = %s", (result.game_id,))
-            game = cur.fetchone()
-            if not game:
-                raise HTTPException(status_code=404, detail="Game not found")
-
-            # Update the game with the winning team
-            cur.execute(
-                "UPDATE games SET winning_team = %s WHERE id = %s RETURNING *",
-                (result.winning_team, result.game_id),
-            )
-            updated_game = cur.fetchone()
-
-            # Use centralized scoring function for consistent results
-            logger.info(f"🎯 Processing score update via /update_score endpoint")
-            affected_picks = update_game_scores(cur, result.game_id, result.winning_team)
-            
-            # Update leaderboard for all affected users
-            affected_users = list(set(pick["user_id"] for pick in affected_picks))
-            update_leaderboard_totals(cur, affected_users)
-            
-            logger.info(f"✅ Score update completed: {len(affected_picks)} picks updated, {len(affected_users)} users affected")
-            return {"message": "Scores updated successfully", "winning_team": result.winning_team}
-    except Exception as e:
-        logger.error(f"Error updating score: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/leaderboard/weeks")
-def get_available_weeks():
-    """Get all available week options for the leaderboard."""
-    try:
-        week_ranges = get_week_ranges()
-        return {
-            "weeks": [
-                {"key": key, "label": info["label"]} 
-                for key, info in week_ranges.items()
-            ]
-        }
-    except Exception as e:
-        logger.error(f"Error fetching available weeks: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/leaderboard")
-def get_leaderboard(filter: str = "overall"):
-    logger.info(f"🏆 Leaderboard request received - Filter: {filter}")
-    try:
-        with get_db_cursor() as cur:
-            # Get the most recent numerical tiebreaker with an answer
-            cur.execute("""
-                SELECT id, answer::numeric
-                FROM tiebreakers 
-                WHERE answer ~ '^[0-9]+\\.?[0-9]*$'
-                AND answer IS NOT NULL
-                ORDER BY start_time DESC 
-                LIMIT 1
-            """)
-            latest_tiebreaker = cur.fetchone()
-            
-            # Base query for points calculation
-            points_query = """
-                WITH filtered_users AS (
-                    SELECT id, username, full_name
-                    FROM users
-                    WHERE created_at >= '2025-06-01T00:00:00Z'
-                    AND make_picks = TRUE
-            """
-            
-            points_query += """
-                ),
-                game_points AS (
-                    SELECT user_id, SUM(points_awarded) as game_points
-                    FROM picks p
-                    JOIN games g ON p.game_id = g.id
-                    WHERE 1=1
-            """
-            
-            # Add time filter for games using week-based filtering
-            start_condition, end_condition = get_week_filter_conditions(filter)
-            points_query += start_condition + end_condition
-            
-            points_query += """
-                    GROUP BY user_id
-                ),
-                tiebreaker_points AS (
-                    SELECT user_id, SUM(points_awarded) as tiebreaker_points
-                    FROM tiebreaker_picks tp
-                    JOIN tiebreakers t ON tp.tiebreaker_id = t.id
-                    WHERE 1=1
-            """
-            
-            # Add time filter for tiebreakers using week-based filtering
-            tiebreaker_start_condition, tiebreaker_end_condition = get_tiebreaker_week_filter_conditions(filter)
-            points_query += tiebreaker_start_condition + tiebreaker_end_condition
-            
-            points_query += """
-                    GROUP BY user_id
-                ),
-                correct_locks AS (
-                    SELECT user_id, COUNT(*) as correct_locks_count
-                    FROM picks p
-                    JOIN games g ON p.game_id = g.id
-                    WHERE p.lock = TRUE 
-                    AND p.points_awarded = 2
-            """
-            
-            # Add time filter for correct locks using week-based filtering
-            points_query += start_condition + end_condition
-            
-            points_query += """
-                    GROUP BY user_id
-                ),
-                tiebreaker_accuracy AS (
-                    SELECT 
-                        tp.user_id,
-                        t.id as tiebreaker_id,
-                        t.start_time,
-                        t.answer as correct_answer,
-                        tp.answer as user_answer,
-                        CASE 
-                            WHEN t.answer ~ '^[0-9]+\\.?[0-9]*$' AND tp.answer ~ '^[0-9]+\\.?[0-9]*$'
-                            THEN ABS(CAST(t.answer AS NUMERIC) - CAST(tp.answer AS NUMERIC))
-                            ELSE NULL
-                        END as accuracy_diff,
-                        ROW_NUMBER() OVER (PARTITION BY tp.user_id ORDER BY t.start_time ASC) as tiebreaker_rank
-                    FROM tiebreaker_picks tp
-                    JOIN tiebreakers t ON tp.tiebreaker_id = t.id
-                    WHERE t.answer ~ '^[0-9]+\\.?[0-9]*$'
-                    AND t.answer IS NOT NULL
-                    AND tp.answer ~ '^[0-9]+\\.?[0-9]*$'
-                    AND tp.answer IS NOT NULL
-            """
-            
-            # Add time filter for tiebreaker accuracy using week-based filtering
-            points_query += tiebreaker_start_condition + tiebreaker_end_condition
-            
-            points_query += """
-                )
-                SELECT 
-                    u.username, 
-                    u.full_name,
-                    COALESCE(gp.game_points, 0) + COALESCE(tp.tiebreaker_points, 0) as total_points,
-                    COALESCE(cl.correct_locks_count, 0) as correct_locks,
-                    COALESCE(ta1.accuracy_diff, 999999) as first_tiebreaker_diff,
-                    COALESCE(ta2.accuracy_diff, 999999) as second_tiebreaker_diff,
-                    COALESCE(ta3.accuracy_diff, 999999) as third_tiebreaker_diff
-                FROM filtered_users u
-                LEFT JOIN game_points gp ON u.id = gp.user_id
-                LEFT JOIN tiebreaker_points tp ON u.id = tp.user_id
-                LEFT JOIN correct_locks cl ON u.id = cl.user_id
-                LEFT JOIN tiebreaker_accuracy ta1 ON u.id = ta1.user_id AND ta1.tiebreaker_rank = 1
-                LEFT JOIN tiebreaker_accuracy ta2 ON u.id = ta2.user_id AND ta2.tiebreaker_rank = 2
-                LEFT JOIN tiebreaker_accuracy ta3 ON u.id = ta3.user_id AND ta3.tiebreaker_rank = 3
-            """
-            
-            # Different sorting logic based on filter
-            if filter == "overall":
-                # For overall category, only sort by total points and correct locks
-                points_query += "ORDER BY total_points DESC, correct_locks DESC"
-            else:
-                # For all other categories, include tiebreaker sorting
-                points_query += "ORDER BY total_points DESC, correct_locks DESC, first_tiebreaker_diff ASC, second_tiebreaker_diff ASC, third_tiebreaker_diff ASC"
-            
-            cur.execute(points_query)
-            leaderboard = cur.fetchall()
-            logger.info(f"🏆 Leaderboard query successful - Returned {len(leaderboard)} users")
-            return leaderboard
-    except Exception as e:
-        logger.error(f"Error fetching leaderboard: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-def get_week_ranges():
-    """Define all CFB and NFL week ranges for the 2025 season."""
-    # All times are in UTC (Eastern + 4 hours during EDT, +5 during EST)
-    # CFB Week 0: Tues Aug 19 2025 3am ET to Tues Aug 26 2025 2:59am ET
-    # CFB Week 1: Tues Aug 26 2025 3am ET to Tues Sept 2 2025 2:59am ET
-    # etc.
-    
-    week_ranges = {
-        "overall": {"start": None, "end": None, "label": "Overall"},
-        "cfb_week_0": {"start": "2025-08-19T07:00:00Z", "end": "2025-08-26T06:59:59Z", "label": "CFB Week 0"},
-        "cfb_week_1": {"start": "2025-08-26T07:00:00Z", "end": "2025-09-02T06:59:59Z", "label": "CFB Week 1"},
-        "cfb_week_2_nfl_week_1": {"start": "2025-09-02T07:00:00Z", "end": "2025-09-09T06:59:59Z", "label": "CFB Week 2, NFL Week 1"},
-        "cfb_week_3_nfl_week_2": {"start": "2025-09-09T07:00:00Z", "end": "2025-09-16T06:59:59Z", "label": "CFB Week 3, NFL Week 2"},
-        "cfb_week_4_nfl_week_3": {"start": "2025-09-16T07:00:00Z", "end": "2025-09-23T06:59:59Z", "label": "CFB Week 4, NFL Week 3"},
-        "cfb_week_5_nfl_week_4": {"start": "2025-09-23T07:00:00Z", "end": "2025-09-30T06:59:59Z", "label": "CFB Week 5, NFL Week 4"},
-        "cfb_week_6_nfl_week_5": {"start": "2025-09-30T07:00:00Z", "end": "2025-10-07T06:59:59Z", "label": "CFB Week 6, NFL Week 5"},
-        "cfb_week_7_nfl_week_6": {"start": "2025-10-07T07:00:00Z", "end": "2025-10-14T06:59:59Z", "label": "CFB Week 7, NFL Week 6"},
-        "cfb_week_8_nfl_week_7": {"start": "2025-10-14T07:00:00Z", "end": "2025-10-21T06:59:59Z", "label": "CFB Week 8, NFL Week 7"},
-        "cfb_week_9_nfl_week_8": {"start": "2025-10-21T07:00:00Z", "end": "2025-10-28T06:59:59Z", "label": "CFB Week 9, NFL Week 8"},
-        "cfb_week_10_nfl_week_9": {"start": "2025-10-28T07:00:00Z", "end": "2025-11-04T06:59:59Z", "label": "CFB Week 10, NFL Week 9"},
-        "cfb_week_11_nfl_week_10": {"start": "2025-11-04T07:00:00Z", "end": "2025-11-11T06:59:59Z", "label": "CFB Week 11, NFL Week 10"},
-        "cfb_week_12_nfl_week_11": {"start": "2025-11-11T07:00:00Z", "end": "2025-11-18T06:59:59Z", "label": "CFB Week 12, NFL Week 11"},
-        "cfb_week_13_nfl_week_12": {"start": "2025-11-18T07:00:00Z", "end": "2025-11-25T06:59:59Z", "label": "CFB Week 13, NFL Week 12"},
-        "cfb_week_14_nfl_week_13": {"start": "2025-11-25T07:00:00Z", "end": "2025-12-02T06:59:59Z", "label": "CFB Week 14, NFL Week 13"},
-        "nfl_week_14": {"start": "2025-12-02T07:00:00Z", "end": "2025-12-09T06:59:59Z", "label": "NFL Week 14"},
-        "nfl_week_15": {"start": "2025-12-09T07:00:00Z", "end": "2025-12-16T06:59:59Z", "label": "NFL Week 15"},
-        "nfl_week_16": {"start": "2025-12-16T07:00:00Z", "end": "2025-12-23T06:59:59Z", "label": "NFL Week 16"},
-        "nfl_week_17": {"start": "2025-12-23T07:00:00Z", "end": "2025-12-30T06:59:59Z", "label": "NFL Week 17"},
-        "nfl_week_18": {"start": "2025-12-30T07:00:00Z", "end": "2026-01-06T06:59:59Z", "label": "NFL Week 18"}
-    }
-    return week_ranges
-
-def get_week_filter_conditions(filter_key):
-    """Get the SQL filter conditions for a given week filter."""
-    week_ranges = get_week_ranges()
-    
-    if filter_key not in week_ranges:
-        return "", ""
-    
-    week_info = week_ranges[filter_key]
-    
-    if filter_key == "overall":
-        return "", ""
-    else:
-        start_condition = f" AND g.game_date >= '{week_info['start']}'" if week_info['start'] else ""
-        end_condition = f" AND g.game_date <= '{week_info['end']}'" if week_info['end'] else ""
-        return start_condition, end_condition
-
-def get_tiebreaker_week_filter_conditions(filter_key):
-    """Get the SQL filter conditions for tiebreakers for a given week filter."""
-    week_ranges = get_week_ranges()
-    
-    if filter_key not in week_ranges:
-        return "", ""
-    
-    week_info = week_ranges[filter_key]
-    
-    if filter_key == "overall":
-        return "", ""
-    else:
-        start_condition = f" AND t.start_time >= '{week_info['start']}'" if week_info['start'] else ""
-        end_condition = f" AND t.start_time <= '{week_info['end']}'" if week_info['end'] else ""
-        return start_condition, end_condition
-
-@app.post("/debug-game-data")
-async def debug_game_data(request: Request, current_user: User = Depends(get_current_admin_user)):
-    """Debug endpoint to see raw game data before Pydantic validation."""
-    try:
-        body = await request.json()
-        logger.info(f"Raw request body: {body}")
-        return {"received": body}
-    except Exception as e:
-        logger.error(f"Error parsing request: {str(e)}")
-        return {"error": str(e)}
-
-def serialize_game_row(row):
-    """Serialize a DB game row ensuring datetime fields are UTC ISO strings with 'Z'."""
-    try:
-        game_date = normalize_datetime(row["game_date"]).isoformat().replace("+00:00", "Z")
-    except Exception:
-        # Fallback in case of unexpected formats
-        game_date = row["game_date"].isoformat() if hasattr(row["game_date"], "isoformat") else row["game_date"]
-    serialized = dict(row)
-    serialized["game_date"] = game_date
-    return serialized
-
-def serialize_tiebreaker_row(row):
-    """Serialize a DB tiebreaker row ensuring datetime fields are UTC ISO strings with 'Z'."""
-    try:
-        start_time = normalize_datetime(row["start_time"]).isoformat().replace("+00:00", "Z")
-    except Exception:
-        # Fallback in case of unexpected formats
-        start_time = row["start_time"].isoformat() if hasattr(row["start_time"], "isoformat") else row["start_time"]
-    serialized = dict(row)
-    serialized["start_time"] = start_time
-    return serialized
-
-@app.post("/games")
-async def create_game(
-    game: Game,
-    current_user: User = Depends(get_current_admin_user)
-):
-    """Create a new game (admin only)."""
-    try:
-        logger.info(f"Received game creation request: {game}")
-        logger.info(f"Game date: {game.game_date}")
-        logger.info(f"Game date type: {type(game.game_date)}")
-        logger.info(f"Game date timezone: {game.game_date.tzinfo}")
-        
-        # Validate game date is not in the past
-        current_time = get_current_utc_time()
-        logger.info(f"Current time: {current_time}")
-        
-        if game.game_date <= current_time:
-            logger.warning(f"Game date {game.game_date} is not in the future (current: {current_time})")
-            raise HTTPException(
-                status_code=400, 
-                detail="Game date must be in the future"
-            )
-        
-        # Validate game date is reasonable (not more than 1 year in the future)
-        max_future_date = current_time + timedelta(days=365)
-        if game.game_date > max_future_date:
-            raise HTTPException(
-                status_code=400,
-                detail="Game date cannot be more than 1 year in the future"
-            )
-        
-        with get_db_cursor(commit=True) as cur:
-            logger.info(f"Creating new game with data: {game}")
-            logger.info(f"Game date before DB insert: {game.game_date}")
-            logger.info(f"Game date timezone info: {game.game_date.tzinfo}")
-            
-            cur.execute(
-                """
-                INSERT INTO games (home_team, away_team, spread, game_date)
-                VALUES (%s, %s, %s, %s)
-                RETURNING *
-                """,
-                (game.home_team, game.away_team, game.spread, game.game_date)
-            )
-            new_game = cur.fetchone()
-            logger.info(f"Game created successfully: {new_game}")
-            logger.info(f"Game date after DB insert: {new_game['game_date']}")
-            return serialize_game_row(new_game)
-    except HTTPException:
-        raise
-    except ValidationError as e:
-        logger.error(f"Validation error creating game: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Validation error: {str(e)}")
-    except Exception as e:
-        logger.error(f"Error creating game: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/games")
-def get_games(all_games: bool = False, current_user: User = Depends(get_current_user)):
-    try:
-        with get_db_cursor() as cur:
-            # If user is admin and requests all games, fetch all games
-            # Otherwise, only fetch future games for better performance
-            if all_games and current_user.admin:
-                cur.execute("SELECT * FROM games ORDER BY game_date DESC")
-            else:
-                current_time = get_current_utc_time()
-                cur.execute("SELECT * FROM games WHERE game_date > %s ORDER BY game_date", (current_time,))
-            games = cur.fetchall()
-            # Ensure game_date has timezone info in the API response
-            return [serialize_game_row(g) for g in games]
-    except Exception as e:
-        logger.error(f"Error fetching games: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/make_admin/{username}")
-async def make_admin(
-    username: str,
-    current_user: User = Depends(get_current_admin_user)
-):
-    """Make a user an admin (admin only)."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if user exists
-            cur.execute("SELECT id FROM users WHERE username = %s", (username,))
-            user = cur.fetchone()
-            if not user:
-                raise HTTPException(
-                    status_code=404,
-                    detail="User not found"
-                )
-            
-            # Make user admin
-            cur.execute(
-                "UPDATE users SET admin = TRUE WHERE username = %s RETURNING username, admin",
-                (username,)
-            )
-            updated_user = cur.fetchone()
-            return updated_user
-    except Exception as e:
-        logger.error(f"Error making user admin: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/user_picks/{username}")
-def get_user_picks(username: str):
-    """Get a user's picks for games that have already started."""
-    try:
-        with get_db_cursor() as cur:
-            current_time = get_current_utc_time()
-            
-            cur.execute("""
-                SELECT 
-                    g.id as game_id,
-                    g.home_team,
-                    g.away_team,
-                    g.spread,
-                    g.game_date,
-                    g.winning_team,
-                    p.picked_team,
-                    p.points_awarded
-                FROM games g
-                JOIN picks p ON g.id = p.game_id
-                JOIN users u ON p.user_id = u.id
-                WHERE u.username = %s AND g.game_date <= %s
-                ORDER BY g.game_date DESC
-            """, (username, current_time))
-            picks = cur.fetchall()
-            return picks
-    except Exception as e:
-        logger.error(f"Error fetching user picks: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/live_games")
-def get_live_games():
-    """Get all live games (games that have started but don't have a winner yet) and their picks."""
-    current_time = get_current_utc_time()
-
-    try:
-        # Use optimized query with retry logic
-        query = """
-            SELECT 
-                g.id as game_id,
-                g.home_team,
-                g.away_team,
-                g.spread,
-                g.game_date,
-                g.winning_team,
-                COUNT(p.id) as total_picks,
-                COUNT(CASE WHEN p.picked_team = g.home_team THEN 1 END) as home_picks,
-                COUNT(CASE WHEN p.picked_team = g.away_team THEN 1 END) as away_picks
-            FROM games g
-            LEFT JOIN picks p ON g.id = p.game_id
-            LEFT JOIN users u ON p.user_id = u.id AND u.make_picks = TRUE
-            WHERE g.game_date <= %s 
-            AND (g.winning_team IS NULL OR g.winning_team = '')
-            GROUP BY g.id, g.home_team, g.away_team, g.spread, g.game_date, g.winning_team
-            ORDER BY g.game_date DESC
-        """
-        
-        games = execute_query_with_retry(query, (current_time,))
-        logger.debug(f"Found {len(games)} live games")
-        return games
-    except Exception as e:
-        logger.error(f"Error fetching live games: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/live_games/{game_id}/picks")
-def get_game_picks(game_id: int):
-    """Get detailed picks for a specific game - called only when modal is opened."""
-    try:
-        with get_db_cursor() as cur:
-            cur.execute("""
-                SELECT 
-                    u.username,
-                    u.full_name,
-                    p.picked_team,
-                    p.lock
-                FROM picks p
-                JOIN users u ON p.user_id = u.id
-                WHERE p.game_id = %s AND u.make_picks = TRUE
-                ORDER BY u.full_name
-            """, (game_id,))
-            picks = cur.fetchall()
-            return picks
-    except Exception as e:
-        logger.error(f"Error fetching game picks: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/games/{game_id}")
-async def update_game(
-    game_id: int,
-    game: GameUpdate,
-    current_user: User = Depends(get_current_admin_user)
-):
-    """Update a game (admin only)."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if game exists
-            cur.execute("SELECT * FROM games WHERE id = %s", (game_id,))
-            existing_game = cur.fetchone()
-            if not existing_game:
-                raise HTTPException(status_code=404, detail="Game not found")
-            
-            # Validate game date is not in the past (only if it's being changed)
-            existing_game_date = normalize_datetime(existing_game["game_date"])
-            
-            # Compare dates with tolerance for small differences (within 1 minute)
-            date_difference = abs((game.game_date - existing_game_date).total_seconds())
-            logger.info(f"Game update - existing date: {existing_game_date}, new date: {game.game_date}, difference: {date_difference} seconds")
-            
-            if date_difference > 60:  # More than 1 minute difference
-                current_time = get_current_utc_time()
-                logger.info(f"Game date changed significantly, validating. Current time: {current_time}")
-                
-                # Check if the new date is in the past
-                if game.game_date <= current_time:
-                    logger.warning(f"Admin is setting game date to past: {game.game_date} (current: {current_time})")
-                    # Allow past dates for admin updates, but log a warning
-                    # This allows admins to correct game times or handle rescheduled games
-                
-                # Validate game date is reasonable (not more than 1 year in the future)
-                max_future_date = current_time + timedelta(days=365)
-                if game.game_date > max_future_date:
-                    logger.error(f"Game date validation failed - game date {game.game_date} is too far in the future")
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Game date cannot be more than 1 year in the future"
-                    )
-            else:
-                logger.info("Game date unchanged or changed by less than 1 minute, skipping date validation")
-            
-            # Update game
-            cur.execute(
-                """
-                UPDATE games 
-                SET home_team = %s, away_team = %s, spread = %s, game_date = %s, winning_team = %s
-                WHERE id = %s
-                RETURNING *
-                """,
-                (game.home_team, game.away_team, game.spread, game.game_date, game.winning_team, game_id)
-            )
-            updated_game = cur.fetchone()
-            
-            # If winning team changed, update points using centralized scoring function
-            if game.winning_team != existing_game["winning_team"]:
-                logger.info(f"🎯 Processing score update via /games/{game_id} endpoint")
-                affected_picks = update_game_scores(cur, game_id, game.winning_team)
-                
-                # Update leaderboard for all affected users
-                affected_users = list(set(pick["user_id"] for pick in affected_picks))
-                update_leaderboard_totals(cur, affected_users)
-                
-                logger.info(f"✅ Game update completed: {len(affected_picks)} picks updated, {len(affected_users)} users affected")
-            
-            return serialize_game_row(updated_game)
-    except Exception as e:
-        logger.error(f"Error updating game: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/games/{game_id}")
-async def delete_game(
-    game_id: int,
-    current_user: User = Depends(get_current_admin_user)
-):
-    """Delete a game (admin only)."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if game exists
-            cur.execute("SELECT * FROM games WHERE id = %s", (game_id,))
-            if not cur.fetchone():
-                raise HTTPException(status_code=404, detail="Game not found")
-            
-            # Delete game (picks will be deleted automatically due to CASCADE)
-            cur.execute("DELETE FROM games WHERE id = %s RETURNING *", (game_id,))
-            deleted_game = cur.fetchone()
-            
-            # Update leaderboard points
-            cur.execute(
-                """
-                UPDATE leaderboard l
-                SET total_points = (
-                    SELECT COALESCE(SUM(points_awarded), 0)
-                    FROM picks
-                    WHERE user_id = l.user_id
-                )
-                """
-            )
-            
-            return {"message": "Game deleted successfully", "game": deleted_game}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting game: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/my_picks")
-async def get_my_picks(current_user: User = Depends(get_current_user)):
-    """Get all picks for the current user, including future games."""
-    try:
-        with get_db_cursor() as cur:
-            cur.execute("""
-                SELECT 
-                    g.id as game_id,
-                    g.home_team,
-                    g.away_team,
-                    g.spread,
-                    g.game_date,
-                    g.winning_team,
-                    p.picked_team,
-                    p.points_awarded,
-                    p.lock
-                FROM games g
-                LEFT JOIN picks p ON g.id = p.game_id AND p.user_id = %s
-                ORDER BY g.game_date
-            """, (current_user.id,))
-            picks = cur.fetchall()
-            return [serialize_game_row(p) for p in picks]
-    except Exception as e:
-        logger.error(f"Error fetching user picks: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/admin/user_picks_status")
-async def get_user_picks_status(current_user: User = Depends(get_current_admin_user)):
-    """Get the picks status for all users."""
-    with get_db_cursor() as cur:
-        current_time = get_current_utc_time()
-
-        # Calculate current week bounds (Tuesday 3am to next Tuesday 2:59am ET)
-        current_week_start, current_week_end = get_game_week_bounds(current_time)
-        
-        # Get total number of upcoming games
-        cur.execute("""
-            SELECT COUNT(*) as total 
-            FROM games 
-            WHERE game_date > %s
-        """, (current_time,))
-        total_upcoming_games = cur.fetchone()['total']
-        
-        # Get total number of upcoming tiebreakers
-        cur.execute("""
-            SELECT COUNT(*) as total 
-            FROM tiebreakers 
-            WHERE start_time > %s AND is_active = TRUE
-        """, (current_time,))
-        total_upcoming_tiebreakers = cur.fetchone()['total']
-        
-        total_required_picks = total_upcoming_games + total_upcoming_tiebreakers
-        
-        # Get all users and their picks count for upcoming games and tiebreakers, plus current week locks
-        cur.execute("""
-            WITH upcoming_picks AS (
-                SELECT u.id as user_id, COUNT(p.id) as picks_count
-                FROM users u
-                LEFT JOIN picks p ON u.id = p.user_id
-                LEFT JOIN games g ON p.game_id = g.id
-                WHERE g.game_date > %s
-                GROUP BY u.id
-            ),
-            upcoming_tiebreaker_picks AS (
-                SELECT u.id as user_id, COUNT(tp.id) as picks_count
-                FROM users u
-                LEFT JOIN tiebreaker_picks tp ON u.id = tp.user_id
-                LEFT JOIN tiebreakers t ON tp.tiebreaker_id = t.id
-                WHERE t.start_time > %s AND t.is_active = TRUE
-                GROUP BY u.id
-            ),
-            current_week_locks AS (
-                SELECT u.id as user_id, COUNT(p.id) as locks_count
-                FROM users u
-                LEFT JOIN picks p ON u.id = p.user_id
-                LEFT JOIN games g ON p.game_id = g.id
-                WHERE p.lock = TRUE
-                AND g.game_date BETWEEN %s AND %s
-                GROUP BY u.id
-            )
-            SELECT
-                u.username,
-                u.full_name,
-                COALESCE(up.picks_count, 0) + COALESCE(utp.picks_count, 0) as total_picks_made,
-                CASE WHEN COALESCE(cwl.locks_count, 0) > 0 THEN TRUE ELSE FALSE END as has_current_week_lock
-            FROM users u
-            LEFT JOIN upcoming_picks up ON u.id = up.user_id
-            LEFT JOIN upcoming_tiebreaker_picks utp ON u.id = utp.user_id
-            LEFT JOIN current_week_locks cwl ON u.id = cwl.user_id
-            WHERE u.make_picks = TRUE
-            ORDER BY u.username
-        """, (current_time, current_time, current_week_start, current_week_end))
-        
-        users_status = []
-        for row in cur.fetchall():
-            users_status.append(UserPicksStatus(
-                username=row['username'],
-                full_name=row['full_name'],
-                total_games=total_required_picks,
-                picks_made=row['total_picks_made'],
-                is_complete=row['total_picks_made'] == total_required_picks,
-                has_current_week_lock=row['has_current_week_lock']
-            ))
-        
-        return users_status
-
-class Pick(BaseModel):
-    game_id: int
-    picked_team: str
-
-class Tiebreaker(BaseModel):
+class TiebreakerCreate(BaseModel):
     question: str
     start_time: datetime
 
-    @validator('start_time', pre=True, always=True)
+    @validator("start_time", pre=True, always=True)
     def normalize_start_time(cls, v):
         if isinstance(v, str):
-            # Handle ISO format strings with 'Z' (UTC) or timezone offsets
-            if 'Z' in v:
-                # Replace 'Z' with '+00:00' for proper parsing
-                v = v.replace('Z', '+00:00')
-            elif '+' not in v and '-' not in v[10:]:
-                raise ValueError("Datetime string must include timezone information")
-            
-            try:
-                v = datetime.fromisoformat(v)
-            except ValueError as e:
-                raise ValueError(f"Invalid datetime format: {e}")
-        
+            if "Z" in v:
+                v = v.replace("Z", "+00:00")
+            v = datetime.fromisoformat(v)
         if not isinstance(v, datetime):
             raise ValueError("Invalid datetime format")
-
         if v.tzinfo is None:
             raise ValueError("Datetime must be timezone-aware")
-            
-        dt = normalize_datetime(v)
-        return dt.replace(second=0, microsecond=0)
+        return normalize_datetime(v).replace(second=0, microsecond=0)
+
 
 class TiebreakerUpdate(BaseModel):
     question: str
@@ -2098,1615 +258,2160 @@ class TiebreakerUpdate(BaseModel):
     answer: Optional[Union[str, float]] = None
     is_active: bool = True
 
-    @validator('start_time', pre=True, always=True)
+    @validator("start_time", pre=True, always=True)
     def normalize_start_time(cls, v):
         if isinstance(v, str):
-            # Handle ISO format strings with 'Z' (UTC) or timezone offsets
-            if 'Z' in v:
-                # Replace 'Z' with '+00:00' for proper parsing
-                v = v.replace('Z', '+00:00')
-            elif '+' not in v and '-' not in v[10:]:
-                raise ValueError("Datetime string must include timezone information")
-            
-            try:
-                v = datetime.fromisoformat(v)
-            except ValueError as e:
-                raise ValueError(f"Invalid datetime format: {e}")
-        
+            if "Z" in v:
+                v = v.replace("Z", "+00:00")
+            v = datetime.fromisoformat(v)
         if not isinstance(v, datetime):
             raise ValueError("Invalid datetime format")
-
         if v.tzinfo is None:
             raise ValueError("Datetime must be timezone-aware")
-            
-        dt = normalize_datetime(v)
-        return dt.replace(second=0, microsecond=0)
+        return normalize_datetime(v).replace(second=0, microsecond=0)
+
 
 class TiebreakerPick(BaseModel):
-    tiebreaker_id: int
+    tiebreaker_id: str
     answer: Union[str, float]
 
+
 class TiebreakerPointsUpdate(BaseModel):
-    user_id: int
-    tiebreaker_id: int
+    user_id: str
+    tiebreaker_id: str
     points: int
 
-@app.post("/tiebreakers")
-async def create_tiebreaker(
-    tiebreaker: Tiebreaker,
-    current_user: User = Depends(get_current_admin_user)
-):
-    """Create a new tiebreaker (admin only)."""
+# ---------------------------------------------------------------------------
+# Leaderboard periods (tip-off in America/New_York calendar date)
+# ---------------------------------------------------------------------------
+
+def get_second_half_start_utc():
+    """Second half = tip-offs on or after Mar 24, 2026 Eastern time."""
+    z = ZoneInfo("America/New_York")
+    return datetime(2026, 3, 24, 0, 0, 0, tzinfo=z).astimezone(timezone.utc)
+
+
+def get_week_ranges():
+    """Labels for leaderboard / stats period filters."""
+    return {
+        "overall": {"start": None, "end": None, "label": "Overall"},
+        "first_half": {"start": None, "end": None, "label": "First Half (through Mar 23)"},
+        "second_half": {"start": None, "end": None, "label": "Second Half (Mar 24+)"},
+    }
+
+
+def _parse_iso(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def _filter_by_week(items, date_key, filter_key):
+    """Filter by leaderboard period (game/tiebreaker datetime = tip-off or reveal)."""
+    if filter_key == "overall" or filter_key not in ("first_half", "second_half"):
+        return items
+    boundary = get_second_half_start_utc()
+    result = []
+    for item in items:
+        d = item.get(date_key)
+        if d is None:
+            continue
+        d = normalize_datetime(d) if isinstance(d, datetime) else _parse_iso(d)
+        if filter_key == "first_half":
+            if d < boundary:
+                result.append(item)
+        elif filter_key == "second_half":
+            if d >= boundary:
+                result.append(item)
+    return result
+
+
+# Leaderboard: cache full computed tables in Firestore (1 read per request vs ~3k+).
+LEADERBOARD_CACHE_COLLECTION = "_cache"
+LEADERBOARD_CACHE_DOC_ID = "leaderboard_v1"
+_LEADERBOARD_FILTER_KEYS = ("overall", "first_half", "second_half")
+
+
+STATS_CACHE_DOC_ID = "stats_v1"
+LEADERBOARD_BUILD_LOCK_ID = "leaderboard_build_lock"
+_FIRESTORE_IN_QUERY_MAX = 10
+
+# Live page cache: one doc for live_games + live_tiebreakers to cut Firestore reads.
+LIVE_CACHE_DOC_ID = "live_v1"
+# Configurable via env; longer TTL = fewer reads, slightly staler "live" list (game/tiebreaker outcomes).
+LIVE_CACHE_TTL_SEC = int(os.getenv("LIVE_CACHE_TTL_SEC", "120"))
+
+
+def _cache_doc_delete(db, doc_id: str) -> None:
     try:
-        # Validate start time is not in the past
+        db.collection(LEADERBOARD_CACHE_COLLECTION).document(doc_id).delete()
+    except Exception as e:
+        logger.warning("cache delete %s failed: %s", doc_id, e)
+
+
+def invalidate_leaderboard_cache(db) -> None:
+    _cache_doc_delete(db, LEADERBOARD_CACHE_DOC_ID)
+
+
+def invalidate_live_cache(db) -> None:
+    _cache_doc_delete(db, LIVE_CACHE_DOC_ID)
+
+
+def invalidate_stats_cache(db) -> None:
+    _cache_doc_delete(db, STATS_CACHE_DOC_ID)
+
+
+def invalidate_leaderboard_and_stats(db) -> None:
+    """When game outcomes or membership change (not tiebreaker-only ranking tweaks)."""
+    invalidate_leaderboard_cache(db)
+    invalidate_stats_cache(db)
+    invalidate_live_cache(db)  # Live list: which games/tiebreakers in progress
+
+
+def _try_acquire_leaderboard_build_lock(db, ttl_sec: float = 50.0) -> bool:
+    """Single-flight for leaderboard rebuild across serverless instances."""
+    try:
+        from google.cloud.firestore import transactional
+
+        lock_ref = db.collection(LEADERBOARD_CACHE_COLLECTION).document(LEADERBOARD_BUILD_LOCK_ID)
+        now = time.time()
+        transaction = db.transaction()
+
+        @transactional
+        def _txn(transaction, ref):
+            snap = ref.get(transaction=transaction)
+            if snap.exists:
+                exp = (snap.to_dict() or {}).get("expires_at")
+                if isinstance(exp, (int, float)) and exp > now:
+                    return False
+            transaction.set(ref, {"expires_at": now + ttl_sec})
+            return True
+
+        return _txn(transaction, lock_ref)
+    except Exception as e:
+        logger.warning("leaderboard build lock failed: %s", e)
+        return False
+
+
+def _release_leaderboard_build_lock(db) -> None:
+    try:
+        db.collection(LEADERBOARD_CACHE_COLLECTION).document(LEADERBOARD_BUILD_LOCK_ID).delete()
+    except Exception as e:
+        logger.warning("leaderboard build lock release: %s", e)
+
+
+def _leaderboard_list_for_filter(
+    users: Dict[str, Any],
+    all_games: Dict[str, Any],
+    all_tiebreakers: Dict[str, Any],
+    all_picks: list,
+    all_tb_picks: list,
+    filter_key: str,
+) -> list:
+    filtered_picks = _filter_by_week(all_picks, "game_date", filter_key)
+    filtered_tb_picks = _filter_by_week(all_tb_picks, "start_time", filter_key)
+
+    user_game_points = {}
+    user_correct_locks = {}
+    for p in filtered_picks:
+        uid = p.get("user_id")
+        if uid not in users:
+            continue
+        user_game_points[uid] = user_game_points.get(uid, 0) + (p.get("points_awarded") or 0)
+        if p.get("lock") and p.get("points_awarded") == 2:
+            user_correct_locks[uid] = user_correct_locks.get(uid, 0) + 1
+
+    user_tb_points = {}
+    for tp in filtered_tb_picks:
+        uid = tp.get("user_id")
+        if uid not in users:
+            continue
+        user_tb_points[uid] = user_tb_points.get(uid, 0) + (tp.get("points_awarded") or 0)
+
+    user_tb_accuracy = {}
+    for tp in filtered_tb_picks:
+        uid = tp.get("user_id")
+        if uid not in users:
+            continue
+        tb = all_tiebreakers.get(tp.get("tiebreaker_id"))
+        if not tb or not tb.get("answer"):
+            continue
+        try:
+            correct_val = float(tb["answer"])
+            user_val = float(tp["answer"])
+            diff = abs(correct_val - user_val)
+        except (ValueError, TypeError):
+            diff = 999999
+        if uid not in user_tb_accuracy:
+            user_tb_accuracy[uid] = []
+        user_tb_accuracy[uid].append((tb.get("start_time"), diff))
+
+    for uid in user_tb_accuracy:
+        user_tb_accuracy[uid].sort(key=lambda x: x[0] or datetime.min.replace(tzinfo=timezone.utc))
+
+    leaderboard = []
+    for uid, u in users.items():
+        total_points = user_game_points.get(uid, 0) + user_tb_points.get(uid, 0)
+        correct_locks = user_correct_locks.get(uid, 0)
+        accuracy_list = user_tb_accuracy.get(uid, [])
+        first_diff = accuracy_list[0][1] if len(accuracy_list) > 0 else 999999
+        second_diff = accuracy_list[1][1] if len(accuracy_list) > 1 else 999999
+        third_diff = accuracy_list[2][1] if len(accuracy_list) > 2 else 999999
+
+        leaderboard.append({
+            "display_name": u.get("display_name", u.get("email", "")),
+            "uid": uid,
+            "total_points": total_points,
+            "correct_locks": correct_locks,
+            "first_tiebreaker_diff": first_diff,
+            "second_tiebreaker_diff": second_diff,
+            "third_tiebreaker_diff": third_diff,
+        })
+
+    if filter_key == "overall":
+        leaderboard.sort(key=lambda x: (-x["total_points"], -x["correct_locks"]))
+    else:
+        leaderboard.sort(key=lambda x: (
+            -x["total_points"],
+            -x["correct_locks"],
+            x["first_tiebreaker_diff"],
+            x["second_tiebreaker_diff"],
+            x["third_tiebreaker_diff"],
+        ))
+    return leaderboard
+
+
+def _compute_and_store_leaderboard_cache(db) -> Dict[str, list]:
+    users = {}
+    for doc in db.collection("users").where("make_picks", "==", True).stream():
+        u = doc.to_dict()
+        created = _fs_timestamp_to_dt(u.get("created_at"))
+        if created and created < _parse_iso("2025-06-01T00:00:00Z"):
+            continue
+        users[u["uid"]] = u
+
+    all_games = {}
+    for doc in db.collection("games").stream():
+        g = doc.to_dict()
+        g["id"] = doc.id
+        g["game_date"] = _fs_timestamp_to_dt(g.get("game_date"))
+        all_games[doc.id] = g
+
+    all_picks = []
+    for doc in db.collection("picks").stream():
+        p = doc.to_dict()
+        p["id"] = doc.id
+        game = all_games.get(p.get("game_id"))
+        if game:
+            p["game_date"] = game["game_date"]
+        all_picks.append(p)
+
+    all_tiebreakers = {}
+    for doc in db.collection("tiebreakers").stream():
+        t = doc.to_dict()
+        t["id"] = doc.id
+        t["start_time"] = _fs_timestamp_to_dt(t.get("start_time"))
+        all_tiebreakers[doc.id] = t
+
+    all_tb_picks = []
+    for doc in db.collection("tiebreaker_picks").stream():
+        tp = doc.to_dict()
+        tp["id"] = doc.id
+        tb = all_tiebreakers.get(tp.get("tiebreaker_id"))
+        if tb:
+            tp["start_time"] = tb["start_time"]
+        all_tb_picks.append(tp)
+
+    cached = {
+        fk: _leaderboard_list_for_filter(users, all_games, all_tiebreakers, all_picks, all_tb_picks, fk)
+        for fk in _LEADERBOARD_FILTER_KEYS
+    }
+    db.collection(LEADERBOARD_CACHE_COLLECTION).document(LEADERBOARD_CACHE_DOC_ID).set(
+        {**cached, "updated_at": server_timestamp()},
+    )
+    return cached
+
+
+def get_lock_day_bounds(dt_utc):
+    """Lock-of-the-day window: 3:00 AM ET through next day 3:00 AM ET."""
+    dt_utc = normalize_datetime(dt_utc)
+    z = ZoneInfo("America/New_York")
+    local = dt_utc.astimezone(z)
+    if local.hour < 3:
+        day = local.date() - timedelta(days=1)
+    else:
+        day = local.date()
+    start_ny = datetime(day.year, day.month, day.day, 3, 0, 0, tzinfo=z)
+    end_ny = start_ny + timedelta(days=1)
+    return start_ny.astimezone(timezone.utc), end_ny.astimezone(timezone.utc)
+
+
+PICK_LOCK_BEFORE_TIP = timedelta(minutes=1)
+
+
+def picks_locked_for_game(current_time, scheduled_utc) -> bool:
+    """True when user picks/answers may no longer be submitted or changed (game tip or tiebreaker start)."""
+    scheduled_utc = normalize_datetime(scheduled_utc)
+    if scheduled_utc is None:
+        return False
+    return current_time >= scheduled_utc - PICK_LOCK_BEFORE_TIP
+
+
+# ---------------------------------------------------------------------------
+# Scoring helpers
+# ---------------------------------------------------------------------------
+
+def update_game_scores(db, game_id: str, winning_team: str) -> Tuple[list, Dict[str, int]]:
+    """Score all picks for a game. Returns (affected picks, per-user point delta for leaderboard)."""
+    picks_ref = db.collection("picks")
+    picks_query = picks_ref.where("game_id", "==", game_id).stream()
+    affected = []
+    user_deltas: Dict[str, int] = {}
+
+    for snap in picks_query:
+        pick = snap.to_dict()
+        pick_id = snap.id
+        old_pts = int(pick.get("points_awarded") or 0)
+
+        if winning_team == "PUSH":
+            points = 0
+        else:
+            norm_picked = pick.get("picked_team", "").rstrip(" *")
+            norm_winner = winning_team.rstrip(" *")
+            if norm_picked == norm_winner:
+                points = 2 if pick.get("lock") else 1
+            else:
+                points = 0
+
+        picks_ref.document(pick_id).update({"points_awarded": points})
+        pick["points_awarded"] = points
+        pick["id"] = pick_id
+        affected.append(pick)
+        uid = pick.get("user_id")
+        if uid:
+            user_deltas[uid] = user_deltas.get(uid, 0) + (points - old_pts)
+
+    logger.info(f"Scored {len(affected)} picks for game {game_id}, winner={winning_team}")
+    return affected, user_deltas
+
+
+def apply_leaderboard_point_deltas(db, user_deltas: Dict[str, int]) -> None:
+    """Update leaderboard total_points by delta (avoids re-reading all picks per user)."""
+    lb = db.collection("leaderboard")
+    for uid, delta in user_deltas.items():
+        if delta == 0:
+            continue
+        ref = lb.document(uid)
+        snap = ref.get()
+        cur = int(snap.to_dict().get("total_points") or 0) if snap.exists else 0
+        ref.set(
+            {"user_id": uid, "total_points": cur + delta, "last_updated": server_timestamp()},
+            merge=True,
+        )
+
+
+def update_leaderboard_totals(db, user_ids: list):
+    """Recalculate total_points for each user_id from picks + tiebreaker_picks."""
+    for uid in user_ids:
+        total = 0
+        for snap in db.collection("picks").where("user_id", "==", uid).stream():
+            total += snap.to_dict().get("points_awarded", 0)
+        for snap in db.collection("tiebreaker_picks").where("user_id", "==", uid).stream():
+            total += snap.to_dict().get("points_awarded", 0)
+
+        db.collection("leaderboard").document(uid).set(
+            {"user_id": uid, "total_points": total, "last_updated": server_timestamp()},
+            merge=True,
+        )
+    logger.info(f"Updated leaderboard for {len(user_ids)} users")
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Starting up – initializing Firebase…")
+    try:
+        get_db()
+        logger.info("Firebase Firestore connection OK")
+    except Exception as e:
+        logger.error(f"Firebase init failed: {e}")
+
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
+@app.get("/health/db")
+@app.head("/health/db")
+def health_check():
+    healthy = check_firestore_health()
+    return {
+        "status": "healthy" if healthy else "unhealthy",
+        "database": "firestore",
+        "connected": healthy,
+        "timestamp": get_current_utc_time().isoformat(),
+    }
+
+
+@app.get("/health")
+@app.head("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/")
+@app.head("/")
+def root():
+    return {"message": "March Madness Spreads API v2 – Firestore"}
+
+# ---------------------------------------------------------------------------
+# Auth / current user
+# ---------------------------------------------------------------------------
+
+@app.get("/users/me")
+async def read_users_me(current_user: User = Depends(get_current_user)):
+    return current_user.dict()
+
+# ---------------------------------------------------------------------------
+# Games CRUD
+# ---------------------------------------------------------------------------
+
+@app.post("/games")
+async def create_game(game: GameCreate, current_user: User = Depends(get_current_admin_user)):
+    current_time = get_current_utc_time()
+    if game.game_date <= current_time:
+        raise HTTPException(status_code=400, detail="Game date must be in the future")
+    if game.game_date > current_time + timedelta(days=365):
+        raise HTTPException(status_code=400, detail="Game date cannot be more than 1 year in the future")
+
+    db = get_db()
+    doc_ref = db.collection("games").document()
+    game_data = {
+        "home_team": game.home_team,
+        "away_team": game.away_team,
+        "spread": game.spread,
+        "game_date": game.game_date,
+        "winning_team": None,
+        "created_at": server_timestamp(),
+    }
+    doc_ref.set(game_data)
+    game_data["id"] = doc_ref.id
+    game_data["created_at"] = get_current_utc_time()
+    return _serialize_doc(game_data)
+
+
+@app.get("/games")
+def get_games(all_games: bool = False, current_user: User = Depends(get_current_user)):
+    db = get_db()
+    games_ref = db.collection("games")
+
+    if all_games and current_user.admin:
+        docs = games_ref.order_by("game_date", direction="DESCENDING").stream()
+    else:
         current_time = get_current_utc_time()
-        if tiebreaker.start_time <= current_time:
-            raise HTTPException(
-                status_code=400, 
-                detail="Tiebreaker start time must be in the future"
-            )
-        
-        # Validate start time is reasonable (not more than 1 year in the future)
-        max_future_date = current_time + timedelta(days=365)
-        if tiebreaker.start_time > max_future_date:
+        docs = games_ref.where("game_date", ">", current_time).order_by("game_date").stream()
+
+    result = []
+    for doc in docs:
+        d = doc.to_dict()
+        d["id"] = doc.id
+        result.append(_serialize_doc(d))
+    return result
+
+
+@app.put("/games/{game_id}")
+async def update_game(game_id: str, game: GameUpdate, current_user: User = Depends(get_current_admin_user)):
+    db = get_db()
+    doc_ref = db.collection("games").document(game_id)
+    snap = doc_ref.get()
+    if not snap.exists:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    existing = snap.to_dict()
+    old_winner = existing.get("winning_team")
+
+    update_data = {
+        "home_team": game.home_team,
+        "away_team": game.away_team,
+        "spread": game.spread,
+        "game_date": game.game_date,
+        "winning_team": game.winning_team,
+    }
+    doc_ref.update(update_data)
+
+    if game.winning_team != old_winner and game.winning_team:
+        affected_picks, deltas = update_game_scores(db, game_id, game.winning_team)
+        apply_leaderboard_point_deltas(db, deltas)
+
+    updated = {**existing, **update_data, "id": game_id}
+    invalidate_leaderboard_and_stats(db)
+    return _serialize_doc(updated)
+
+
+@app.delete("/games/{game_id}")
+async def delete_game(game_id: str, current_user: User = Depends(get_current_admin_user)):
+    db = get_db()
+    doc_ref = db.collection("games").document(game_id)
+    snap = doc_ref.get()
+    if not snap.exists:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    affected_user_ids = set()
+    for pick_snap in db.collection("picks").where("game_id", "==", game_id).stream():
+        affected_user_ids.add(pick_snap.to_dict().get("user_id"))
+        pick_snap.reference.delete()
+
+    doc_ref.delete()
+
+    if affected_user_ids:
+        update_leaderboard_totals(db, list(affected_user_ids))
+    invalidate_leaderboard_and_stats(db)
+
+    return {"message": "Game deleted successfully"}
+
+# ---------------------------------------------------------------------------
+# Picks
+# ---------------------------------------------------------------------------
+
+@app.post("/submit_pick")
+async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_current_user)):
+    if not current_user.make_picks:
+        raise HTTPException(status_code=403, detail="You do not have permission to make picks")
+
+    db = get_db()
+
+    game_snap = db.collection("games").document(pick.game_id).get()
+    if not game_snap.exists:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game = game_snap.to_dict()
+
+    existing_pick_snap = None
+    existing_pick = None
+    for snap in db.collection("picks").where("user_id", "==", current_user.uid).where("game_id", "==", pick.game_id).stream():
+        existing_pick_snap = snap
+        existing_pick = snap.to_dict()
+        break
+
+    current_time = get_current_utc_time()
+    game_date = _fs_timestamp_to_dt(game["game_date"])
+    picks_locked = picks_locked_for_game(current_time, game_date)
+
+    # Lock logic
+    if pick.lock is not None:
+        existing_locks = []
+        for snap in db.collection("picks").where("user_id", "==", current_user.uid).where("lock", "==", True).stream():
+            ld = snap.to_dict()
+            ld["_id"] = snap.id
+            g_snap = db.collection("games").document(ld["game_id"]).get()
+            if g_snap.exists:
+                ld["game_date"] = _fs_timestamp_to_dt(g_snap.to_dict()["game_date"])
+            existing_locks.append(ld)
+
+        if pick.lock:
+            target_day_start, target_day_end = get_lock_day_bounds(game_date)
+            for lock in existing_locks:
+                if lock["game_id"] != pick.game_id:
+                    lock_game_date = lock.get("game_date")
+                    if lock_game_date is None:
+                        continue
+                    lock_day_start, lock_day_end = get_lock_day_bounds(lock_game_date)
+                    same_day = not (target_day_start >= lock_day_end or target_day_end <= lock_day_start)
+                    if same_day:
+                        if picks_locked_for_game(current_time, lock_game_date):
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Cannot lock this game because you already have a lock on a game whose picks have locked for the same day (3am ET–3am ET).",
+                            )
+                        db.collection("picks").document(lock["_id"]).update({"lock": False})
+
+        elif not pick.lock and existing_pick and existing_pick.get("lock"):
+            if picks_locked:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot unlock — picks lock 1 minute before scheduled tip-off.",
+                )
+
+    if picks_locked:
+        is_new_pick = existing_pick is None
+        if is_new_pick:
             raise HTTPException(
                 status_code=400,
-                detail="Tiebreaker start time cannot be more than 1 year in the future"
+                detail="Cannot submit a new pick — picks lock 1 minute before scheduled tip-off.",
             )
-        
-        with get_db_cursor(commit=True) as cur:
-            logger.info(f"Creating new tiebreaker: {tiebreaker}")
-            cur.execute(
-                """
-                INSERT INTO tiebreakers (question, start_time)
-                VALUES (%s, %s)
-                RETURNING *
-                """,
-                (tiebreaker.question, tiebreaker.start_time)
+        team_changed = pick.picked_team != existing_pick.get("picked_team")
+        lock_changed = pick.lock is not None and pick.lock != existing_pick.get("lock")
+        if lock_changed:
+            raise HTTPException(
+                status_code=400,
+                detail="Your lock cannot be changed — picks lock 1 minute before scheduled tip-off.",
             )
-            new_tiebreaker = cur.fetchone()
-            logger.info(f"Tiebreaker created successfully: {new_tiebreaker}")
-            return new_tiebreaker
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating tiebreaker: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/tiebreakers")
-def get_tiebreakers():
-    """Get all tiebreakers."""
-    try:
-        with get_db_cursor() as cur:
-            # Only fetch active tiebreakers for better performance
-            current_time = get_current_utc_time()
-            cur.execute("SELECT * FROM tiebreakers WHERE start_time > %s AND is_active = TRUE ORDER BY start_time", (current_time,))
-            tiebreakers = cur.fetchall()
-            return [serialize_tiebreaker_row(t) for t in tiebreakers]
-    except Exception as e:
-        logger.error(f"Error fetching tiebreakers: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/admin/tiebreakers")
-async def get_admin_tiebreakers(current_user: User = Depends(get_current_admin_user)):
-    """Get all tiebreakers for admin management (includes past, present, and future)."""
-    try:
-        with get_db_cursor() as cur:
-            # Fetch all tiebreakers, ordered by start_time descending (most recent first)
-            cur.execute("SELECT * FROM tiebreakers ORDER BY start_time DESC")
-            tiebreakers = cur.fetchall()
-            return [serialize_tiebreaker_row(t) for t in tiebreakers]
-    except Exception as e:
-        logger.error(f"Error fetching admin tiebreakers: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/live_tiebreakers")
-def get_live_tiebreakers():
-    """Get all live tiebreakers with pick counts."""
-    try:
-        current_time = get_current_utc_time()
-        logger.debug(f"Checking live tiebreakers at {current_time}")
-        
-        # Use optimized query with retry logic
-        query = """
-            SELECT 
-                t.id as tiebreaker_id,
-                t.question,
-                t.start_time,
-                t.is_active,
-                COUNT(tp.id) as total_picks
-            FROM tiebreakers t
-            LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id
-            LEFT JOIN users u ON tp.user_id = u.id AND u.make_picks = TRUE
-            WHERE t.start_time <= %s 
-            AND t.is_active = TRUE
-            AND t.answer IS NULL
-            GROUP BY t.id, t.question, t.start_time, t.is_active
-            ORDER BY t.start_time DESC
-        """
-        
-        tiebreakers = execute_query_with_retry(query, (current_time,))
-        logger.debug(f"Found {len(tiebreakers)} live tiebreakers")
-        return tiebreakers
-    except Exception as e:
-        logger.error(f"Error fetching live tiebreakers: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/live_tiebreakers/{tiebreaker_id}/picks")
-def get_tiebreaker_picks(tiebreaker_id: int):
-    """Get detailed picks for a specific tiebreaker - called only when modal is opened."""
-    try:
-        with get_db_cursor() as cur:
-            cur.execute("""
-                SELECT 
-                    u.username,
-                    u.full_name,
-                    tp.answer
-                FROM tiebreaker_picks tp
-                JOIN users u ON tp.user_id = u.id
-                WHERE tp.tiebreaker_id = %s AND u.make_picks = TRUE
-                ORDER BY u.full_name
-            """, (tiebreaker_id,))
-            picks = cur.fetchall()
-            return picks
-    except Exception as e:
-        logger.error(f"Error fetching tiebreaker picks: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/tiebreakers/{tiebreaker_id}")
-async def update_tiebreaker(
-    tiebreaker_id: int,
-    tiebreaker: TiebreakerUpdate,
-    current_user: User = Depends(get_current_admin_user)
-):
-    """Update a tiebreaker (admin only)."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if tiebreaker exists
-            cur.execute("SELECT * FROM tiebreakers WHERE id = %s", (tiebreaker_id,))
-            existing_tiebreaker = cur.fetchone()
-            if not existing_tiebreaker:
-                raise HTTPException(status_code=404, detail="Tiebreaker not found")
-            
-            # Validate start time is not in the past (only if it's being changed)
-            existing_start_time = normalize_datetime(existing_tiebreaker["start_time"])
-            
-            # Compare dates with tolerance for small differences (within 1 minute)
-            date_difference = abs((tiebreaker.start_time - existing_start_time).total_seconds())
-            logger.info(f"Tiebreaker update - existing start time: {existing_start_time}, new start time: {tiebreaker.start_time}, difference: {date_difference} seconds")
-            
-            if date_difference > 60:  # More than 1 minute difference
-                current_time = get_current_utc_time()
-                logger.info(f"Tiebreaker start time changed significantly, validating. Current time: {current_time}")
-                
-                # Check if the new date is in the past
-                if tiebreaker.start_time <= current_time:
-                    logger.warning(f"Admin is setting tiebreaker start time to past: {tiebreaker.start_time} (current: {current_time})")
-                    # Allow past dates for admin updates, but log a warning
-                    # This allows admins to correct tiebreaker times or handle rescheduled events
-                
-                # Validate start time is reasonable (not more than 1 year in the future)
-                max_future_date = current_time + timedelta(days=365)
-                if tiebreaker.start_time > max_future_date:
-                    logger.error(f"Tiebreaker start time validation failed - start time {tiebreaker.start_time} is too far in the future")
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Tiebreaker start time cannot be more than 1 year in the future"
-                    )
-            else:
-                logger.info("Tiebreaker start time unchanged or changed by less than 1 minute, skipping validation")
-            
-            # Update tiebreaker
-            cur.execute(
-                """
-                UPDATE tiebreakers 
-                SET question = %s, start_time = %s, answer = %s, is_active = %s
-                WHERE id = %s
-                RETURNING *
-                """,
-                (tiebreaker.question, tiebreaker.start_time, tiebreaker.answer, tiebreaker.is_active, tiebreaker_id)
+        if team_changed:
+            raise HTTPException(
+                status_code=400,
+                detail="Your pick cannot be changed — picks lock 1 minute before scheduled tip-off.",
             )
-            updated_tiebreaker = cur.fetchone()
-            
-            return updated_tiebreaker
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating tiebreaker: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"message": "No changes after picks locked.", "pick": _serialize_doc({**existing_pick, "id": existing_pick_snap.id})}
 
-@app.delete("/tiebreakers/{tiebreaker_id}")
-async def delete_tiebreaker(
-    tiebreaker_id: int,
-    current_user: User = Depends(get_current_admin_user)
-):
-    """Delete a tiebreaker (admin only)."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if tiebreaker exists
-            cur.execute("SELECT * FROM tiebreakers WHERE id = %s", (tiebreaker_id,))
-            if not cur.fetchone():
-                raise HTTPException(status_code=404, detail="Tiebreaker not found")
-            
-            # Delete tiebreaker (picks will be deleted automatically due to CASCADE)
-            cur.execute("DELETE FROM tiebreakers WHERE id = %s RETURNING *", (tiebreaker_id,))
-            deleted_tiebreaker = cur.fetchone()
-            
-            # Update leaderboard points
-            cur.execute(
-                """
-                UPDATE leaderboard l
-                SET total_points = (
-                    SELECT COALESCE(SUM(points_awarded), 0)
-                    FROM picks
-                    WHERE user_id = l.user_id
-                ) + (
-                    SELECT COALESCE(SUM(points_awarded), 0)
-                    FROM tiebreaker_picks
-                    WHERE user_id = l.user_id
-                )
-                """
-            )
-            
-            return {"message": "Tiebreaker deleted successfully", "tiebreaker": deleted_tiebreaker}
-    except Exception as e:
-        logger.error(f"Error deleting tiebreaker: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    if existing_pick:
+        lock_value = pick.lock if pick.lock is not None else existing_pick.get("lock", False)
+        existing_pick_snap.reference.update({"picked_team": pick.picked_team, "lock": lock_value})
+        updated = {**existing_pick, "picked_team": pick.picked_team, "lock": lock_value, "id": existing_pick_snap.id}
+        invalidate_stats_cache(db)
+        return {"message": "Pick updated successfully", "pick": _serialize_doc(updated)}
+    else:
+        lock_value = pick.lock if pick.lock is not None else False
+        new_pick_data = {
+            "user_id": current_user.uid,
+            "game_id": pick.game_id,
+            "picked_team": pick.picked_team,
+            "points_awarded": 0,
+            "lock": lock_value,
+            "created_at": server_timestamp(),
+        }
+        doc_ref = db.collection("picks").document()
+        doc_ref.set(new_pick_data)
+        new_pick_data["id"] = doc_ref.id
+        new_pick_data["created_at"] = get_current_utc_time()
+        invalidate_stats_cache(db)
+        return {"message": "Pick submitted successfully", "pick": _serialize_doc(new_pick_data)}
 
-@app.post("/tiebreaker_picks")
-async def create_tiebreaker_pick(
-    pick: TiebreakerPick,
-    current_user: User = Depends(get_current_user)
-):
-    """Create a new tiebreaker pick."""
-    # Check if user has permission to make picks
-    if not current_user.make_picks:
-        raise HTTPException(
-            status_code=403, 
-            detail="You do not have permission to make picks"
-        )
-    
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if tiebreaker exists and is active
-            cur.execute(
-                """
-                SELECT * FROM tiebreakers 
-                WHERE id = %s AND is_active = TRUE AND answer IS NULL
-                """, 
-                (pick.tiebreaker_id,)
-            )
-            tiebreaker = cur.fetchone()
-            if not tiebreaker:
-                raise HTTPException(status_code=404, detail="Tiebreaker not found or is no longer active")
-            
-            # Check if tiebreaker has started
-            current_time = get_current_utc_time()
-            tiebreaker_start_time = normalize_datetime(tiebreaker["start_time"])
-            
-            if current_time >= tiebreaker_start_time:
-                raise HTTPException(
-                    status_code=400, 
-                    detail="Cannot submit tiebreaker pick after the tiebreaker has started"
-                )
-            
-            # Check if user already has a pick for this tiebreaker
-            cur.execute(
-                """
-                SELECT * FROM tiebreaker_picks 
-                WHERE user_id = %s AND tiebreaker_id = %s
-                """, 
-                (current_user.id, pick.tiebreaker_id)
-            )
-            existing_pick = cur.fetchone()
-            
-            if existing_pick:
-                # Update existing pick
-                cur.execute(
-                    """
-                    UPDATE tiebreaker_picks 
-                    SET answer = %s
-                    WHERE user_id = %s AND tiebreaker_id = %s
-                    RETURNING *
-                    """,
-                    (pick.answer, current_user.id, pick.tiebreaker_id)
-                )
-            else:
-                # Create new pick
-                cur.execute(
-                    """
-                    INSERT INTO tiebreaker_picks (user_id, tiebreaker_id, answer)
-                    VALUES (%s, %s, %s)
-                    RETURNING *
-                    """,
-                    (current_user.id, pick.tiebreaker_id, pick.answer)
-                )
-            
-            new_pick = cur.fetchone()
-            return new_pick
-    except Exception as e:
-        logger.error(f"Error creating tiebreaker pick: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+
+def _apply_game_result(db, game_id: str, winning_team: str, auto: bool = False) -> bool:
+    """Set winning_team and score picks. If auto=True, sets auto_resolved_at. Returns False if game missing or already resolved."""
+    game_ref = db.collection("games").document(game_id)
+    game_snap = game_ref.get()
+    if not game_snap.exists:
+        return False
+    existing = game_snap.to_dict()
+    if existing.get("winning_team"):
+        return False
+    payload: Dict[str, Any] = {"winning_team": winning_team}
+    if auto:
+        payload["auto_resolved_at"] = server_timestamp()
+    game_ref.update(payload)
+    affected_picks, deltas = update_game_scores(db, game_id, winning_team)
+    apply_leaderboard_point_deltas(db, deltas)
+    return True
+
+
+@app.post("/update_score")
+def update_score(result: GameResult):
+    db = get_db()
+    game_ref = db.collection("games").document(result.game_id)
+    game_snap = game_ref.get()
+    if not game_snap.exists:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    game_ref.update({"winning_team": result.winning_team})
+    _affected, deltas = update_game_scores(db, result.game_id, result.winning_team)
+    apply_leaderboard_point_deltas(db, deltas)
+    invalidate_leaderboard_and_stats(db)
+
+    return {"message": "Scores updated successfully", "winning_team": result.winning_team}
+
+# ---------------------------------------------------------------------------
+# My picks (current user)
+# ---------------------------------------------------------------------------
+
+@app.get("/my_picks")
+async def get_my_picks(current_user: User = Depends(get_current_user)):
+    db = get_db()
+    games = {doc.id: {**doc.to_dict(), "id": doc.id} for doc in db.collection("games").order_by("game_date").stream()}
+    user_picks = {}
+    for snap in db.collection("picks").where("user_id", "==", current_user.uid).stream():
+        p = snap.to_dict()
+        user_picks[p["game_id"]] = p
+
+    result = []
+    for gid, g in games.items():
+        pick = user_picks.get(gid, {})
+        row = {
+            "game_id": gid,
+            "home_team": g["home_team"],
+            "away_team": g["away_team"],
+            "spread": g["spread"],
+            "game_date": g["game_date"],
+            "winning_team": g.get("winning_team"),
+            "picked_team": pick.get("picked_team"),
+            "points_awarded": pick.get("points_awarded"),
+            "lock": pick.get("lock"),
+        }
+        result.append(_serialize_doc(row))
+    return result
+
 
 @app.get("/picks_data")
 async def get_picks_data(current_user: User = Depends(get_current_user)):
-    """Get all data needed for the Picks page in a single optimized call."""
-    # Check if user has permission to make picks
     if not current_user.make_picks:
-        raise HTTPException(
-            status_code=403, 
-            detail="You do not have permission to make picks"
+        raise HTTPException(status_code=403, detail="You do not have permission to make picks")
+
+    db = get_db()
+    current_time = get_current_utc_time()
+
+    games_out = []
+    for doc in db.collection("games").where("game_date", ">", current_time).order_by("game_date").stream():
+        g = doc.to_dict()
+        g["id"] = doc.id
+        g["game_id"] = doc.id
+        games_out.append(g)
+
+    user_picks = {}
+    for snap in db.collection("picks").where("user_id", "==", current_user.uid).stream():
+        p = snap.to_dict()
+        user_picks[p["game_id"]] = p
+
+    games_result = []
+    for g in games_out:
+        pick = user_picks.get(g["id"], {})
+        row = {
+            "game_id": g["id"],
+            "home_team": g["home_team"],
+            "away_team": g["away_team"],
+            "spread": g["spread"],
+            "game_date": g["game_date"],
+            "winning_team": g.get("winning_team"),
+            "picked_team": pick.get("picked_team"),
+            "points_awarded": pick.get("points_awarded"),
+            "lock": pick.get("lock"),
+        }
+        games_result.append(_serialize_doc(row))
+
+    # Avoid compound query (start_time + is_active + order_by) — requires a Firestore
+    # composite index and fails on empty projects. Filter/sort in process instead.
+    tiebreakers_out = []
+    for doc in db.collection("tiebreakers").stream():
+        t = doc.to_dict()
+        if not t.get("is_active", True):
+            continue
+        st = _fs_timestamp_to_dt(t.get("start_time"))
+        if st is None or st <= current_time:
+            continue
+        t["id"] = doc.id
+        t["tiebreaker_id"] = doc.id
+        tiebreakers_out.append(t)
+    tiebreakers_out.sort(
+        key=lambda x: _fs_timestamp_to_dt(x.get("start_time"))
+        or datetime.min.replace(tzinfo=timezone.utc)
+    )
+
+    user_tb_picks = {}
+    for snap in db.collection("tiebreaker_picks").where("user_id", "==", current_user.uid).stream():
+        tp = snap.to_dict()
+        user_tb_picks[tp["tiebreaker_id"]] = tp
+
+    tiebreakers_result = []
+    for t in tiebreakers_out:
+        tp = user_tb_picks.get(t["id"], {})
+        row = {
+            "tiebreaker_id": t["id"],
+            "question": t["question"],
+            "start_time": t["start_time"],
+            "correct_answer": t.get("answer"),
+            "is_active": t.get("is_active", True),
+            "user_answer": tp.get("answer"),
+            "points_awarded": tp.get("points_awarded"),
+        }
+        tiebreakers_result.append(_serialize_doc(row))
+
+    return {"games": games_result, "tiebreakers": tiebreakers_result}
+
+# ---------------------------------------------------------------------------
+# Leaderboard
+# ---------------------------------------------------------------------------
+
+@app.get("/leaderboard/weeks")
+def get_available_weeks():
+    week_ranges = get_week_ranges()
+    return {"weeks": [{"key": k, "label": v["label"]} for k, v in week_ranges.items()]}
+
+
+def _get_leaderboard_response(db, filter_key: str) -> list:
+    """Read-through cache with single-flight rebuild to avoid duplicate full scans."""
+    cache_ref = db.collection(LEADERBOARD_CACHE_COLLECTION).document(LEADERBOARD_CACHE_DOC_ID)
+    for attempt in range(60):
+        snap = cache_ref.get()
+        if snap.exists:
+            data = snap.to_dict() or {}
+            row = data.get(filter_key)
+            if row is not None:
+                return row
+
+        if _try_acquire_leaderboard_build_lock(db):
+            try:
+                cached = _compute_and_store_leaderboard_cache(db)
+                return cached.get(filter_key, [])
+            finally:
+                _release_leaderboard_build_lock(db)
+
+        time.sleep(0.08)
+
+    cached = _compute_and_store_leaderboard_cache(db)
+    return cached.get(filter_key, [])
+
+
+@app.get("/leaderboard")
+def get_leaderboard(filter: str = "overall"):
+    db = get_db()
+    if filter not in _LEADERBOARD_FILTER_KEYS:
+        filter = "overall"
+    return _get_leaderboard_response(db, filter)
+
+# ---------------------------------------------------------------------------
+# User picks (public, by uid – for started games)
+# ---------------------------------------------------------------------------
+
+@app.get("/user_picks/{uid}")
+def get_user_picks(uid: str):
+    db = get_db()
+    current_time = get_current_utc_time()
+
+    user_snap = db.collection("users").document(uid).get()
+    if not user_snap.exists:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    all_games = {}
+    for doc in db.collection("games").stream():
+        g = doc.to_dict()
+        g["id"] = doc.id
+        gd = _fs_timestamp_to_dt(g.get("game_date"))
+        if gd and gd <= current_time:
+            all_games[doc.id] = {**g, "game_date": gd}
+
+    user_picks = {}
+    for snap in db.collection("picks").where("user_id", "==", uid).stream():
+        p = snap.to_dict()
+        user_picks[p["game_id"]] = p
+
+    result = []
+    for gid, g in sorted(all_games.items(), key=lambda x: x[1]["game_date"], reverse=True):
+        pick = user_picks.get(gid, {})
+        row = {
+            "game_id": gid,
+            "home_team": g["home_team"],
+            "away_team": g["away_team"],
+            "spread": g["spread"],
+            "game_date": g["game_date"],
+            "winning_team": g.get("winning_team"),
+            "picked_team": pick.get("picked_team"),
+            "points_awarded": pick.get("points_awarded"),
+        }
+        result.append(_serialize_doc(row))
+    return result
+
+# ---------------------------------------------------------------------------
+# Live games (cached to reduce Firestore reads)
+# ---------------------------------------------------------------------------
+
+def _compute_live_data(db) -> Tuple[List[Any], List[Any]]:
+    """Compute live_games and live_tiebreakers lists (serialized for cache)."""
+    current_time = get_current_utc_time()
+
+    games_out = []
+    for doc in db.collection("games").where("game_date", "<=", current_time).stream():
+        g = doc.to_dict()
+        winner = g.get("winning_team")
+        if winner and winner.strip():
+            continue
+        g["id"] = doc.id
+        g["game_id"] = doc.id
+        games_out.append(g)
+
+    game_ids = [g["id"] for g in games_out]
+
+    make_picks_uids = {
+        (d.to_dict() or {}).get("uid") or d.id
+        for d in db.collection("users").where("make_picks", "==", True).stream()
+        if (d.to_dict() or {}).get("uid") or d.id
+    }
+
+    picks_by_game: Dict[str, list] = {gid: [] for gid in game_ids}
+    for gid in game_ids:
+        for snap in db.collection("picks").where("game_id", "==", gid).stream():
+            p = snap.to_dict()
+            if p.get("user_id") in make_picks_uids:
+                picks_by_game[gid].append(p)
+
+    live_games_result = []
+    for g in sorted(games_out, key=lambda x: _fs_timestamp_to_dt(x.get("game_date")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True):
+        gid = g["id"]
+        game_picks = picks_by_game.get(gid, [])
+        row = {
+            "game_id": gid,
+            "home_team": g["home_team"],
+            "away_team": g["away_team"],
+            "spread": g["spread"],
+            "game_date": g["game_date"],
+            "winning_team": g.get("winning_team"),
+            "total_picks": len(game_picks),
+            "home_picks": sum(1 for p in game_picks if p.get("picked_team") == g["home_team"]),
+            "away_picks": sum(1 for p in game_picks if p.get("picked_team") == g["away_team"]),
+        }
+        live_games_result.append(_serialize_doc(row))
+
+    tbs = []
+    for doc in db.collection("tiebreakers").where("is_active", "==", True).stream():
+        t = doc.to_dict()
+        st = _fs_timestamp_to_dt(t.get("start_time"))
+        if st and st <= current_time and not t.get("answer"):
+            t["id"] = doc.id
+            t["tiebreaker_id"] = doc.id
+            tbs.append(t)
+
+    tb_ids = [t["id"] for t in tbs]
+    picks_count = {tid: 0 for tid in tb_ids}
+    if tb_ids:
+        for i in range(0, len(tb_ids), _FIRESTORE_IN_QUERY_MAX):
+            chunk = tb_ids[i : i + _FIRESTORE_IN_QUERY_MAX]
+            for snap in db.collection("tiebreaker_picks").where(
+                "tiebreaker_id", "in", list(chunk)
+            ).stream():
+                tp = snap.to_dict()
+                if tp.get("user_id") in make_picks_uids:
+                    tid = tp.get("tiebreaker_id")
+                    if tid in picks_count:
+                        picks_count[tid] = picks_count.get(tid, 0) + 1
+
+    live_tiebreakers_result = []
+    for t in sorted(tbs, key=lambda x: _fs_timestamp_to_dt(x.get("start_time")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True):
+        row = {
+            "tiebreaker_id": t["id"],
+            "question": t["question"],
+            "start_time": t["start_time"],
+            "is_active": t.get("is_active", True),
+            "total_picks": picks_count.get(t["id"], 0),
+        }
+        live_tiebreakers_result.append(_serialize_doc(row))
+
+    return (live_games_result, live_tiebreakers_result)
+
+
+def _get_live_cache(db) -> Tuple[List[Any], List[Any]]:
+    """Read-through cache for live_games + live_tiebreakers. 1 read when warm, full compute when cold."""
+    cache_ref = db.collection(LEADERBOARD_CACHE_COLLECTION).document(LIVE_CACHE_DOC_ID)
+    snap = cache_ref.get()
+    if snap.exists:
+        data = snap.to_dict() or {}
+        updated_at = data.get("updated_at")
+        if updated_at:
+            dt = _fs_timestamp_to_dt(updated_at)
+            if dt and (get_current_utc_time() - dt).total_seconds() < LIVE_CACHE_TTL_SEC:
+                return (
+                    data.get("live_games") or [],
+                    data.get("live_tiebreakers") or [],
+                )
+    live_games, live_tiebreakers = _compute_live_data(db)
+    cache_ref.set({
+        "live_games": live_games,
+        "live_tiebreakers": live_tiebreakers,
+        "updated_at": server_timestamp(),
+    })
+    return (live_games, live_tiebreakers)
+
+
+@app.get("/live")
+def get_live():
+    """Combined live_games + live_tiebreakers in one response. One cache read per refresh."""
+    db = get_db()
+    live_games, live_tiebreakers = _get_live_cache(db)
+    return {"live_games": live_games, "live_tiebreakers": live_tiebreakers}
+
+
+@app.get("/live_games")
+def get_live_games():
+    db = get_db()
+    live_games, _ = _get_live_cache(db)
+    return live_games
+
+
+@app.get("/live_games/{game_id}/picks")
+def get_game_picks(game_id: str):
+    db = get_db()
+    result = []
+    for snap in db.collection("picks").where("game_id", "==", game_id).stream():
+        p = snap.to_dict()
+        u_snap = db.collection("users").document(p["user_id"]).get()
+        if not u_snap.exists:
+            continue
+        u = u_snap.to_dict()
+        if not u.get("make_picks"):
+            continue
+        result.append({
+            "display_name": u.get("display_name", u.get("email", "")),
+            "uid": p["user_id"],
+            "picked_team": p.get("picked_team"),
+            "lock": p.get("lock", False),
+        })
+    result.sort(key=lambda x: x["display_name"])
+    return result
+
+# ---------------------------------------------------------------------------
+# Admin – user picks status
+# ---------------------------------------------------------------------------
+
+@app.get("/admin/user_picks_status")
+async def get_user_picks_status(current_user: User = Depends(get_current_admin_user)):
+    db = get_db()
+    current_time = get_current_utc_time()
+    current_day_start, current_day_end = get_lock_day_bounds(current_time)
+
+    upcoming_games = []
+    for doc in db.collection("games").where("game_date", ">", current_time).stream():
+        upcoming_games.append(doc.id)
+    total_upcoming_games = len(upcoming_games)
+
+    # Single-field query only — compound (is_active + start_time) needs a Firestore composite index.
+    upcoming_tbs = []
+    for doc in db.collection("tiebreakers").where("is_active", "==", True).stream():
+        st = _fs_timestamp_to_dt(doc.to_dict().get("start_time"))
+        if st and st > current_time:
+            upcoming_tbs.append(doc.id)
+    total_upcoming_tbs = len(upcoming_tbs)
+
+    total_required = total_upcoming_games + total_upcoming_tbs
+
+    users = {}
+    for doc in db.collection("users").where("make_picks", "==", True).stream():
+        u = doc.to_dict() or {}
+        uid = u.get("uid") or doc.id
+        if not uid:
+            continue
+        users[uid] = u
+
+    upcoming_set = set(upcoming_games)
+    upcoming_tb_set = set(upcoming_tbs)
+
+    all_picks: Dict[str, list] = defaultdict(list)
+    if upcoming_games:
+        for i in range(0, len(upcoming_games), _FIRESTORE_IN_QUERY_MAX):
+            chunk = upcoming_games[i : i + _FIRESTORE_IN_QUERY_MAX]
+            for snap in db.collection("picks").where("game_id", "in", list(chunk)).stream():
+                p = snap.to_dict()
+                uid = p.get("user_id")
+                if uid:
+                    all_picks[uid].append(p)
+
+    all_tb_picks: Dict[str, list] = defaultdict(list)
+    if upcoming_tbs:
+        for i in range(0, len(upcoming_tbs), _FIRESTORE_IN_QUERY_MAX):
+            chunk = upcoming_tbs[i : i + _FIRESTORE_IN_QUERY_MAX]
+            for snap in db.collection("tiebreaker_picks").where(
+                "tiebreaker_id", "in", list(chunk)
+            ).stream():
+                tp = snap.to_dict()
+                uid = tp.get("user_id")
+                if uid:
+                    all_tb_picks[uid].append(tp)
+
+    lock_picks_by_user: Dict[str, list] = defaultdict(list)
+    for snap in db.collection("picks").where("lock", "==", True).stream():
+        p = snap.to_dict()
+        uid = p.get("user_id")
+        if uid and uid in users:
+            lock_picks_by_user[uid].append(p)
+
+    all_games_cache = {}
+    for doc in db.collection("games").stream():
+        g = doc.to_dict()
+        all_games_cache[doc.id] = g
+
+    result = []
+    for uid, u in users.items():
+        user_upcoming_picks = sum(
+            1 for p in all_picks.get(uid, []) if p.get("game_id") in upcoming_set
         )
-    
-    try:
-        with get_db_cursor() as cur:
-            # Get current time for filtering
-            current_time = get_current_utc_time()
-            
-            # Single query to get games with user picks and locks
-            cur.execute("""
-                SELECT 
-                    g.id as game_id,
-                    g.home_team,
-                    g.away_team,
-                    g.spread,
-                    g.game_date,
-                    g.winning_team,
-                    p.picked_team,
-                    p.points_awarded,
-                    p.lock
-                FROM games g
-                LEFT JOIN picks p ON g.id = p.game_id AND p.user_id = %s
-                WHERE g.game_date > %s
-                ORDER BY g.game_date
-            """, (current_user.id, current_time))
-            games = cur.fetchall()
-            
-            # Single query to get active tiebreakers with user picks
-            cur.execute("""
-                SELECT 
-                    t.id as tiebreaker_id,
-                    t.question,
-                    t.start_time,
-                    t.answer as correct_answer,
-                    t.is_active,
-                    tp.answer as user_answer,
-                    tp.points_awarded
-                FROM tiebreakers t
-                LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id AND tp.user_id = %s
-                WHERE t.start_time > %s AND t.is_active = TRUE
-                ORDER BY t.start_time
-            """, (current_user.id, current_time))
-            tiebreakers = cur.fetchall()
-            
-            return {
-                "games": [serialize_game_row(g) for g in games],
-                "tiebreakers": [serialize_tiebreaker_row(t) for t in tiebreakers]
-            }
-    except Exception as e:
-        logger.error(f"Error fetching picks data: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        user_upcoming_tb_picks = sum(
+            1 for tp in all_tb_picks.get(uid, []) if tp.get("tiebreaker_id") in upcoming_tb_set
+        )
+        total_picks_made = user_upcoming_picks + user_upcoming_tb_picks
+
+        has_lock = False
+        for p in lock_picks_by_user.get(uid, []):
+            if not p.get("lock"):
+                continue
+            game = all_games_cache.get(p.get("game_id"))
+            if game:
+                gd = _fs_timestamp_to_dt(game.get("game_date"))
+                if gd and current_day_start <= gd < current_day_end:
+                    has_lock = True
+                    break
+
+        result.append({
+            "display_name": u.get("display_name", u.get("email", "")),
+            "email": (u.get("email") or "").strip(),
+            "uid": uid,
+            "total_games": total_required,
+            "picks_made": total_picks_made,
+            "is_complete": total_picks_made == total_required,
+            "has_current_day_lock": has_lock,
+        })
+
+    result.sort(key=lambda x: x["display_name"])
+    return result
+
+# ---------------------------------------------------------------------------
+# Admin – all picks for a specific user
+# ---------------------------------------------------------------------------
+
+@app.get("/admin/user_all_picks/{uid}")
+async def get_user_all_picks(uid: str, current_user: User = Depends(get_current_admin_user)):
+    db = get_db()
+    user_snap = db.collection("users").document(uid).get()
+    if not user_snap.exists:
+        raise HTTPException(status_code=404, detail="User not found")
+    u = user_snap.to_dict()
+    if not u.get("make_picks"):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    all_games = {}
+    for doc in db.collection("games").order_by("game_date").stream():
+        g = doc.to_dict()
+        g["id"] = doc.id
+        all_games[doc.id] = g
+
+    user_picks = {}
+    for snap in db.collection("picks").where("user_id", "==", uid).stream():
+        p = snap.to_dict()
+        user_picks[p["game_id"]] = p
+
+    game_picks = []
+    for gid, g in all_games.items():
+        pick = user_picks.get(gid, {})
+        row = {
+            "game_id": gid,
+            "home_team": g["home_team"],
+            "away_team": g["away_team"],
+            "spread": g["spread"],
+            "game_date": g["game_date"],
+            "winning_team": g.get("winning_team"),
+            "picked_team": pick.get("picked_team"),
+            "points_awarded": pick.get("points_awarded"),
+            "lock": pick.get("lock"),
+        }
+        game_picks.append(_serialize_doc(row))
+
+    all_tbs = {}
+    for doc in db.collection("tiebreakers").order_by("start_time").stream():
+        t = doc.to_dict()
+        t["id"] = doc.id
+        all_tbs[doc.id] = t
+
+    user_tb_picks = {}
+    for snap in db.collection("tiebreaker_picks").where("user_id", "==", uid).stream():
+        tp = snap.to_dict()
+        user_tb_picks[tp["tiebreaker_id"]] = tp
+
+    tiebreaker_picks = []
+    for tid, t in all_tbs.items():
+        tp = user_tb_picks.get(tid, {})
+        row = {
+            "tiebreaker_id": tid,
+            "question": t["question"],
+            "start_time": t["start_time"],
+            "correct_answer": t.get("answer"),
+            "is_active": t.get("is_active", True),
+            "user_answer": tp.get("answer"),
+            "points_awarded": tp.get("points_awarded"),
+        }
+        tiebreaker_picks.append(_serialize_doc(row))
+
+    return {
+        "user": {"uid": uid, "display_name": u.get("display_name", "")},
+        "game_picks": game_picks,
+        "tiebreaker_picks": tiebreaker_picks,
+    }
+
+# ---------------------------------------------------------------------------
+# User all past picks (public)
+# ---------------------------------------------------------------------------
+
+@app.get("/user_all_past_picks/{uid}")
+async def get_user_all_past_picks(uid: str, filter: str = "overall"):
+    db = get_db()
+    current_time = get_current_utc_time()
+
+    user_snap = db.collection("users").document(uid).get()
+    if not user_snap.exists:
+        raise HTTPException(status_code=404, detail="User not found")
+    u = user_snap.to_dict()
+    if not u.get("make_picks"):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    all_games = {}
+    for doc in db.collection("games").stream():
+        g = doc.to_dict()
+        g["id"] = doc.id
+        g["game_date"] = _fs_timestamp_to_dt(g.get("game_date"))
+        if g["game_date"] and g["game_date"] <= current_time:
+            all_games[doc.id] = g
+
+    user_picks = {}
+    for snap in db.collection("picks").where("user_id", "==", uid).stream():
+        p = snap.to_dict()
+        user_picks[p["game_id"]] = p
+
+    game_picks_list = []
+    for gid, g in all_games.items():
+        pick = user_picks.get(gid, {})
+        row = {
+            "game_id": gid,
+            "home_team": g["home_team"],
+            "away_team": g["away_team"],
+            "spread": g["spread"],
+            "game_date": g["game_date"],
+            "winning_team": g.get("winning_team"),
+            "picked_team": pick.get("picked_team"),
+            "points_awarded": pick.get("points_awarded"),
+            "lock": pick.get("lock"),
+        }
+        game_picks_list.append(row)
+
+    game_picks_list = _filter_by_week(game_picks_list, "game_date", filter)
+    game_picks_list.sort(key=lambda x: x.get("game_date") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+    all_tbs = {}
+    for doc in db.collection("tiebreakers").stream():
+        t = doc.to_dict()
+        t["id"] = doc.id
+        t["start_time"] = _fs_timestamp_to_dt(t.get("start_time"))
+        if t["start_time"] and t["start_time"] <= current_time:
+            all_tbs[doc.id] = t
+
+    user_tb_picks = {}
+    for snap in db.collection("tiebreaker_picks").where("user_id", "==", uid).stream():
+        tp = snap.to_dict()
+        user_tb_picks[tp["tiebreaker_id"]] = tp
+
+    tb_picks_list = []
+    for tid, t in all_tbs.items():
+        tp = user_tb_picks.get(tid, {})
+        accuracy_diff = None
+        try:
+            if t.get("answer") and tp.get("answer"):
+                if re.match(r"^[0-9]+\.?[0-9]*$", str(t["answer"])) and re.match(r"^[0-9]+\.?[0-9]*$", str(tp["answer"])):
+                    accuracy_diff = abs(float(t["answer"]) - float(tp["answer"]))
+        except (ValueError, TypeError):
+            pass
+        row = {
+            "tiebreaker_id": tid,
+            "question": t["question"],
+            "start_time": t["start_time"],
+            "correct_answer": t.get("answer"),
+            "is_active": t.get("is_active", True),
+            "user_answer": tp.get("answer"),
+            "points_awarded": tp.get("points_awarded"),
+            "accuracy_diff": accuracy_diff,
+        }
+        tb_picks_list.append(row)
+
+    tb_picks_list = _filter_by_week(tb_picks_list, "start_time", filter)
+    tb_picks_list.sort(key=lambda x: x.get("start_time") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+    return {
+        "user": {"uid": uid, "display_name": u.get("display_name", "")},
+        "game_picks": [_serialize_doc(gp) for gp in game_picks_list],
+        "tiebreaker_picks": [_serialize_doc(tp) for tp in tb_picks_list],
+    }
+
+# ---------------------------------------------------------------------------
+# Tiebreakers CRUD
+# ---------------------------------------------------------------------------
+
+@app.post("/tiebreakers")
+async def create_tiebreaker(tiebreaker: TiebreakerCreate, current_user: User = Depends(get_current_admin_user)):
+    current_time = get_current_utc_time()
+    if tiebreaker.start_time <= current_time:
+        raise HTTPException(status_code=400, detail="Tiebreaker start time must be in the future")
+    if tiebreaker.start_time > current_time + timedelta(days=365):
+        raise HTTPException(status_code=400, detail="Tiebreaker start time cannot be more than 1 year in the future")
+
+    db = get_db()
+    doc_ref = db.collection("tiebreakers").document()
+    data = {
+        "question": tiebreaker.question,
+        "start_time": tiebreaker.start_time,
+        "answer": None,
+        "is_active": True,
+        "created_at": server_timestamp(),
+    }
+    doc_ref.set(data)
+    data["id"] = doc_ref.id
+    data["created_at"] = get_current_utc_time()
+    return _serialize_doc(data)
+
+
+@app.get("/tiebreakers")
+def get_tiebreakers():
+    db = get_db()
+    current_time = get_current_utc_time()
+    result = []
+    for doc in db.collection("tiebreakers").where("start_time", ">", current_time).where("is_active", "==", True).order_by("start_time").stream():
+        t = doc.to_dict()
+        t["id"] = doc.id
+        result.append(_serialize_doc(t))
+    return result
+
+
+@app.get("/admin/tiebreakers")
+async def get_admin_tiebreakers(current_user: User = Depends(get_current_admin_user)):
+    db = get_db()
+    result = []
+    for doc in db.collection("tiebreakers").order_by("start_time", direction="DESCENDING").stream():
+        t = doc.to_dict()
+        t["id"] = doc.id
+        result.append(_serialize_doc(t))
+    return result
+
+
+@app.put("/tiebreakers/{tiebreaker_id}")
+async def update_tiebreaker(tiebreaker_id: str, tiebreaker: TiebreakerUpdate, current_user: User = Depends(get_current_admin_user)):
+    db = get_db()
+    doc_ref = db.collection("tiebreakers").document(tiebreaker_id)
+    snap = doc_ref.get()
+    if not snap.exists:
+        raise HTTPException(status_code=404, detail="Tiebreaker not found")
+
+    answer_val = str(tiebreaker.answer) if tiebreaker.answer is not None else None
+    update_data = {
+        "question": tiebreaker.question,
+        "start_time": tiebreaker.start_time,
+        "answer": answer_val,
+        "is_active": tiebreaker.is_active,
+    }
+    doc_ref.update(update_data)
+
+    updated = {**snap.to_dict(), **update_data, "id": tiebreaker_id}
+    invalidate_leaderboard_cache(db)
+    return _serialize_doc(updated)
+
+
+@app.delete("/tiebreakers/{tiebreaker_id}")
+async def delete_tiebreaker(tiebreaker_id: str, current_user: User = Depends(get_current_admin_user)):
+    db = get_db()
+    doc_ref = db.collection("tiebreakers").document(tiebreaker_id)
+    snap = doc_ref.get()
+    if not snap.exists:
+        raise HTTPException(status_code=404, detail="Tiebreaker not found")
+
+    affected_user_ids = set()
+    for tp_snap in db.collection("tiebreaker_picks").where("tiebreaker_id", "==", tiebreaker_id).stream():
+        affected_user_ids.add(tp_snap.to_dict().get("user_id"))
+        tp_snap.reference.delete()
+
+    doc_ref.delete()
+
+    if affected_user_ids:
+        update_leaderboard_totals(db, list(affected_user_ids))
+    invalidate_leaderboard_cache(db)
+
+    return {"message": "Tiebreaker deleted successfully"}
+
+
+@app.get("/live_tiebreakers")
+def get_live_tiebreakers():
+    db = get_db()
+    _, live_tiebreakers = _get_live_cache(db)
+    return live_tiebreakers
+
+
+@app.get("/live_tiebreakers/{tiebreaker_id}/picks")
+def get_tiebreaker_picks_detail(tiebreaker_id: str):
+    db = get_db()
+    result = []
+    for snap in db.collection("tiebreaker_picks").where("tiebreaker_id", "==", tiebreaker_id).stream():
+        tp = snap.to_dict()
+        u_snap = db.collection("users").document(tp["user_id"]).get()
+        if not u_snap.exists:
+            continue
+        u = u_snap.to_dict()
+        if not u.get("make_picks"):
+            continue
+        result.append({
+            "display_name": u.get("display_name", u.get("email", "")),
+            "uid": tp["user_id"],
+            "answer": tp.get("answer"),
+        })
+    result.sort(key=lambda x: x["display_name"])
+    return result
+
+
+@app.post("/tiebreaker_picks")
+async def create_tiebreaker_pick(pick: TiebreakerPick, current_user: User = Depends(get_current_user)):
+    if not current_user.make_picks:
+        raise HTTPException(status_code=403, detail="You do not have permission to make picks")
+
+    db = get_db()
+
+    tb_snap = db.collection("tiebreakers").document(pick.tiebreaker_id).get()
+    if not tb_snap.exists:
+        raise HTTPException(status_code=404, detail="Tiebreaker not found or is no longer active")
+    tb = tb_snap.to_dict()
+    if not tb.get("is_active") or tb.get("answer"):
+        raise HTTPException(status_code=404, detail="Tiebreaker not found or is no longer active")
+
+    current_time = get_current_utc_time()
+    st = _fs_timestamp_to_dt(tb.get("start_time"))
+    if st and picks_locked_for_game(current_time, st):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot submit or change tiebreaker answer — entries lock 1 minute before the scheduled start.",
+        )
+
+    existing_snap = None
+    for snap in db.collection("tiebreaker_picks").where("user_id", "==", current_user.uid).where("tiebreaker_id", "==", pick.tiebreaker_id).stream():
+        existing_snap = snap
+        break
+
+    answer_val = str(pick.answer)
+
+    if existing_snap:
+        existing_snap.reference.update({"answer": answer_val})
+        updated = {**existing_snap.to_dict(), "answer": answer_val, "id": existing_snap.id}
+        return _serialize_doc(updated)
+    else:
+        new_data = {
+            "user_id": current_user.uid,
+            "tiebreaker_id": pick.tiebreaker_id,
+            "answer": answer_val,
+            "points_awarded": 0,
+            "created_at": server_timestamp(),
+        }
+        doc_ref = db.collection("tiebreaker_picks").document()
+        doc_ref.set(new_data)
+        new_data["id"] = doc_ref.id
+        new_data["created_at"] = get_current_utc_time()
+        return _serialize_doc(new_data)
+
 
 @app.get("/my_tiebreaker_picks")
 async def get_my_tiebreaker_picks(current_user: User = Depends(get_current_user)):
-    """Get all tiebreaker picks for the current user."""
-    try:
-        with get_db_cursor() as cur:
-            cur.execute("""
-                SELECT 
-                    t.id as tiebreaker_id,
-                    t.question,
-                    t.start_time,
-                    t.answer as correct_answer,
-                    t.is_active,
-                    tp.answer as user_answer,
-                    tp.points_awarded
-                FROM tiebreakers t
-                LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id AND tp.user_id = %s
-                ORDER BY t.start_time
-            """, (current_user.id,))
-            picks = cur.fetchall()
-            return [serialize_tiebreaker_row(p) for p in picks]
-    except Exception as e:
-        logger.error(f"Error fetching user tiebreaker picks: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    db = get_db()
+    all_tbs = {}
+    for doc in db.collection("tiebreakers").order_by("start_time").stream():
+        t = doc.to_dict()
+        t["id"] = doc.id
+        all_tbs[doc.id] = t
 
-@app.get("/admin/user_all_picks/{username}")
-async def get_user_all_picks(
-    username: str,
-    current_user: User = Depends(get_current_admin_user)
-):
-    """Get ALL picks for a specific user (admin only), regardless of start time."""
-    try:
-        with get_db_cursor() as cur:
-            # Get user info
-            cur.execute("SELECT id, username, full_name FROM users WHERE username = %s", (username,))
-            user = cur.fetchone()
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found")
-            
-            # Check if user has make_picks permission
-            cur.execute("SELECT make_picks FROM users WHERE username = %s", (username,))
-            user_permissions = cur.fetchone()
-            if not user_permissions or not user_permissions['make_picks']:
-                raise HTTPException(status_code=404, detail="User not found")
+    user_tb_picks = {}
+    for snap in db.collection("tiebreaker_picks").where("user_id", "==", current_user.uid).stream():
+        tp = snap.to_dict()
+        user_tb_picks[tp["tiebreaker_id"]] = tp
 
-            # Get all game picks
-            cur.execute("""
-                SELECT
-                    g.id as game_id,
-                    g.home_team,
-                    g.away_team,
-                    g.spread,
-                    g.game_date,
-                    g.winning_team,
-                    p.picked_team,
-                    p.points_awarded,
-                    p.lock
-                FROM games g
-                LEFT JOIN picks p ON g.id = p.game_id AND p.user_id = %s
-                ORDER BY g.game_date
-            """, (user['id'],))
-            game_picks = cur.fetchall()
+    result = []
+    for tid, t in all_tbs.items():
+        tp = user_tb_picks.get(tid, {})
+        row = {
+            "tiebreaker_id": tid,
+            "question": t["question"],
+            "start_time": t["start_time"],
+            "correct_answer": t.get("answer"),
+            "is_active": t.get("is_active", True),
+            "user_answer": tp.get("answer"),
+            "points_awarded": tp.get("points_awarded"),
+        }
+        result.append(_serialize_doc(row))
+    return result
 
-            # Get all tiebreaker picks
-            cur.execute("""
-                SELECT 
-                    t.id as tiebreaker_id,
-                    t.question,
-                    t.start_time,
-                    t.answer as correct_answer,
-                    t.is_active,
-                    tp.answer as user_answer,
-                    tp.points_awarded
-                FROM tiebreakers t
-                LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id AND tp.user_id = %s
-                ORDER BY t.start_time
-            """, (user['id'],))
-            tiebreaker_picks = cur.fetchall()
-
-            return {
-                "user": user,
-                "game_picks": game_picks,
-                "tiebreaker_picks": tiebreaker_picks
-            }
-    except Exception as e:
-        logger.error(f"Error fetching all user picks: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/tiebreaker_picks/points")
-async def update_tiebreaker_points(
-    points_update: TiebreakerPointsUpdate,
-    current_user: User = Depends(get_current_admin_user)
-):
-    """Update points for a tiebreaker pick (admin only)."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if tiebreaker pick exists
-            cur.execute(
-                """
-                SELECT * FROM tiebreaker_picks 
-                WHERE user_id = %s AND tiebreaker_id = %s
-                """, 
-                (points_update.user_id, points_update.tiebreaker_id)
-            )
-            existing_pick = cur.fetchone()
-            if not existing_pick:
-                raise HTTPException(status_code=404, detail="Tiebreaker pick not found")
-            
-            # Update points
-            cur.execute(
-                """
-                UPDATE tiebreaker_picks 
-                SET points_awarded = %s
-                WHERE user_id = %s AND tiebreaker_id = %s
-                RETURNING *
-                """,
-                (points_update.points, points_update.user_id, points_update.tiebreaker_id)
-            )
-            updated_pick = cur.fetchone()
-            
-            # Update leaderboard
-            cur.execute(
-                """
-                UPDATE leaderboard 
-                SET total_points = (
-                    SELECT COALESCE(SUM(points_awarded), 0)
-                    FROM picks
-                    WHERE user_id = %s
-                ) + (
-                    SELECT COALESCE(SUM(points_awarded), 0)
-                    FROM tiebreaker_picks
-                    WHERE user_id = %s
-                )
-                WHERE user_id = %s
-                """,
-                (points_update.user_id, points_update.user_id, points_update.user_id)
-            )
-            
-            return updated_pick
-    except Exception as e:
-        logger.error(f"Error updating tiebreaker points: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+async def update_tiebreaker_points(points_update: TiebreakerPointsUpdate, current_user: User = Depends(get_current_admin_user)):
+    db = get_db()
+    existing_snap = None
+    for snap in db.collection("tiebreaker_picks").where("user_id", "==", points_update.user_id).where("tiebreaker_id", "==", points_update.tiebreaker_id).stream():
+        existing_snap = snap
+        break
 
-def create_admin_user(username, full_name, password):
-    """Create an admin user or update existing user to admin."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if user already exists
-            cur.execute("SELECT id, admin FROM users WHERE username = %s", (username,))
-            existing_user = cur.fetchone()
-            
-            if existing_user:
-                # User exists, make sure they're admin
-                if not existing_user['admin']:
-                    cur.execute(
-                        "UPDATE users SET admin = TRUE WHERE username = %s",
-                        (username,)
-                    )
-                    logger.info(f"Updated existing user {username} to admin")
-                else:
-                    logger.info(f"User {username} already exists and is admin")
-                return
-            
-            # Check if any admin exists
-            cur.execute("SELECT id FROM users WHERE admin = TRUE")
-            if cur.fetchone():
-                logger.info("Admin user already exists, skipping creation")
-                return
-            
-            # Create new admin user
-            admin_password = password
-            hashed_password = get_password_hash(admin_password)
-            cur.execute(
-                """
-                INSERT INTO users (username, full_name, email, league_id, password_hash, admin)
-                VALUES (%s, %s, %s, %s, %s, TRUE)
-                RETURNING id
-                """,
-                (username, full_name, f"{username}@admin.local", "ADMIN", hashed_password)
-            )
-            admin_id = cur.fetchone()["id"]
-            
-            # Create leaderboard entry for admin
-            cur.execute(
-                "INSERT INTO leaderboard (user_id) VALUES (%s)",
-                (admin_id,)
-            )
-            
-            logger.info(f"Created admin user with username: {username}")
-    except Exception as e:
-        logger.error(f"Error creating admin user: {str(e)}")
-        # Don't raise exception to avoid breaking app startup
+    if not existing_snap:
+        raise HTTPException(status_code=404, detail="Tiebreaker pick not found")
 
-def wipe_all_admin_users():
-    with get_db_cursor(commit=True) as cur:
-        cur.execute("DELETE FROM users WHERE admin = TRUE")
+    existing_snap.reference.update({"points_awarded": points_update.points})
+    update_leaderboard_totals(db, [points_update.user_id])
+    invalidate_leaderboard_cache(db)
 
-# Initialize database
-with get_db_connection() as conn:
-    db.create_tables(conn)
+    updated = {**existing_snap.to_dict(), "points_awarded": points_update.points, "id": existing_snap.id}
+    return _serialize_doc(updated)
 
-@app.get("/user_all_past_picks/{username}")
-async def get_user_all_past_picks(username: str, filter: str = "overall"):
-    """Get all past picks (games and tiebreakers that have started) for a specific user."""
-    try:
-        with get_db_cursor() as cur:
-            current_time = get_current_utc_time()
-            print(f"Current time: {current_time}")
-             
-            # Get user info
-            cur.execute("SELECT id, username, full_name FROM users WHERE username = %s", (username,))
-            user = cur.fetchone()
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found")
-            
-            # Check if user has make_picks permission
-            cur.execute("SELECT make_picks FROM users WHERE username = %s", (username,))
-            user_permissions = cur.fetchone()
-            if not user_permissions or not user_permissions['make_picks']:
-                raise HTTPException(status_code=404, detail="User not found")
+# ---------------------------------------------------------------------------
+# Admin – delete user
+# ---------------------------------------------------------------------------
 
-            # Get all game picks for games that have started
-            game_query = """
-                SELECT 
-                    g.id as game_id,
-                    g.home_team,
-                    g.away_team,
-                    g.spread,
-                    g.game_date,
-                    g.winning_team,
-                    p.picked_team,
-                    p.points_awarded,
-                    p.lock
-                FROM games g
-                LEFT JOIN picks p ON g.id = p.game_id AND p.user_id = %s
-                WHERE g.game_date <= %s
-            """
-            
-            # Add time filter for games using week-based filtering
-            start_condition, end_condition = get_week_filter_conditions(filter)
-            game_query += start_condition + end_condition
-                
-            game_query += " ORDER BY g.game_date DESC"
-            
-            cur.execute(game_query, (user['id'], current_time))
-            game_picks = cur.fetchall()
+@app.delete("/admin/delete_user/{uid}")
+async def delete_user(uid: str, current_user: User = Depends(get_current_admin_user)):
+    db = get_db()
+    user_ref = db.collection("users").document(uid)
+    if not user_ref.get().exists:
+        raise HTTPException(status_code=404, detail="User not found")
 
-            # Get all tiebreaker picks for tiebreakers that have started
-            tiebreaker_query = """
-                SELECT 
-                    t.id as tiebreaker_id,
-                    t.question,
-                    t.start_time,
-                    t.answer as correct_answer,
-                    t.is_active,
-                    tp.answer as user_answer,
-                    tp.points_awarded,
-                    CASE 
-                        WHEN t.answer ~ '^[0-9]+\\.?[0-9]*$' AND tp.answer ~ '^[0-9]+\\.?[0-9]*$'
-                        THEN ABS(CAST(t.answer AS NUMERIC) - CAST(tp.answer AS NUMERIC))
-                        ELSE NULL
-                    END as accuracy_diff
-                FROM tiebreakers t
-                LEFT JOIN tiebreaker_picks tp ON t.id = tp.tiebreaker_id AND tp.user_id = %s
-                WHERE t.start_time <= %s
-            """
-            
-            # Add time filter for tiebreakers using week-based filtering
-            tiebreaker_start_condition, tiebreaker_end_condition = get_tiebreaker_week_filter_conditions(filter)
-            tiebreaker_query += tiebreaker_start_condition + tiebreaker_end_condition
-                
-            tiebreaker_query += " ORDER BY t.start_time DESC"
-            
-            cur.execute(tiebreaker_query, (user['id'], current_time))
-            tiebreaker_picks = cur.fetchall()
+    for snap in db.collection("picks").where("user_id", "==", uid).stream():
+        snap.reference.delete()
+    for snap in db.collection("tiebreaker_picks").where("user_id", "==", uid).stream():
+        snap.reference.delete()
+    lb_ref = db.collection("leaderboard").document(uid)
+    if lb_ref.get().exists:
+        lb_ref.delete()
 
-            return {
-                "user": user,
-                "game_picks": game_picks,
-                "tiebreaker_picks": tiebreaker_picks
-            }
-    except Exception as e:
-        logger.error(f"Error fetching user past picks: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    user_ref.delete()
+    invalidate_leaderboard_and_stats(db)
+    return {"message": "User deleted successfully"}
 
-@app.delete("/admin/delete_user/{user_id}", response_model=dict)
-async def delete_user(user_id: int, current_user: User = Depends(get_current_admin_user)):
-    """Delete a user and their associated picks (admin only)."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if user exists
-            cur.execute("SELECT id FROM users WHERE id = %s", (user_id,))
-            user = cur.fetchone()
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found")
-            
-            # Delete user (picks will be deleted automatically due to CASCADE)
-            cur.execute("DELETE FROM users WHERE id = %s RETURNING *", (user_id,))
-            deleted_user = cur.fetchone()
-            
-            return {"message": "User deleted successfully", "user": deleted_user}
-    except Exception as e:
-        logger.error(f"Error deleting user: {str(e)}")
-        raise HTTPException(status_code=500, detail="An error occurred while deleting the user")
+# ---------------------------------------------------------------------------
+# Stats
+# ---------------------------------------------------------------------------
 
-# Add caching for game scores
-game_scores_cache = {
-    'data': None,
-    'timestamp': None,
-    'cache_duration': 120  # Cache for 2 minutes (increased from 30s for 20 users)
-}
+def _compute_player_stats_list(db) -> list:
+    users = {}
+    for doc in db.collection("users").where("make_picks", "==", True).stream():
+        u = doc.to_dict()
+        created = _fs_timestamp_to_dt(u.get("created_at"))
+        if created and created < _parse_iso("2025-06-01T00:00:00Z"):
+            continue
+        users[u["uid"]] = u
 
-def get_cached_game_scores():
-    """Get cached game scores if they're still valid."""
-    if (game_scores_cache['data'] is not None and 
-        game_scores_cache['timestamp'] is not None and
-        time.time() - game_scores_cache['timestamp'] < game_scores_cache['cache_duration']):
-        return game_scores_cache['data']
-    return None
+    all_games = {}
+    for doc in db.collection("games").stream():
+        g = doc.to_dict()
+        all_games[doc.id] = g
 
-def set_cached_game_scores(data):
-    """Cache game scores with current timestamp."""
-    game_scores_cache['data'] = data
-    game_scores_cache['timestamp'] = time.time()
+    all_picks = []
+    for doc in db.collection("picks").stream():
+        p = doc.to_dict()
+        all_picks.append(p)
 
-@app.get("/traffic/status")
-def get_traffic_status():
-    """Get current traffic status and recommendations for users."""
-    pool_status = get_pool_status()
-    queue_status = get_queue_status()
-    
-    # Calculate traffic level
-    active_percentage = (queue_status['active_requests'] / queue_status['max_concurrent']) * 100
-    queue_length = queue_status['queue_length']
-    
-    if active_percentage < 50:
-        traffic_level = "low"
-        message = "Service operating normally"
-    elif active_percentage < 80:
-        traffic_level = "moderate"
-        message = "Slight delays possible"
-    elif active_percentage < 100:
-        traffic_level = "high"
-        message = "Please be patient, high traffic detected"
-    else:
-        traffic_level = "critical"
-        message = "Service under heavy load, please try again later"
-    
-    return {
-        "traffic_level": traffic_level,
-        "message": message,
-        "active_requests": queue_status['active_requests'],
-        "max_concurrent": queue_status['max_concurrent'],
-        "queue_length": queue_length,
-        "active_percentage": round(active_percentage, 1),
-        "pool_status": pool_status['status'],
-        "cache_size": len(response_cache),
-        "recommendations": {
-            "low": "Normal usage",
-            "moderate": "Consider refreshing less frequently",
-            "high": "Please wait between requests",
-            "critical": "Please try again in 30 seconds"
-        }.get(traffic_level, "Please wait"),
-        "timestamp": get_current_utc_time().isoformat()
-    }
+    user_stats = {}
+    for uid in users:
+        user_stats[uid] = {
+            "total_picks": 0, "correct_picks": 0, "incorrect_picks": 0, "push_games": 0,
+            "total_locks": 0, "correct_locks": 0, "incorrect_locks": 0, "total_points": 0,
+        }
 
-def normalize_team_name_for_matching(team_name):
-    """
-    Normalize team names for better matching between CBS Sports and database.
-    Handles common variations, mascots, and abbreviations.
-    """
-    if not team_name:
-        return ''
-    
-    import re
-    
-    # Remove common mascot names and suffixes (case-insensitive)
-    mascots = [
-        'Crimson Tide', 'Commodores', 'Bulldogs', 'Tigers', 'Wildcats', 'Eagles', 
-        'Bears', 'Cowboys', 'Trojans', 'Spartans', 'Volunteers', 'Aggies', 
-        'Longhorns', 'Sooners', 'Buckeyes', 'Wolverines', 'Fighting Irish', 
-        'Golden Bears', 'Blue Devils', 'Tar Heels', 'Seminoles', 'Hurricanes', 
-        'Hokies', 'Cavaliers', 'Demon Deacons', 'Yellow Jackets', 'Orange', 
-        'Cardinals', 'Panthers', 'Huskies', 'Cougars', 'Sun Devils', 'Ducks', 
-        'Beavers', 'Utes', 'Buffaloes', 'Buffs', 'Bruins', 'Mountaineers', 
-        'Jayhawks', 'Cyclones', 'Red Raiders', 'Horned Frogs', 'Cornhuskers', 
-        'Badgers', 'Gophers', 'Hawkeyes', 'Illini', 'Hoosiers', 'Terrapins', 
-        'Nittany Lions', 'Scarlet Knights', 'Boilermakers'
-    ]
-    
-    normalized = team_name
-    for mascot in mascots:
-        normalized = re.sub(rf'\b{re.escape(mascot)}\b', '', normalized, flags=re.IGNORECASE)
-    
-    # Handle common abbreviations and variations
-    replacements = {
-        r'\bSt\.': 'State',
-        r'\bVandy\b': 'Vanderbilt',
-        r'\bBama\b': 'Alabama',
-        r'\bW\.': 'Western',
-        r'\bE\.': 'Eastern',
-        r'\bN\.': 'Northern',
-        r'\bS\.': 'Southern',
-        r'\bC\.': 'Central',
-        r'\bMiami \(FL\)': 'Miami',
-        r'\bMiami-FL\b': 'Miami',
-    }
-    
-    for pattern, replacement in replacements.items():
-        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
-    
-    # Remove extra whitespace and convert to lowercase
-    normalized = ' '.join(normalized.split()).strip().lower()
-    
-    # CRITICAL: If normalization resulted in empty string (team name was only a mascot),
-    # return the original name to prevent false positive matches
-    if not normalized:
-        return team_name.strip().lower()
-    
-    return normalized
-
-@app.get("/api/gamescores")
-async def get_game_scores(request: Request):
-    # Check cache first
-    cached_data = get_cached_game_scores()
-    if cached_data is not None:
-        logger.debug("Returning cached game scores")
-        return cached_data
-    
-    # Old March Madness URL (commented out)
-    # url = 'https://www.cbssports.com/college-basketball/scoreboard/?layout=compact'
-    urls = [
-        'https://www.cbssports.com/college-football/scoreboard/?layout=compact',
-        'https://www.cbssports.com/nfl/scoreboard/?layout=compact'
-    ]
-    games_data = []
-    try:
-        for url in urls:
-            logger.info(f"Fetching game scores from: {url}")
-            response = requests.get(url, timeout=5)  # Reduced timeout for 20 users
-            response.raise_for_status()
-            html_content = response.text
-            soup = BeautifulSoup(html_content, 'html.parser')
-            game_cards = soup.find_all('div', class_='single-score-card')
-            logger.info(f"Found {len(game_cards)} game cards at {url}")
-            for game in game_cards:
-                try:
-                    # Try different selectors to find the teams and scores
-                    team_cells = game.find_all('td', class_='team')
-                    if not team_cells:
-                        team_cells = game.find_all('td', class_='team--collegebasketball')
-                    score_cells = game.find_all('td', class_='total')
-                    if len(team_cells) < 2 or len(score_cells) < 2:
-                        logger.debug(f"Not enough cells found. Team cells: {len(team_cells)}, Score cells: {len(score_cells)}")
-                        continue
-                    away_team = team_cells[0].find('a', class_='team-name-link')
-                    home_team = team_cells[1].find('a', class_='team-name-link')
-                    if not away_team or not home_team:
-                        logger.debug("Could not find team name links")
-                        continue
-                    away_team = away_team.text.strip()
-                    home_team = home_team.text.strip()
-                    away_score = score_cells[0].text.strip()
-                    home_score = score_cells[1].text.strip()
-                    game_status = game.find('div', class_='game-status emphasis')
-                    time_left = game_status.text.strip() if game_status else 'FINAL'
-                    games_data.append({
-                        'AwayTeam': away_team,
-                        'HomeTeam': home_team,
-                        'AwayScore': away_score,
-                        'HomeScore': home_score,
-                        'Time': time_left,
-                        # Add normalized versions for easier matching on frontend
-                        'AwayTeamNormalized': normalize_team_name_for_matching(away_team),
-                        'HomeTeamNormalized': normalize_team_name_for_matching(home_team)
-                    })
-                    logger.debug(f"Processed game: {away_team} @ {home_team} (normalized: {normalize_team_name_for_matching(away_team)} @ {normalize_team_name_for_matching(home_team)})")
-                except Exception as e:
-                    logger.debug(f"Error processing individual game: {str(e)}")
-                    continue
-        
-        # Cache the results
-        set_cached_game_scores(games_data)
-        logger.info(f"Successfully processed {len(games_data)} games in total")
-        return games_data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching data from CBS Sports: {str(e)}")
-        # Return cached data if available, otherwise empty array
-        return cached_data if cached_data is not None else []
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {str(e)}")
-        # Return cached data if available, otherwise empty array
-        return cached_data if cached_data is not None else []
-
-@app.get("/scaling/status")
-def get_scaling_status():
-    """Get detailed scaling status and recommendations."""
-    try:
-        user_count = check_user_count()  # This will log alerts if needed
-        pool_status = get_pool_status()
-        queue_status = get_queue_status()
-        
-        # Determine scaling urgency
-        if user_count > 25:
-            urgency = "CRITICAL"
-            action = "IMMEDIATE UPGRADE REQUIRED"
-            recommendation = "Upgrade to Render.com Standard-1GB plan immediately"
-            color = "red"
-        elif user_count > 20:
-            urgency = "HIGH"
-            action = "PLAN FOR UPGRADE"
-            recommendation = "Consider upgrading to Standard-1GB plan soon"
-            color = "orange"
-        elif user_count > 15:
-            urgency = "MEDIUM"
-            action = "MONITOR CLOSELY"
-            recommendation = "Monitor user growth and prepare for scaling"
-            color = "yellow"
+    for p in all_picks:
+        uid = p.get("user_id")
+        if uid not in user_stats:
+            continue
+        game = all_games.get(p.get("game_id"), {})
+        s = user_stats[uid]
+        s["total_picks"] += 1
+        pts = p.get("points_awarded", 0)
+        s["total_points"] += pts
+        winning_team = game.get("winning_team", "")
+        if pts > 0:
+            s["correct_picks"] += 1
+        elif winning_team == "PUSH":
+            s["push_games"] += 1
         else:
-            urgency = "LOW"
-            action = "NO ACTION NEEDED"
-            recommendation = "Current plan sufficient for user count"
-            color = "green"
-        
-        # Calculate capacity percentages
-        capacity_percentage = (user_count / 25) * 100
-        pool_usage = (queue_status['active_requests'] / queue_status['max_concurrent']) * 100
-        
-        return {
-            "scaling_status": {
-                "urgency": urgency,
-                "action": action,
-                "recommendation": recommendation,
-                "color": color
-            },
-            "user_metrics": {
-                "current_count": user_count,
-                "max_capacity": 25,
-                "capacity_percentage": round(capacity_percentage, 1),
-                "scaling_threshold": 25
-            },
-            "performance_metrics": {
-                "pool_usage_percentage": round(pool_usage, 1),
-                "active_requests": queue_status['active_requests'],
-                "max_concurrent": queue_status['max_concurrent'],
-                "cache_size": len(response_cache)
-            },
-            "current_plan": {
-                "name": "Render.com Basic-1GB",
-                "cpu": "0.5 cores",
-                "ram": "1GB",
-                "cost": "$5/month"
-            },
-            "recommended_plan": {
-                "name": "Render.com Standard-1GB" if user_count > 25 else "Current plan",
-                "cpu": "1 core" if user_count > 25 else "0.5 cores",
-                "ram": "1GB",
-                "cost": "$7/month" if user_count > 25 else "$5/month",
-                "max_users": "50" if user_count > 25 else "25"
-            },
-            "scaling_guide": {
-                "file": "SCALING_GUIDE.md",
-                "location": "Backend root directory",
-                "last_updated": "August 19, 2025"
-            },
-            "alerts": {
-                "critical_threshold": 25,
-                "warning_threshold": 20,
-                "info_threshold": 15,
-                "log_message": "🚨 SCALING ALERT: User count has exceeded 25! Refer to SCALING_GUIDE.md for immediate action."
-            },
-            "timestamp": get_current_utc_time().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Error getting scaling status: {str(e)}")
-        return {
-            "error": "Failed to get scaling status",
-            "message": str(e),
-            "timestamp": get_current_utc_time().isoformat()
-        }
+            s["incorrect_picks"] += 1
+        if p.get("lock"):
+            s["total_locks"] += 1
+            if pts == 2:
+                s["correct_locks"] += 1
+            elif winning_team != "PUSH":
+                s["incorrect_locks"] += 1
 
-@app.post("/debug-password")
-async def debug_password_verification(username: str, password: str):
-    """Debug endpoint to test password verification (only in debug mode)."""
-    if not os.getenv("DEBUG_MODE", "false").lower() in ["true", "1"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Debug mode is not enabled"
-        )
-    
-    try:
-        with get_db_cursor() as cur:
-            cur.execute(
-                "SELECT id, username, password_hash FROM users WHERE username = %s",
-                (username,)
-            )
-            user = cur.fetchone()
-            
-            if not user:
-                return {
-                    "status": "user_not_found",
-                    "username": username,
-                    "message": "User does not exist in database"
-                }
-            
-            # Test password verification with detailed logging
-            logger.info(f"Debug: Testing password for user {username}")
-            logger.info(f"Debug: Password hash starts with: {user['password_hash'][:10]}...")
-            
-            try:
-                password_valid = verify_password(password, user["password_hash"])
-                return {
-                    "status": "verification_complete",
-                    "username": username,
-                    "password_valid": password_valid,
-                    "hash_prefix": user['password_hash'][:10],
-                    "hash_type": "bcrypt" if user['password_hash'].startswith('$2') else "other"
-                }
-            except Exception as e:
-                return {
-                    "status": "verification_error",
-                    "username": username,
-                    "error": str(e),
-                    "hash_prefix": user['password_hash'][:10],
-                    "hash_type": "bcrypt" if user['password_hash'].startswith('$2') else "other"
-                }
-                
-    except Exception as e:
-        return {
-            "status": "database_error",
-            "error": str(e)
-        }
+    result = []
+    for uid, s in user_stats.items():
+        u = users[uid]
+        tp = s["total_picks"]
+        result.append({
+            "display_name": u.get("display_name", u.get("email", "")),
+            "uid": uid,
+            "total_picks": tp,
+            "correct_picks": s["correct_picks"],
+            "incorrect_picks": s["incorrect_picks"],
+            "push_games": s["push_games"],
+            "total_locks": s["total_locks"],
+            "correct_locks": s["correct_locks"],
+            "incorrect_locks": s["incorrect_locks"],
+            "total_points": s["total_points"],
+            "win_percentage": round((s["correct_picks"] / tp) * 100, 1) if tp > 0 else 0,
+            "lock_success_rate": round((s["correct_locks"] / s["total_locks"]) * 100, 1) if s["total_locks"] > 0 else 0,
+            "avg_points_per_pick": round(s["total_points"] / tp, 2) if tp > 0 else 0,
+        })
 
-@app.post("/admin/migrate-passwords")
-async def migrate_passwords(current_user: User = Depends(get_current_admin_user)):
-    """Re-hash all user passwords with current bcrypt version (admin only)."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Get all users
-            cur.execute("SELECT id, username, password_hash FROM users")
-            users = cur.fetchall()
-            
-            migrated_count = 0
-            for user in users:
-                try:
-                    # Try to identify if this is an old hash that needs migration
-                    old_hash = user['password_hash']
-                    
-                    # For security, we can't reverse the hash, so this endpoint
-                    # would need the user to provide their password or use a reset
-                    logger.info(f"User {user['username']} hash type: {'bcrypt' if old_hash.startswith('$2') else 'other'}")
-                    
-                except Exception as e:
-                    logger.error(f"Error checking user {user['username']}: {str(e)}")
-                    continue
-            
-            return {
-                "message": f"Password migration check completed for {len(users)} users",
-                "users_checked": len(users),
-                "note": "Use forgot-password endpoint for users with login issues"
-            }
-            
-    except Exception as e:
-        logger.error(f"Error in password migration: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    result.sort(key=lambda x: (-x["total_points"], -x["correct_locks"], -x["win_percentage"]))
+    return result
 
-@app.post("/admin/reset-password")
-async def admin_reset_password(username: str, new_password: str, current_user: User = Depends(get_current_admin_user)):
-    """Reset a user's password with a fresh hash (admin only)."""
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if user exists
-            cur.execute("SELECT id, username FROM users WHERE username = %s", (username,))
-            user = cur.fetchone()
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found")
-            
-            # Generate new password hash with current environment's bcrypt
-            new_hashed_password = get_password_hash(new_password)
-            
-            # Update user's password
-            cur.execute(
-                "UPDATE users SET password_hash = %s WHERE username = %s RETURNING username",
-                (new_hashed_password, username)
-            )
-            updated_user = cur.fetchone()
-            
-            logger.info(f"Admin reset password for user: {username}")
-            return {
-                "message": f"Password reset successful for user {username}",
-                "username": updated_user["username"],
-                "hash_type": "bcrypt" if new_hashed_password.startswith('$2') else "other"
-            }
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error resetting password: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/stats")
 def get_player_stats():
-    """Get detailed statistics for all players."""
-    logger.info("📊 Stats request received")
-    try:
-        with get_db_cursor() as cur:
-            # Get comprehensive stats for all users
-            cur.execute("""
-                WITH user_stats AS (
-                    SELECT
-                        u.username,
-                        u.full_name,
-                        u.created_at as joined_date,
-                        -- Overall picks stats
-                        COUNT(p.id) as total_picks,
-                        COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END) as correct_picks,
-                        COUNT(CASE WHEN p.points_awarded = 0 AND g.winning_team != 'PUSH' THEN 1 END) as incorrect_picks,
-                        COUNT(CASE WHEN g.winning_team = 'PUSH' THEN 1 END) as push_games,
-                        -- Lock stats
-                        COUNT(CASE WHEN p.lock = TRUE THEN 1 END) as total_locks,
-                        COUNT(CASE WHEN p.lock = TRUE AND p.points_awarded = 2 THEN 1 END) as correct_locks,
-                        COUNT(CASE WHEN p.lock = TRUE AND p.points_awarded = 0 AND g.winning_team != 'PUSH' THEN 1 END) as incorrect_locks,
-                        -- Points
-                        COALESCE(SUM(p.points_awarded), 0) as total_points
-                    FROM users u
-                    LEFT JOIN picks p ON u.id = p.user_id
-                    LEFT JOIN games g ON p.game_id = g.id
-                    WHERE u.make_picks = TRUE
-                      AND u.created_at >= '2025-06-01T00:00:00Z'
-                    GROUP BY u.id, u.username, u.full_name, u.created_at
-                )
-                SELECT
-                    username,
-                    full_name,
-                    joined_date,
-                    total_picks,
-                    correct_picks,
-                    incorrect_picks,
-                    push_games,
-                    total_locks,
-                    correct_locks,
-                    incorrect_locks,
-                    total_points,
-                    -- Calculated fields
-                    CASE
-                        WHEN total_picks > 0 THEN ROUND((correct_picks::numeric / total_picks) * 100, 1)
-                        ELSE 0
-                    END as win_percentage,
-                    CASE
-                        WHEN total_locks > 0 THEN ROUND((correct_locks::numeric / total_locks) * 100, 1)
-                        ELSE 0
-                    END as lock_success_rate,
-                    CASE
-                        WHEN total_picks > 0 THEN ROUND(total_points::numeric / total_picks, 2)
-                        ELSE 0
-                    END as avg_points_per_pick
-                FROM user_stats
-                ORDER BY total_points DESC, correct_locks DESC, win_percentage DESC
-            """)
+    db = get_db()
+    cache_ref = db.collection(LEADERBOARD_CACHE_COLLECTION).document(STATS_CACHE_DOC_ID)
+    snap = cache_ref.get()
+    if snap.exists:
+        rows = (snap.to_dict() or {}).get("rows")
+        if rows is not None:
+            return rows
+    rows = _compute_player_stats_list(db)
+    cache_ref.set({"rows": rows, "updated_at": server_timestamp()})
+    return rows
 
-            stats = cur.fetchall()
-            logger.info(f"📊 Stats query successful - Returned {len(stats)} players")
 
-            return stats
-    except Exception as e:
-        logger.error(f"Error fetching player stats: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/stats/{uid}")
+def get_player_detailed_stats(uid: str):
+    db = get_db()
 
-@app.get("/stats/{username}")
-def get_player_detailed_stats(username: str):
-    """Get detailed statistics for a specific player."""
-    logger.info(f"📊 Detailed stats request for user: {username}")
-    try:
-        with get_db_cursor() as cur:
-            # First check if user exists
-            cur.execute("SELECT id, username FROM users WHERE username = %s", (username,))
-            user = cur.fetchone()
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found")
+    user_snap = db.collection("users").document(uid).get()
+    if not user_snap.exists:
+        raise HTTPException(status_code=404, detail="User not found")
 
-            # Get recent picks with game details
-            cur.execute("""
-                SELECT
-                    p.picked_team,
-                    p.points_awarded,
-                    p.lock,
-                    g.home_team,
-                    g.away_team,
-                    g.spread,
-                    g.winning_team,
-                    g.game_date
-                FROM picks p
-                JOIN games g ON p.game_id = g.id
-                JOIN users u ON p.user_id = u.id
-                WHERE u.username = %s
-                ORDER BY g.game_date DESC
-                LIMIT 20
-            """, (username,))
+    all_games = {}
+    for doc in db.collection("games").stream():
+        g = doc.to_dict()
+        g["id"] = doc.id
+        g["game_date"] = _fs_timestamp_to_dt(g.get("game_date"))
+        all_games[doc.id] = g
 
-            recent_picks = cur.fetchall()
+    user_picks_raw = []
+    for snap in db.collection("picks").where("user_id", "==", uid).stream():
+        p = snap.to_dict()
+        game = all_games.get(p.get("game_id"))
+        if game:
+            p["home_team"] = game["home_team"]
+            p["away_team"] = game["away_team"]
+            p["spread"] = game["spread"]
+            p["winning_team"] = game.get("winning_team")
+            p["game_date"] = game["game_date"]
+        user_picks_raw.append(p)
 
-            # Get current streak (calculate from recent picks)
-            cur.execute("""
-                SELECT
-                    CASE
-                        WHEN p.points_awarded > 0 THEN 'W'
-                        WHEN p.points_awarded = 0 AND g.winning_team = 'PUSH' THEN 'P'
-                        ELSE 'L'
-                    END as result
-                FROM picks p
-                JOIN games g ON p.game_id = g.id
-                JOIN users u ON p.user_id = u.id
-                WHERE u.username = %s
-                ORDER BY g.game_date DESC
-                LIMIT 20
-            """, (username,))
+    user_picks_raw.sort(key=lambda x: x.get("game_date") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
-            streak_picks = cur.fetchall()
+    recent_picks = []
+    for p in user_picks_raw[:20]:
+        pts = p.get("points_awarded", 0)
+        wt = p.get("winning_team", "")
+        if pts > 0:
+            pick_result = "correct"
+        elif wt == "PUSH":
+            pick_result = "push"
+        else:
+            pick_result = "incorrect"
+        recent_picks.append(_serialize_doc({
+            "picked_team": p.get("picked_team"),
+            "points_awarded": pts,
+            "lock": p.get("lock"),
+            "home_team": p.get("home_team"),
+            "away_team": p.get("away_team"),
+            "spread": p.get("spread"),
+            "winning_team": wt,
+            "game_date": p.get("game_date"),
+            "pick_result": pick_result,
+        }))
 
-            # Calculate current streak in Python
-            current_streak = None
-            if streak_picks and len(streak_picks) > 0:
-                current_result = streak_picks[0]['result']
-                streak_count = 1
+    # Streak calculation
+    streak_results = []
+    for p in user_picks_raw[:20]:
+        pts = p.get("points_awarded", 0)
+        wt = p.get("winning_team", "")
+        if pts > 0:
+            streak_results.append("W")
+        elif wt == "PUSH":
+            streak_results.append("P")
+        else:
+            streak_results.append("L")
 
-                for pick in streak_picks[1:]:
-                    if pick['result'] == current_result:
-                        streak_count += 1
-                    else:
-                        break
-
-                current_streak = {'result': current_result, 'streak_length': streak_count}
+    current_streak = {"result": "N/A", "streak_length": 0}
+    if streak_results:
+        first = streak_results[0]
+        count = 1
+        for r in streak_results[1:]:
+            if r == first:
+                count += 1
             else:
-                current_streak = {'result': 'N/A', 'streak_length': 0}
+                break
+        current_streak = {"result": first, "streak_length": count}
 
-            # Calculate best and worst streaks
-            best_streak = {'result': 'W', 'streak_length': 0}
-            worst_streak = {'result': 'L', 'streak_length': 0}
+    best_streak = {"result": "W", "streak_length": 0}
+    worst_streak = {"result": "L", "streak_length": 0}
+    cw, cl, mw, ml = 0, 0, 0, 0
+    for r in streak_results:
+        if r == "W":
+            cw += 1; cl = 0; mw = max(mw, cw)
+        elif r == "L":
+            cl += 1; cw = 0; ml = max(ml, cl)
+        else:
+            cw = 0; cl = 0
+    best_streak = {"result": "W", "streak_length": mw}
+    worst_streak = {"result": "L", "streak_length": ml}
 
-            if streak_picks:
-                current_win_streak = 0
-                current_loss_streak = 0
-                max_win_streak = 0
-                max_loss_streak = 0
+    # Favorite teams
+    team_counts = {}
+    for p in user_picks_raw:
+        team = p.get("picked_team", "")
+        if team not in team_counts:
+            team_counts[team] = {"count": 0, "correct": 0}
+        team_counts[team]["count"] += 1
+        if (p.get("points_awarded") or 0) > 0:
+            team_counts[team]["correct"] += 1
 
-                for pick in streak_picks:
-                    if pick['result'] == 'W':
-                        current_win_streak += 1
-                        current_loss_streak = 0
-                        max_win_streak = max(max_win_streak, current_win_streak)
-                    elif pick['result'] == 'L':
-                        current_loss_streak += 1
-                        current_win_streak = 0
-                        max_loss_streak = max(max_loss_streak, current_loss_streak)
-                    else:  # Push
-                        current_win_streak = 0
-                        current_loss_streak = 0
+    favorite_teams = sorted(team_counts.items(), key=lambda x: -x[1]["count"])[:5]
+    favorite_teams = [
+        {"picked_team": t, "pick_count": d["count"],
+         "success_rate": round((d["correct"] / d["count"]) * 100, 1) if d["count"] > 0 else 0}
+        for t, d in favorite_teams
+    ]
 
-                best_streak = {'result': 'W', 'streak_length': max_win_streak}
-                worst_streak = {'result': 'L', 'streak_length': max_loss_streak}
+    # Least favorite team (picked against most)
+    against_counts = {}
+    for p in user_picks_raw:
+        game = all_games.get(p.get("game_id"))
+        if not game:
+            continue
+        picked = p.get("picked_team", "")
+        other = game["away_team"] if picked == game["home_team"] else game["home_team"]
+        if other not in against_counts:
+            against_counts[other] = {"count": 0, "correct": 0}
+        against_counts[other]["count"] += 1
+        if (p.get("points_awarded") or 0) > 0:
+            against_counts[other]["correct"] += 1
 
-            # Get favorite teams
-            cur.execute("""
-                SELECT
-                    picked_team,
-                    COUNT(*) as pick_count,
-                    ROUND(
-                        (COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END)::numeric /
-                         NULLIF(COUNT(*), 0)) * 100, 1
-                    ) as success_rate
-                FROM picks p
-                JOIN users u ON p.user_id = u.id
-                WHERE u.username = %s
-                GROUP BY picked_team
-                ORDER BY pick_count DESC
-                LIMIT 5
-            """, (username,))
+    least_favorite_team = None
+    if against_counts:
+        top = max(against_counts.items(), key=lambda x: x[1]["count"])
+        least_favorite_team = {
+            "picked_against_team": top[0],
+            "pick_count": top[1]["count"],
+            "success_rate": round((top[1]["correct"] / top[1]["count"]) * 100, 1) if top[1]["count"] > 0 else 0,
+        }
 
-            favorite_teams = cur.fetchall()
+    # Best game: correct pick where fewest others picked the same
+    all_picks_for_consensus = {}
+    for snap in db.collection("picks").stream():
+        p = snap.to_dict()
+        gid = p.get("game_id")
+        team = p.get("picked_team")
+        key = (gid, team)
+        all_picks_for_consensus[key] = all_picks_for_consensus.get(key, 0) + 1
 
-            # Get least favorite teams (teams picked against most often)
-            cur.execute("""
-                SELECT
-                    CASE
-                        WHEN p.picked_team = g.home_team THEN g.away_team
-                        ELSE g.home_team
-                    END as picked_against_team,
-                    COUNT(*) as pick_count,
-                    ROUND(
-                        (COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END)::numeric /
-                         NULLIF(COUNT(*), 0)) * 100, 1
-                    ) as success_rate
-                FROM picks p
-                JOIN games g ON p.game_id = g.id
-                JOIN users u ON p.user_id = u.id
-                WHERE u.username = %s
-                GROUP BY picked_against_team
-                ORDER BY pick_count DESC
-                LIMIT 1
-            """, (username,))
+    best_game = None
+    best_consensus = float("inf")
+    for p in user_picks_raw:
+        if (p.get("points_awarded") or 0) > 0:
+            key = (p.get("game_id"), p.get("picked_team"))
+            consensus = all_picks_for_consensus.get(key, 1) - 1
+            if consensus < best_consensus or (consensus == best_consensus and best_game is None):
+                best_consensus = consensus
+                best_game = _serialize_doc({
+                    "type": "best",
+                    "picked_team": p.get("picked_team"),
+                    "points_awarded": p.get("points_awarded"),
+                    "lock": p.get("lock"),
+                    "home_team": p.get("home_team"),
+                    "away_team": p.get("away_team"),
+                    "spread": p.get("spread"),
+                    "game_date": p.get("game_date"),
+                    "consensus_count": consensus,
+                })
 
-            least_favorite_team = cur.fetchone()
+    worst_game = None
+    worst_against = -1
+    for p in user_picks_raw:
+        pts = p.get("points_awarded", 0)
+        wt = p.get("winning_team", "")
+        if pts == 0 and wt != "PUSH":
+            key = (p.get("game_id"), wt)
+            against = all_picks_for_consensus.get(key, 0)
+            if against > worst_against:
+                worst_against = against
+                worst_game = _serialize_doc({
+                    "type": "worst",
+                    "picked_team": p.get("picked_team"),
+                    "points_awarded": pts,
+                    "lock": p.get("lock"),
+                    "home_team": p.get("home_team"),
+                    "away_team": p.get("away_team"),
+                    "spread": p.get("spread"),
+                    "game_date": p.get("game_date"),
+                    "winning_team": wt,
+                    "against_count": against,
+                })
 
-            # Get Best Game: correct pick where least group members were with him
-            cur.execute("""
-                WITH user_correct_picks AS (
-                    SELECT
-                        p.id as pick_id,
-                        p.picked_team,
-                        p.points_awarded,
-                        p.lock,
-                        g.id as game_id,
-                        g.home_team,
-                        g.away_team,
-                        g.spread,
-                        g.game_date,
-                        g.winning_team
-                    FROM picks p
-                    JOIN games g ON p.game_id = g.id
-                    JOIN users u ON p.user_id = u.id
-                    WHERE u.username = %s AND p.points_awarded > 0
-                ),
-                group_picks_per_game AS (
-                    SELECT
-                        g.id as game_id,
-                        p.picked_team,
-                        COUNT(*) as pick_count
-                    FROM picks p
-                    JOIN games g ON p.game_id = g.id
-                    GROUP BY g.id, p.picked_team
-                )
-                SELECT
-                    ucp.picked_team,
-                    ucp.points_awarded,
-                    ucp.lock,
-                    ucp.home_team,
-                    ucp.away_team,
-                    ucp.spread,
-                    ucp.game_date,
-                    COALESCE(gpp.pick_count - 1, 0) as consensus_count
-                FROM user_correct_picks ucp
-                LEFT JOIN group_picks_per_game gpp ON ucp.game_id = gpp.game_id AND ucp.picked_team = gpp.picked_team
-                ORDER BY consensus_count ASC, ucp.points_awarded DESC, ucp.game_date DESC
-                LIMIT 1
-            """, (username,))
-
-            best_game_result = cur.fetchone()
-            best_game = None
-            if best_game_result:
-                best_game = {
-                    'type': 'best',
-                    'picked_team': best_game_result['picked_team'],
-                    'points_awarded': best_game_result['points_awarded'],
-                    'lock': best_game_result['lock'],
-                    'home_team': best_game_result['home_team'],
-                    'away_team': best_game_result['away_team'],
-                    'spread': best_game_result['spread'],
-                    'game_date': best_game_result['game_date'],
-                    'consensus_count': best_game_result['consensus_count']
-                }
-
-            # Get Worst Game: incorrect pick where most group members were against him
-            cur.execute("""
-                WITH user_incorrect_picks AS (
-                    SELECT
-                        p.id as pick_id,
-                        p.picked_team,
-                        p.points_awarded,
-                        p.lock,
-                        g.id as game_id,
-                        g.home_team,
-                        g.away_team,
-                        g.spread,
-                        g.game_date,
-                        g.winning_team
-                    FROM picks p
-                    JOIN games g ON p.game_id = g.id
-                    JOIN users u ON p.user_id = u.id
-                    WHERE u.username = %s AND p.points_awarded = 0 AND g.winning_team != 'PUSH'
-                ),
-                group_picks_per_game AS (
-                    SELECT
-                        g.id as game_id,
-                        p.picked_team,
-                        COUNT(*) as pick_count
-                    FROM picks p
-                    JOIN games g ON p.game_id = g.id
-                    GROUP BY g.id, p.picked_team
-                )
-                SELECT
-                    uip.picked_team,
-                    uip.points_awarded,
-                    uip.lock,
-                    uip.home_team,
-                    uip.away_team,
-                    uip.spread,
-                    uip.game_date,
-                    uip.winning_team,
-                    COALESCE(gpp.pick_count, 0) as against_count
-                FROM user_incorrect_picks uip
-                LEFT JOIN group_picks_per_game gpp ON uip.game_id = gpp.game_id AND uip.winning_team = gpp.picked_team
-                ORDER BY against_count DESC, uip.game_date DESC
-                LIMIT 1
-            """, (username,))
-
-            worst_game_result = cur.fetchone()
-            worst_game = None
-            if worst_game_result:
-                worst_game = {
-                    'type': 'worst',
-                    'picked_team': worst_game_result['picked_team'],
-                    'points_awarded': worst_game_result['points_awarded'],
-                    'lock': worst_game_result['lock'],
-                    'home_team': worst_game_result['home_team'],
-                    'away_team': worst_game_result['away_team'],
-                    'spread': worst_game_result['spread'],
-                    'game_date': worst_game_result['game_date'],
-                    'winning_team': worst_game_result['winning_team'],
-                    'against_count': worst_game_result['against_count']
-                }
-
-            # Calculate best and worst weeks based on predefined week ranges
-            week_ranges = get_week_ranges()
-
-            # Create a CTE to map games to their week labels
-            week_cases = []
-            for week_key, week_info in week_ranges.items():
-                if week_key != "overall" and week_info['start'] and week_info['end']:
-                    week_cases.append(f"""
-                        WHEN g.game_date >= '{week_info['start']}' AND g.game_date <= '{week_info['end']}'
-                        THEN '{week_key}'
-                    """)
-
-            week_case_sql = "\n".join(week_cases)
-
-            # Best week query (highest total points)
-            cur.execute(f"""
-                WITH game_weeks AS (
-                    SELECT
-                        g.id as game_id,
-                        CASE {week_case_sql}
-                        ELSE 'unknown'
-                        END as week_key
-                    FROM games g
-                )
-                SELECT
-                    gw.week_key,
-                    wr.label as week_label,
-                    SUM(p.points_awarded) as total_points,
-                    COUNT(*) as total_picks,
-                    COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END) as correct_picks,
-                    COUNT(CASE WHEN p.lock = true THEN 1 END) as locks_used,
-                    MIN(g.game_date) as week_start,
-                    MAX(g.game_date) as week_end
-                FROM picks p
-                JOIN games g ON p.game_id = g.id
-                JOIN game_weeks gw ON g.id = gw.game_id
-                JOIN users u ON p.user_id = u.id
-                LEFT JOIN LATERAL (
-                    SELECT label FROM (VALUES {', '.join([f"('{k}', '{v['label']}')" for k, v in week_ranges.items() if k != 'overall'])}) as wr(week_key, label)
-                    WHERE wr.week_key = gw.week_key
-                ) wr ON true
-                WHERE u.username = %s AND gw.week_key != 'unknown'
-                GROUP BY gw.week_key, wr.label
-                ORDER BY total_points DESC
-                LIMIT 1
-            """, (username,))
-
-            best_week_result = cur.fetchone()
-
-            # Worst week query (lowest win rate)
-            cur.execute(f"""
-                WITH game_weeks AS (
-                    SELECT
-                        g.id as game_id,
-                        CASE {week_case_sql}
-                        ELSE 'unknown'
-                        END as week_key
-                    FROM games g
-                )
-                SELECT
-                    gw.week_key,
-                    wr.label as week_label,
-                    SUM(p.points_awarded) as total_points,
-                    COUNT(*) as total_picks,
-                    COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END) as correct_picks,
-                    COUNT(CASE WHEN p.lock = true THEN 1 END) as locks_used,
-                    MIN(g.game_date) as week_start,
-                    MAX(g.game_date) as week_end
-                FROM picks p
-                JOIN games g ON p.game_id = g.id
-                JOIN game_weeks gw ON g.id = gw.game_id
-                JOIN users u ON p.user_id = u.id
-                LEFT JOIN LATERAL (
-                    SELECT label FROM (VALUES {', '.join([f"('{k}', '{v['label']}')" for k, v in week_ranges.items() if k != 'overall'])}) as wr(week_key, label)
-                    WHERE wr.week_key = gw.week_key
-                ) wr ON true
-                WHERE u.username = %s AND gw.week_key != 'unknown'
-                GROUP BY gw.week_key, wr.label
-                HAVING COUNT(*) > 0
-                ORDER BY (COUNT(CASE WHEN p.points_awarded > 0 THEN 1 END)::float / COUNT(*)::float) ASC, total_points ASC
-                LIMIT 1
-            """, (username,))
-
-            worst_week_result = cur.fetchone()
-
-            best_week = None
-            worst_week = None
-
-            if best_week_result and best_week_result['total_picks'] > 0:
-                best_week = {
-                    'week_key': best_week_result['week_key'],
-                    'week_label': best_week_result['week_label'],
-                    'total_points': best_week_result['total_points'],
-                    'total_picks': best_week_result['total_picks'],
-                    'correct_picks': best_week_result['correct_picks'],
-                    'locks_used': best_week_result['locks_used'],
-                    'win_percentage': round((best_week_result['correct_picks'] / best_week_result['total_picks']) * 100, 1),
-                    'week_start': best_week_result['week_start'],
-                    'week_end': best_week_result['week_end']
-                }
-
-            if worst_week_result and worst_week_result['total_picks'] > 0:
-                worst_week = {
-                    'week_key': worst_week_result['week_key'],
-                    'week_label': worst_week_result['week_label'],
-                    'total_points': worst_week_result['total_points'],
-                    'total_picks': worst_week_result['total_picks'],
-                    'correct_picks': worst_week_result['correct_picks'],
-                    'locks_used': worst_week_result['locks_used'],
-                    'win_percentage': round((worst_week_result['correct_picks'] / worst_week_result['total_picks']) * 100, 1),
-                    'week_start': worst_week_result['week_start'],
-                    'week_end': worst_week_result['week_end']
-                }
-
-            # Add pick_result to recent_picks
-            for pick in recent_picks:
-                if pick['points_awarded'] > 0:
-                    pick['pick_result'] = 'correct'
-                elif pick['points_awarded'] == 0 and pick['winning_team'] == 'PUSH':
-                    pick['pick_result'] = 'push'
-                else:
-                    pick['pick_result'] = 'incorrect'
-
-            logger.info(f"📊 Successfully retrieved data for user {username}")
-            logger.info(f"📊 Recent picks: {len(recent_picks)}")
-            logger.info(f"📊 Current streak: {current_streak}")
-            logger.info(f"📊 Favorite teams: {len(favorite_teams)}")
-            logger.info(f"📊 Least favorite team: {least_favorite_team is not None}")
-            logger.info(f"📊 Best game: {best_game is not None}")
-            logger.info(f"📊 Worst game: {worst_game is not None}")
-            logger.info(f"📊 Best week: {best_week is not None} ({best_week['week_label'] if best_week else 'N/A'})")
-            logger.info(f"📊 Worst week: {worst_week is not None} ({worst_week['week_label'] if worst_week else 'N/A'})")
-
-            return {
-                "recent_picks": recent_picks,
-                "current_streak": current_streak,
-                "best_streak": best_streak,
-                "worst_streak": worst_streak,
-                "favorite_teams": favorite_teams,
-                "least_favorite_team": least_favorite_team,
-                "best_game": best_game,
-                "worst_game": worst_game,
-                "best_week": best_week,
-                "worst_week": worst_week
+    # Best/worst half (first vs second half by tip-off ET)
+    boundary = get_second_half_start_utc()
+    z = ZoneInfo("America/New_York")
+    period_meta = {
+        "first_half": {
+            "label": "First Half (through Mar 23)",
+            "week_start": datetime(2026, 3, 17, 0, 0, 0, tzinfo=z).astimezone(timezone.utc),
+            "week_end": boundary - timedelta(seconds=1),
+        },
+        "second_half": {
+            "label": "Second Half (Mar 24+)",
+            "week_start": boundary,
+            "week_end": datetime(2026, 4, 8, 23, 59, 59, tzinfo=z).astimezone(timezone.utc),
+        },
+    }
+    week_stats = {}
+    for p in user_picks_raw:
+        gd = p.get("game_date")
+        if not gd:
+            continue
+        gd = normalize_datetime(gd) if isinstance(gd, datetime) else _parse_iso(str(gd))
+        wk = "first_half" if gd < boundary else "second_half"
+        if wk not in week_stats:
+            m = period_meta[wk]
+            week_stats[wk] = {
+                "label": m["label"],
+                "week_start": m["week_start"],
+                "week_end": m["week_end"],
+                "total_points": 0,
+                "total_picks": 0,
+                "correct_picks": 0,
+                "locks_used": 0,
             }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching detailed player stats for {username}: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        s = week_stats[wk]
+        s["total_picks"] += 1
+        s["total_points"] += p.get("points_awarded", 0)
+        if (p.get("points_awarded") or 0) > 0:
+            s["correct_picks"] += 1
+        if p.get("lock"):
+            s["locks_used"] += 1
 
-@app.post("/emergency-admin-reset")
-async def emergency_admin_reset(username: str, new_password: str, emergency_key: str):
-    """Emergency admin password reset (requires emergency key)."""
-    # This is for emergency access when admin can't log in
-    expected_key = os.getenv("EMERGENCY_RESET_KEY", "emergency-key-not-set")
-
-    if emergency_key != expected_key or expected_key == "emergency-key-not-set":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid emergency key"
+    def _fmt_period_bounds(s):
+        ws = s["week_start"]
+        we = s["week_end"]
+        return (
+            ws.isoformat().replace("+00:00", "Z"),
+            we.isoformat().replace("+00:00", "Z"),
         )
-    
-    try:
-        with get_db_cursor(commit=True) as cur:
-            # Check if user exists and is admin
-            cur.execute("SELECT id, username, admin FROM users WHERE username = %s", (username,))
-            user = cur.fetchone()
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found")
-            
-            if not user['admin']:
-                raise HTTPException(status_code=403, detail="User is not an admin")
-            
-            # Generate new password hash
-            new_hashed_password = get_password_hash(new_password)
-            
-            # Update password
-            cur.execute(
-                "UPDATE users SET password_hash = %s WHERE username = %s RETURNING username",
-                (new_hashed_password, username)
-            )
-            updated_user = cur.fetchone()
-            
-            logger.info(f"Emergency password reset for admin user: {username}")
-            return {
-                "message": f"Emergency password reset successful for admin {username}",
-                "username": updated_user["username"]
-            }
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in emergency password reset: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
-# Run the server
+    best_week = None
+    worst_week = None
+    if week_stats:
+        best_wk = max(week_stats.items(), key=lambda x: x[1]["total_points"])
+        if best_wk[1]["total_picks"] > 0:
+            wss, wee = _fmt_period_bounds(best_wk[1])
+            best_week = {
+                "week_key": best_wk[0],
+                "week_label": best_wk[1]["label"],
+                "week_start": wss,
+                "week_end": wee,
+                "total_points": best_wk[1]["total_points"],
+                "total_picks": best_wk[1]["total_picks"],
+                "correct_picks": best_wk[1]["correct_picks"],
+                "locks_used": best_wk[1]["locks_used"],
+                "win_percentage": round((best_wk[1]["correct_picks"] / best_wk[1]["total_picks"]) * 100, 1),
+            }
+        worst_wk = min(
+            [(k, v) for k, v in week_stats.items() if v["total_picks"] > 0],
+            key=lambda x: x[1]["correct_picks"] / x[1]["total_picks"],
+            default=None,
+        )
+        if worst_wk and worst_wk[1]["total_picks"] > 0:
+            wss, wee = _fmt_period_bounds(worst_wk[1])
+            worst_week = {
+                "week_key": worst_wk[0],
+                "week_label": worst_wk[1]["label"],
+                "week_start": wss,
+                "week_end": wee,
+                "total_points": worst_wk[1]["total_points"],
+                "total_picks": worst_wk[1]["total_picks"],
+                "correct_picks": worst_wk[1]["correct_picks"],
+                "locks_used": worst_wk[1]["locks_used"],
+                "win_percentage": round((worst_wk[1]["correct_picks"] / worst_wk[1]["total_picks"]) * 100, 1),
+            }
+
+    return {
+        "recent_picks": recent_picks,
+        "current_streak": current_streak,
+        "best_streak": best_streak,
+        "worst_streak": worst_streak,
+        "favorite_teams": favorite_teams,
+        "least_favorite_team": least_favorite_team,
+        "best_game": best_game,
+        "worst_game": worst_game,
+        "best_week": best_week,
+        "worst_week": worst_week,
+    }
+
+# ---------------------------------------------------------------------------
+# Game scores (CBS scraper – no DB dependency) + auto-resolve
+# ---------------------------------------------------------------------------
+
+CBS_SCOREBOARD_URL = "https://www.cbssports.com/college-basketball/scoreboard/?layout=compact"
+
+
+def normalize_team_name_for_matching(team_name):
+    if not team_name:
+        return ""
+    mascots = [
+        "Crimson Tide", "Commodores", "Bulldogs", "Tigers", "Wildcats", "Eagles",
+        "Bears", "Cowboys", "Trojans", "Spartans", "Volunteers", "Aggies",
+        "Longhorns", "Sooners", "Buckeyes", "Wolverines", "Fighting Irish",
+        "Golden Bears", "Blue Devils", "Tar Heels", "Seminoles", "Hurricanes",
+        "Hokies", "Cavaliers", "Demon Deacons", "Yellow Jackets", "Orange",
+        "Cardinals", "Panthers", "Huskies", "Cougars", "Sun Devils", "Ducks",
+        "Beavers", "Utes", "Buffaloes", "Buffs", "Bruins", "Mountaineers",
+        "Jayhawks", "Cyclones", "Red Raiders", "Horned Frogs", "Cornhuskers",
+        "Badgers", "Gophers", "Hawkeyes", "Illini", "Hoosiers", "Terrapins",
+        "Nittany Lions", "Scarlet Knights", "Boilermakers",
+    ]
+    normalized = team_name
+    for mascot in mascots:
+        normalized = re.sub(rf"\b{re.escape(mascot)}\b", "", normalized, flags=re.IGNORECASE)
+    replacements = {
+        r"\bSt\.": "State", r"\bVandy\b": "Vanderbilt", r"\bBama\b": "Alabama",
+        r"\bW\.": "Western", r"\bE\.": "Eastern", r"\bN\.": "Northern",
+        r"\bS\.": "Southern", r"\bC\.": "Central",
+        r"\bMiami \(FL\)": "Miami", r"\bMiami-FL\b": "Miami",
+    }
+    for pattern, replacement in replacements.items():
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+    normalized = " ".join(normalized.split()).strip().lower()
+    return normalized if normalized else team_name.strip().lower()
+
+
+def team_names_match_scoreboard(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    na = normalize_team_name_for_matching(a)
+    nb = normalize_team_name_for_matching(b)
+    if na == nb:
+        return True
+    return na in nb or nb in na
+
+
+def fetch_cbs_games_data() -> List[dict]:
+    """Scrape CBS compact scoreboard. Same shape as /api/gamescores response."""
+    games_data: List[dict] = []
+    try:
+        resp = requests.get(CBS_SCOREBOARD_URL, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for game in soup.find_all("div", class_="single-score-card"):
+            try:
+                team_cells = game.find_all("td", class_="team") or game.find_all(
+                    "td", class_="team--collegebasketball"
+                )
+                score_cells = game.find_all("td", class_="total")
+                if len(team_cells) < 2 or len(score_cells) < 2:
+                    continue
+                away_el = team_cells[0].find("a", class_="team-name-link")
+                home_el = team_cells[1].find("a", class_="team-name-link")
+                if not away_el or not home_el:
+                    continue
+                away_team = away_el.text.strip()
+                home_team = home_el.text.strip()
+                game_status = game.find("div", class_="game-status emphasis")
+                games_data.append(
+                    {
+                        "AwayTeam": away_team,
+                        "HomeTeam": home_team,
+                        "AwayScore": score_cells[0].text.strip(),
+                        "HomeScore": score_cells[1].text.strip(),
+                        "Time": game_status.text.strip() if game_status else "FINAL",
+                        "AwayTeamNormalized": normalize_team_name_for_matching(away_team),
+                        "HomeTeamNormalized": normalize_team_name_for_matching(home_team),
+                    }
+                )
+            except Exception:
+                continue
+        return games_data
+    except Exception as e:
+        logger.warning("fetch_cbs_games_data failed: %s", e)
+        return games_data
+
+
+def cbs_status_is_final(time_str: str) -> bool:
+    if not time_str:
+        return False
+    t = time_str.strip().lower()
+    return "final" in t
+
+
+def league_home_away_scores_from_cbs_row(game: dict, row: dict) -> Optional[Tuple[int, int]]:
+    """
+    Map a CBS row to (league_home_points, league_away_points).
+    Returns None if this row does not match the game or scores are invalid.
+    """
+    ga = (game.get("away_team") or "").strip()
+    gh = (game.get("home_team") or "").strip()
+    ra = row["AwayTeam"].strip()
+    rh = row["HomeTeam"].strip()
+
+    def parse() -> Optional[Tuple[int, int]]:
+        try:
+            ap = int(row["AwayScore"])
+            hp = int(row["HomeScore"])
+        except (ValueError, TypeError):
+            return None
+        return hp, ap
+
+    # Exact orientation: CBS away = league away
+    if ra == ga and rh == gh:
+        p = parse()
+        if not p:
+            return None
+        return p[0], p[1]  # home_pts, away_pts
+
+    if ra == gh and rh == ga:
+        p = parse()
+        if not p:
+            return None
+        return p[1], p[0]  # league home was CBS away
+
+    san = row.get("AwayTeamNormalized") or normalize_team_name_for_matching(ra)
+    shn = row.get("HomeTeamNormalized") or normalize_team_name_for_matching(rh)
+    gan = normalize_team_name_for_matching(ga)
+    ghn = normalize_team_name_for_matching(gh)
+
+    if san == gan and shn == ghn:
+        p = parse()
+        return (p[0], p[1]) if p else None
+    if san == ghn and shn == gan:
+        p = parse()
+        return (p[1], p[0]) if p else None
+
+    if team_names_match_scoreboard(ra, ga) and team_names_match_scoreboard(rh, gh):
+        p = parse()
+        return (p[0], p[1]) if p else None
+    if team_names_match_scoreboard(ra, gh) and team_names_match_scoreboard(rh, ga):
+        p = parse()
+        return (p[1], p[0]) if p else None
+
+    return None
+
+
+def compute_covering_team(
+    home_pts: int, away_pts: int, spread: float, home_team: str, away_team: str
+) -> str:
+    """
+    spread > 0  -> home favored by spread (home -spread).
+    spread < 0  -> away favored by |spread|.
+    spread == 0 -> pick'em (straight winner / push on tie).
+    """
+    s = float(spread)
+    if s == 0:
+        if home_pts > away_pts:
+            return home_team
+        if away_pts > home_pts:
+            return away_team
+        return "PUSH"
+    if s > 0:
+        margin = home_pts - away_pts
+        if margin > s:
+            return home_team
+        if margin < s:
+            return away_team
+        return "PUSH" if s == int(s) else away_team
+    fav = -s
+    away_margin = away_pts - home_pts
+    if away_margin > fav:
+        return away_team
+    if away_margin < fav:
+        return home_team
+    return "PUSH" if fav == int(fav) else home_team
+
+
+def run_auto_resolve_games(db) -> dict:
+    """
+    For each unresolved game that has started, if CBS shows final + matching row,
+    set winning_team (cover/push) and score picks.
+    """
+    rows = fetch_cbs_games_data()
+    now = get_current_utc_time()
+    resolved: List[dict] = []
+    skipped = 0
+
+    for snap in db.collection("games").stream():
+        g = snap.to_dict()
+        gid = snap.id
+        if g.get("winning_team"):
+            skipped += 1
+            continue
+        gd = _fs_timestamp_to_dt(g.get("game_date"))
+        if gd and gd > now:
+            continue
+
+        home_team = g.get("home_team") or ""
+        away_team = g.get("away_team") or ""
+        spread = g.get("spread")
+        if spread is None:
+            continue
+        try:
+            spread_f = float(spread)
+        except (TypeError, ValueError):
+            continue
+
+        for row in rows:
+            if not cbs_status_is_final(row.get("Time") or ""):
+                continue
+            pts = league_home_away_scores_from_cbs_row(g, row)
+            if not pts:
+                continue
+            hp, ap = pts
+            winner = compute_covering_team(hp, ap, spread_f, home_team, away_team)
+            if _apply_game_result(db, gid, winner, auto=True):
+                resolved.append(
+                    {
+                        "game_id": gid,
+                        "winning_team": winner,
+                        "home_score": hp,
+                        "away_score": ap,
+                    }
+                )
+                logger.info(
+                    "auto-resolve game %s -> %s (scores %s-%s)",
+                    gid,
+                    winner,
+                    ap,
+                    hp,
+                )
+            break
+
+    if resolved:
+        invalidate_leaderboard_and_stats(db)
+
+    return {
+        "resolved_count": len(resolved),
+        "resolved": resolved,
+        "cbs_games_seen": len(rows),
+    }
+
+
+@app.get("/api/gamescores")
+async def get_game_scores(request: Request):
+    return fetch_cbs_games_data()
+
+
+@app.post("/internal/auto-resolve-games")
+async def internal_auto_resolve_games(
+    authorization: Optional[str] = Header(None),
+    x_cron_secret: Optional[str] = Header(None, alias="X-Cron-Secret"),
+):
+    """
+    Secured by CRON_SECRET. Call from GitHub Actions or another scheduler every few minutes.
+    Accepts Authorization: Bearer <secret> or X-Cron-Secret: <secret>.
+    """
+    secret = (os.getenv("CRON_SECRET") or "").strip()
+    # Empty: disabled. Too short: refuse (avoids accidental weak / empty-string env quirks).
+    _min_cron = 16
+    if not secret or len(secret) < _min_cron:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "CRON_SECRET must be set to a random string of at least "
+                f"{_min_cron} characters (Vercel env + GitHub Actions secret). "
+                "Auto-resolve is disabled until configured."
+            ),
+        )
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+    elif x_cron_secret:
+        token = x_cron_secret.strip()
+    if not token or token != secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    db = get_db()
+    try:
+        result = run_auto_resolve_games(db)
+    except Exception as e:
+        logger.exception("auto-resolve failed")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return result
+
+# ---------------------------------------------------------------------------
+# Run (local dev)
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Starting FastAPI server...")
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

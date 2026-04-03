@@ -35,6 +35,8 @@ yarn-error.log*
 .env.development.local
 .env.test.local
 .env.production.local
+# Vercel CLI pull — never commit (Firebase keys, CRON_SECRET, OIDC tokens)
+**/.env.production
 
 # IDE
 .idea/
@@ -77,3 +79,15 @@ validation_report_*.txt
 
 
 memory-bank/
+
+# Firebase
+.firebaserc
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# Service account credentials
+*service-account*.json
+*serviceAccount*.json
+
+/docs

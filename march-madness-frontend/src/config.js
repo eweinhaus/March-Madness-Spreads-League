@@ -1,5 +1,2 @@
-const isDevelopment = import.meta.env.MODE === 'development';
-
-export const API_URL = isDevelopment 
-  ? 'http://localhost:8000'
-  : 'https://march-madness-backend-qyw5.onrender.com'; 
+export const API_URL = import.meta.env.VITE_API_URL
+  || (import.meta.env.MODE === "development" ? "http://localhost:8000" : "");

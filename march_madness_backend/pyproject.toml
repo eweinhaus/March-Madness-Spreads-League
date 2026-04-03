@@ -1,0 +1,24 @@
+[project]
+name = "march-madness-backend"
+version = "0.1.0"
+description = "March Madness Spreads API"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi==0.109.2",
+  "uvicorn==0.27.1",
+  "python-dotenv==1.0.1",
+  "python-multipart==0.0.9",
+  "pydantic==2.6.1",
+  "pydantic-settings==2.1.0",
+  "firebase-admin>=6.4.0",
+  "requests==2.31.0",
+  "beautifulsoup4==4.12.3",
+]
+
+# Tell Vercel where the FastAPI app instance lives (main:app)
+[project.scripts]
+app = "main:app"
+
+[tool.vercel.scripts]
+# Optional: run any one-off build step before deploy (e.g. schema check)
+# build = "python -c \"print('Build OK')\""

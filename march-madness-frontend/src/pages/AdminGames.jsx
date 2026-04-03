@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Container, Form, Button, Table, Alert, Modal } from 'react-bootstrap';
-import axios from 'axios';
-import { API_URL } from "../config";
+import api from '../api';
 
 const AdminGames = () => {
   const [games, setGames] = useState([]);
@@ -18,29 +17,20 @@ const AdminGames = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [gameToDelete, setGameToDelete] = useState(null);
 
-  // Fetch games on component mount
   useEffect(() => {
     fetchGames();
   }, []);
 
-  const getAuthHeaders = () => {
-    const token = localStorage.getItem('token');
-    return {
-      'Authorization': `Bearer ${token}`
-    };
-  };
-
   const fetchGames = async () => {
     try {
-      const response = await axios.get(`${API_URL}/games`, {
+      const response = await api.get('/games', {
         headers: {
-          ...getAuthHeaders(),
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache'
         },
         params: {
-          all_games: true, // Request all games for admin view
-          _t: Date.now() // Cache busting parameter
+          all_games: true,
+          _t: Date.now()
         }
       });
       setGames(response.data);
@@ -64,28 +54,18 @@ const AdminGames = () => {
     }));
   };
 
-  // Helper: convert a datetime-local string (YYYY-MM-DDTHH:MM) to UTC ISO string
   const toUtcISOStringFromLocal = (localDateTime) => {
     if (!localDateTime) return '';
-    // Split without assuming seconds or timezone
     const [datePart, timePartRaw] = localDateTime.split('T');
     const [year, month, day] = datePart.split('-').map(Number);
     const [hour, minute] = (timePartRaw || '00:00').split(':').map(Number);
-    // Construct a local Date (year, monthIndex, day, hour, minute)
     const localDate = new Date(year, (month || 1) - 1, day || 1, hour || 0, minute || 0, 0, 0);
-    // Convert to UTC ISO string
     return localDate.toISOString();
   };
 
-  // Helper function to format date for display
   const formatDateForDisplay = (dateString) => {
     const date = new Date(dateString);
-    console.log('formatDateForDisplay - Input dateString:', dateString);
-    console.log('formatDateForDisplay - Parsed date object:', date);
-    console.log('formatDateForDisplay - Timezone offset:', date.getTimezoneOffset());
-    console.log('formatDateForDisplay - toString():', date.toString());
-    
-    const formatted = date.toLocaleString('en-US', {
+    return date.toLocaleString('en-US', {
       year: 'numeric',
       month: 'numeric',
       day: 'numeric',
@@ -93,13 +73,9 @@ const AdminGames = () => {
       minute: '2-digit',
       hour12: true
     });
-    console.log('formatDateForDisplay - Formatted result:', formatted);
-    return formatted;
   };
 
-  // Helper function to check if a game has started
   const hasGameStarted = (dateString) => {
-    // Use UTC comparison for consistency with backend
     const now = new Date();
     const gameTime = new Date(dateString);
     return now.getTime() >= gameTime.getTime();
@@ -111,13 +87,7 @@ const AdminGames = () => {
     setSuccess(null);
     
     try {
-      // The datetime-local input is in the user's local timezone
-      // We need to convert it to UTC for storage
-      console.log('Original input date:', newGame.game_date);
-      
-      // Convert local datetime string to UTC ISO string safely across browsers
       const utcDateString = toUtcISOStringFromLocal(newGame.game_date);
-      console.log('UTC date string:', utcDateString);
       
       const gameData = {
         ...newGame,
@@ -125,13 +95,7 @@ const AdminGames = () => {
         game_date: utcDateString,
       };
       
-      console.log('Final game data being sent:', gameData);
-      
-      const response = await axios.post(`${API_URL}/games`, gameData, {
-        headers: getAuthHeaders()
-      });
-      
-      console.log('Server response:', response.data);
+      await api.post('/games', gameData);
       
       await fetchGames();
       setNewGame({
@@ -143,16 +107,11 @@ const AdminGames = () => {
       
       setSuccess('Game added successfully!');
     } catch (err) {
-      console.error('Full error object:', err);
-      console.error('Error response:', err.response);
-      console.error('Error response data:', err.response?.data);
-      
       if (err.response?.status === 401) {
         setError('Please log in to add games.');
       } else if (err.response?.status === 403) {
         setError('You do not have permission to add games.');
       } else if (err.response?.status === 400) {
-        // Show the actual validation error from the server
         const errorMessage = err.response?.data?.detail || 'Validation error occurred';
         setError(`Validation Error: ${errorMessage}`);
       } else {
@@ -167,14 +126,11 @@ const AdminGames = () => {
     setSuccess(null);
     
     try {
-      await axios.post(`${API_URL}/update_score`, {
+      await api.post('/update_score', {
         game_id: gameId,
         winning_team: winningTeam
-      }, {
-        headers: getAuthHeaders()
       });
       
-      // Refresh games list
       await fetchGames();
       setSuccess('Game result updated successfully!');
     } catch (err) {
@@ -190,17 +146,14 @@ const AdminGames = () => {
   };
 
   const handleEditClick = (game) => {
-    // Convert UTC game_date to local time for datetime-local input
     const utcDate = new Date(game.game_date);
     
-    // Get local time components
     const localYear = utcDate.getFullYear();
     const localMonth = String(utcDate.getMonth() + 1).padStart(2, '0');
     const localDay = String(utcDate.getDate()).padStart(2, '0');
     const localHours = String(utcDate.getHours()).padStart(2, '0');
     const localMinutes = String(utcDate.getMinutes()).padStart(2, '0');
     
-    // Format for datetime-local input (YYYY-MM-DDTHH:MM in local time)
     const localDateString = `${localYear}-${localMonth}-${localDay}T${localHours}:${localMinutes}`;
     
     setEditingGame({
@@ -216,7 +169,6 @@ const AdminGames = () => {
     setSuccess(null);
     
     try {
-      // Convert local time back to UTC for storage
       const utcDateString = toUtcISOStringFromLocal(editingGame.game_date);
       
       const gameData = {
@@ -225,13 +177,9 @@ const AdminGames = () => {
         game_date: utcDateString,
       };
       
-      await axios.put(`${API_URL}/games/${editingGame.id}`, gameData, {
-        headers: getAuthHeaders()
-      });
+      await api.put(`/games/${editingGame.id}`, gameData);
       
-      console.log('Game edit successful, refreshing games list...');
       await fetchGames();
-      console.log('Games list refreshed after edit');
       setShowEditModal(false);
       setSuccess('Game updated successfully!');
     } catch (err) {
@@ -264,9 +212,7 @@ const AdminGames = () => {
     setSuccess(null);
     
     try {
-      await axios.delete(`${API_URL}/games/${gameToDelete.id}`, {
-        headers: getAuthHeaders()
-      });
+      await api.delete(`/games/${gameToDelete.id}`);
       
       await fetchGames();
       setShowDeleteConfirm(false);
@@ -540,4 +486,4 @@ const AdminGames = () => {
   );
 };
 
-export default AdminGames; 
+export default AdminGames;

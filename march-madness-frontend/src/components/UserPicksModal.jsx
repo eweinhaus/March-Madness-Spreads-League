@@ -2,8 +2,7 @@ import React, { useState } from 'react';
 import { Modal, Table, Badge, Tabs, Tab, Form, Button } from 'react-bootstrap';
 import { FaLock } from 'react-icons/fa';
 import { format } from 'date-fns';
-import axios from 'axios';
-import { API_URL } from '../config';
+import api from '../api';
 
 const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
   if (!userPicks) return null;
@@ -19,7 +18,6 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
   };
 
   const getStatusBadge = (pick, game) => {
-    // Game result badge only
     if (!pick.picked_team) {
       return <Badge bg="warning">No Pick</Badge>;
     }
@@ -41,7 +39,7 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
     });
   };
 
-  const savePoints = async (tiebreakerID, userID) => {
+  const savePoints = async (tiebreakerID, userUID) => {
     if (!tiebreakerPoints[tiebreakerID] && tiebreakerPoints[tiebreakerID] !== 0) {
       return;
     }
@@ -51,23 +49,13 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
     setSavingPoints(true);
 
     try {
-      const token = localStorage.getItem('token');
-      const response = await axios.put(
-        `${API_URL}/tiebreaker_picks/points`,
-        {
-          user_id: userID,
-          tiebreaker_id: tiebreakerID,
-          points: parseInt(tiebreakerPoints[tiebreakerID], 10)
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        }
-      );
+      await api.put('/tiebreaker_picks/points', {
+        user_id: userUID,
+        tiebreaker_id: tiebreakerID,
+        points: parseInt(tiebreakerPoints[tiebreakerID], 10)
+      });
 
-      setPointsSuccess(`Points updated successfully for ${user?.full_name}`);
-      // Update the points in the UI
+      setPointsSuccess(`Points updated successfully for ${user?.display_name}`);
       const updatedTiebreaker = tiebreaker_picks.find(tb => tb.tiebreaker_id === tiebreakerID);
       if (updatedTiebreaker) {
         updatedTiebreaker.points_awarded = parseInt(tiebreakerPoints[tiebreakerID], 10);
@@ -83,7 +71,7 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
   return (
     <Modal show={show} onHide={onHide} size="lg">
       <Modal.Header closeButton>
-        <Modal.Title>Picks for {user?.full_name}</Modal.Title>
+        <Modal.Title>Picks for {user?.display_name}</Modal.Title>
       </Modal.Header>
       <Modal.Body>
         {pointsError && <div className="alert alert-danger">{pointsError}</div>}
@@ -169,7 +157,7 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
                             variant="primary" 
                             size="sm"
                             disabled={savingPoints}
-                            onClick={() => savePoints(tiebreaker.tiebreaker_id, user.id)}
+                            onClick={() => savePoints(tiebreaker.tiebreaker_id, user.uid)}
                           >
                             Save
                           </Button>
@@ -187,4 +175,4 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
   );
 };
 
-export default UserPicksModal; 
+export default UserPicksModal;

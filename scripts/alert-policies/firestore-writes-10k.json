@@ -1,0 +1,24 @@
+{
+  "displayName": "Firestore: 10k writes per day",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Daily document writes >= 10,000",
+      "conditionThreshold": {
+        "aggregations": [
+          {
+            "alignmentPeriod": "86400s",
+            "perSeriesAligner": "ALIGN_SUM"
+          }
+        ],
+        "comparison": "COMPARISON_GE",
+        "duration": "0s",
+        "filter": "resource.type=\"firestore_instance\" AND metric.type=\"firestore.googleapis.com/document/write_count\"",
+        "thresholdValue": 10000,
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ]
+}

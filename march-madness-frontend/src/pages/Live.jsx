@@ -1,14 +1,13 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
-import axios from "axios";
 import { Alert, Card, ListGroup, Badge, Container, Spinner, Modal, Button, Row, Col, Pagination, Form } from "react-bootstrap";
 import { FaLock } from "react-icons/fa";
-import { API_URL } from "../config";
 import { useNavigate } from "react-router-dom";
+import api from "../api";
 
 export default function Live() {
   const [liveGames, setLiveGames] = useState([]);
   const [liveTiebreakers, setLiveTiebreakers] = useState([]);
-  const [gameScores, setGameScores] = useState([]); // New state for game scores
+  const [gameScores, setGameScores] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [backgroundRefreshing, setBackgroundRefreshing] = useState(false);
@@ -20,63 +19,17 @@ export default function Live() {
   const [showHomePicks, setShowHomePicks] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState("");
-  const [sortOption, setSortOption] = useState("answer"); // "answer" or "name"
-  const [gamePicks, setGamePicks] = useState({}); // Cache for game picks
-  const [tiebreakerPicks, setTiebreakerPicks] = useState({}); // Cache for tiebreaker picks
+  const [sortOption, setSortOption] = useState("answer");
+  const [gamePicks, setGamePicks] = useState({});
+  const [tiebreakerPicks, setTiebreakerPicks] = useState({});
   const [loadingPicks, setLoadingPicks] = useState(false);
-  const picksPerPage = 12; // Show more picks per page
+  const picksPerPage = 12;
   const navigate = useNavigate();
-
-  // Function to handle authentication errors
-  const handleAuthError = (err) => {
-    console.error('Auth check - Error:', err);
-    
-    // Log token information for debugging (without exposing the full token)
-    const token = localStorage.getItem('token');
-    console.log('Auth check - Token exists:', !!token);
-    if (token) {
-      console.log('Auth check - Token length:', token.length);
-      console.log('Auth check - Token starts with:', token.substring(0, 10) + '...');
-    }
-    
-    // Add detailed logging for debugging
-    if (err.response) {
-      console.error('Auth check - Response data:', err.response.data);
-      console.error('Auth check - Response status:', err.response.status);
-      console.error('Auth check - Response headers:', err.response.headers);
-      
-      // Handle 401 Unauthorized errors - treat ALL 401s as authentication failures
-      if (err.response.status === 401) {
-        // Check if message explicitly mentions token expiration, but handle all 401s the same way
-        const isTokenExpired = 
-          (err.response.data && 
-           typeof err.response.data === 'object' &&
-           err.response.data.detail && 
-           typeof err.response.data.detail === 'string' &&
-           err.response.data.detail.includes("Token expired"));
-
-        // Log the token expiration evaluation
-        console.log('Auth check - Is explicit token expiration message present?', isTokenExpired);
-        console.log('Auth check - Error response message:', 
-          err.response.data && err.response.data.detail ? err.response.data.detail : 'No detail message');
-        
-        // All 401 errors should redirect to login regardless of the specific message
-        console.log('Auth check - 401 error, redirecting to login');
-        localStorage.removeItem('token');
-        navigate('/login');
-        return true; // Indicate error was handled
-      }
-    } else {
-      console.error('Auth check - No response object in error');
-    }
-    return false; // Error wasn't handled as auth error
-  };
 
   useEffect(() => {
     fetchLiveData();
-    fetchGameScores(); // Fetch game scores on component mount
+    fetchGameScores();
     
-    // Set up auto-refresh every 30 seconds (background only)
     const interval = setInterval(() => {
       setBackgroundRefreshing(true);
       fetchLiveDataBackground();
@@ -86,25 +39,25 @@ export default function Live() {
     return () => clearInterval(interval);
   }, []);
 
+  const handleAuthError = useCallback((err) => {
+    if (err.response?.status === 401) {
+      navigate('/login');
+      return true;
+    }
+    return false;
+  }, [navigate]);
+
   const fetchLiveData = () => {
     setLoading(true);
     setError(null);
-    console.debug("Current User Time: ", new Date().toLocaleString());
-    
-    const token = localStorage.getItem('token');
-    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-    
-    Promise.all([
-      axios.get(`${API_URL}/live_games`, { headers }),
-      axios.get(`${API_URL}/live_tiebreakers`, { headers })
-    ])
-      .then(([gamesRes, tiebreakersRes]) => {
-        setLiveGames(Array.isArray(gamesRes.data) ? gamesRes.data : []);
-        setLiveTiebreakers(Array.isArray(tiebreakersRes.data) ? tiebreakersRes.data : []);
+    api.get('/live')
+      .then((res) => {
+        const data = res.data || {};
+        setLiveGames(Array.isArray(data.live_games) ? data.live_games : []);
+        setLiveTiebreakers(Array.isArray(data.live_tiebreakers) ? data.live_tiebreakers : []);
         setError(null);
       })
       .catch(err => {
-        // Try to handle as auth error first
         if (!handleAuthError(err)) {
           console.error(err);
           setError('Failed to load live data. Please try again.');
@@ -116,23 +69,16 @@ export default function Live() {
   };
 
   const fetchLiveDataBackground = () => {
-    const token = localStorage.getItem('token');
-    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-    
-    Promise.all([
-      axios.get(`${API_URL}/live_games`, { headers }),
-      axios.get(`${API_URL}/live_tiebreakers`, { headers })
-    ])
-      .then(([gamesRes, tiebreakersRes]) => {
-        setLiveGames(Array.isArray(gamesRes.data) ? gamesRes.data : []);
-        setLiveTiebreakers(Array.isArray(tiebreakersRes.data) ? tiebreakersRes.data : []);
+    api.get('/live')
+      .then((res) => {
+        const data = res.data || {};
+        setLiveGames(Array.isArray(data.live_games) ? data.live_games : []);
+        setLiveTiebreakers(Array.isArray(data.live_tiebreakers) ? data.live_tiebreakers : []);
         setError(null);
       })
       .catch(err => {
-        // Try to handle as auth error first
         if (!handleAuthError(err)) {
           console.error('Background refresh error:', err);
-          // Don't show error for background refreshes
         }
       })
       .finally(() => {
@@ -141,15 +87,11 @@ export default function Live() {
   };
 
   const fetchGameScores = () => {
-    const token = localStorage.getItem('token');
-    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-    
-    axios.get(`${API_URL}/api/gamescores`, { headers })
+    api.get('/api/gamescores')
       .then(response => {
-        setGameScores(response.data); // Set the game scores
+        setGameScores(response.data);
       })
       .catch(err => {
-        // Try to handle as auth error first
         if (!handleAuthError(err)) {
           console.error(err);
           setError('Failed to load game scores. Please try again.');
@@ -158,32 +100,24 @@ export default function Live() {
   };
 
   const fetchGameScoresBackground = () => {
-    const token = localStorage.getItem('token');
-    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-    
-    axios.get(`${API_URL}/api/gamescores`, { headers })
+    api.get('/api/gamescores')
       .then(response => {
-        setGameScores(response.data); // Set the game scores
+        setGameScores(response.data);
       })
       .catch(err => {
-        // Try to handle as auth error first
         if (!handleAuthError(err)) {
           console.error('Background game scores error:', err);
-          // Don't show error for background refreshes
         }
       });
   };
 
-  // Lazy load game picks when modal is opened
   const fetchGamePicks = useCallback(async (gameId) => {
-    if (gamePicks[gameId]) return gamePicks[gameId]; // Return cached data
+    if (gamePicks[gameId]) return gamePicks[gameId];
     
     setLoadingPicks(true);
-    const token = localStorage.getItem('token');
-    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
     
     try {
-      const response = await axios.get(`${API_URL}/live_games/${gameId}/picks`, { headers });
+      const response = await api.get(`/live_games/${gameId}/picks`);
       const picks = response.data;
       setGamePicks(prev => ({ ...prev, [gameId]: picks }));
       return picks;
@@ -198,16 +132,13 @@ export default function Live() {
     }
   }, [gamePicks, handleAuthError]);
 
-  // Lazy load tiebreaker picks when modal is opened
   const fetchTiebreakerPicks = useCallback(async (tiebreakerId) => {
-    if (tiebreakerPicks[tiebreakerId]) return tiebreakerPicks[tiebreakerId]; // Return cached data
+    if (tiebreakerPicks[tiebreakerId]) return tiebreakerPicks[tiebreakerId];
     
     setLoadingPicks(true);
-    const token = localStorage.getItem('token');
-    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
     
     try {
-      const response = await axios.get(`${API_URL}/live_tiebreakers/${tiebreakerId}/picks`, { headers });
+      const response = await api.get(`/live_tiebreakers/${tiebreakerId}/picks`);
       const picks = response.data;
       setTiebreakerPicks(prev => ({ ...prev, [tiebreakerId]: picks }));
       return picks;
@@ -237,7 +168,6 @@ export default function Live() {
   const handleGameClick = async (game) => {
     setSelectedGame(game);
     setShowGameModal(true);
-    // Load picks if not already cached
     if (!gamePicks[game.game_id]) {
       await fetchGamePicks(game.game_id);
     }
@@ -248,7 +178,6 @@ export default function Live() {
     setShowTiebreakerModal(true);
     setCurrentPage(1);
     setSearchTerm("");
-    // Load picks if not already cached
     if (!tiebreakerPicks[tiebreaker.tiebreaker_id]) {
       await fetchTiebreakerPicks(tiebreaker.tiebreaker_id);
     }
@@ -264,35 +193,26 @@ export default function Live() {
     setSelectedTiebreaker(null);
   };
 
-  // Memoized team name normalization function
   const normalizeTeamName = useCallback((teamName) => {
     if (!teamName) return '';
     
     let normalized = teamName
-      // Remove common mascot names and suffixes
       .replace(/\b(Crimson Tide|Commodores|Bulldogs|Tigers|Wildcats|Eagles|Bears|Cowboys|Trojans|Spartans|Volunteers|Aggies|Longhorns|Sooners|Buckeyes|Wolverines|Fighting Irish|Golden Bears|Blue Devils|Tar Heels|Seminoles|Hurricanes|Hokies|Cavaliers|Demon Deacons|Yellow Jackets|Orange|Cardinals|Panthers|Huskies|Cougars|Sun Devils|Ducks|Beavers|Utes|Buffaloes|Buffs|Bruins|Mountaineers|Jayhawks|Cyclones|Red Raiders|Horned Frogs|Mountaineers|Cornhuskers|Badgers|Gophers|Hawkeyes|Illini|Hoosiers|Terrapins|Nittany Lions|Scarlet Knights|Boilermakers)\b/gi, '')
-      // Handle "St." at the beginning (like "St. Mary's" -> "Saint Mary's")
       .replace(/^St\.\s+/g, 'Saint ')
-      // Handle "St." in the middle or end (like "Iowa St." -> "Iowa State")
       .replace(/\bSt\.\b/g, 'State')
-      // Handle directional abbreviations
       .replace(/\bW\.\b/g, 'Western')
       .replace(/\bC\.\b/g, 'Central')
       .replace(/\bE\.\b/g, 'Eastern')
       .replace(/\bSo\.\b/g, 'Southern')
       .replace(/\bN\.\b/g, 'Northern')
-      // Handle state abbreviations
       .replace(/\bTenn\b/g, 'Tennessee')
       .replace(/\bFla\.\b/g, 'Florida')
       .replace(/\bArk\b/g, 'Arkansas')
-      // Handle regional abbreviations (only standalone SE, not part of words like Tennessee)
       .replace(/\bSE\b/g, 'Southeast')
-      // Handle common team name variations
       .replace(/\bVandy\b/gi, 'Vanderbilt')
       .replace(/\bBama\b/gi, 'Alabama')
       .replace(/\bMiami \(FL\)/gi, 'Miami')
       .replace(/\bMiami-FL\b/gi, 'Miami')
-      // Normalize full words to be consistent
       .replace(/\bState\b/g, 'State')
       .replace(/\bWestern\b/g, 'Western')
       .replace(/\bCentral\b/g, 'Central')
@@ -306,11 +226,8 @@ export default function Live() {
       .toLowerCase()
       .trim();
     
-    // Remove extra whitespace
     normalized = normalized.replace(/\s+/g, ' ').trim();
     
-    // CRITICAL: If normalization resulted in empty string (team name was only a mascot),
-    // return the original name to prevent false positive matches
     if (normalized === '') {
       return teamName.toLowerCase().trim();
     }
@@ -318,42 +235,34 @@ export default function Live() {
     return normalized;
   }, []);
 
-  // Memoized team name matching function
   const teamNamesMatch = useCallback((name1, name2) => {
     if (!name1 || !name2) return false;
     
     const normalized1 = normalizeTeamName(name1);
     const normalized2 = normalizeTeamName(name2);
     
-    // Exact match after normalization
     if (normalized1 === normalized2) return true;
     
-    // Check if one contains the other
     return normalized1.includes(normalized2) || normalized2.includes(normalized1);
   }, [normalizeTeamName]);
 
-  // Memoized game score lookup
   const getGameScore = useCallback((game) => {
     return gameScores.find(score => {
-      // Check exact matches first
       if ((score.AwayTeam === game.away_team && score.HomeTeam === game.home_team) ||
           (score.AwayTeam === game.home_team && score.HomeTeam === game.away_team)) {
         return true;
       }
       
-      // Use backend-provided normalized names if available
       const scoreAwayNorm = score.AwayTeamNormalized || normalizeTeamName(score.AwayTeam);
       const scoreHomeNorm = score.HomeTeamNormalized || normalizeTeamName(score.HomeTeam);
       const gameAwayNorm = normalizeTeamName(game.away_team);
       const gameHomeNorm = normalizeTeamName(game.home_team);
       
-      // Check normalized matches (exact match after normalization)
       if ((scoreAwayNorm === gameAwayNorm && scoreHomeNorm === gameHomeNorm) ||
           (scoreAwayNorm === gameHomeNorm && scoreHomeNorm === gameAwayNorm)) {
         return true;
       }
       
-      // Check if normalized names contain each other (for partial matches)
       if (teamNamesMatch(score.AwayTeam, game.away_team) && teamNamesMatch(score.HomeTeam, game.home_team)) {
         return true;
       }
@@ -366,13 +275,11 @@ export default function Live() {
     });
   }, [gameScores, teamNamesMatch, normalizeTeamName]);
 
-  // Memoized game picks data for selected game
   const selectedGamePicks = useMemo(() => {
     if (!selectedGame || !gamePicks[selectedGame.game_id]) return null;
     return gamePicks[selectedGame.game_id];
   }, [selectedGame, gamePicks]);
 
-  // Memoized tiebreaker picks data for selected tiebreaker
   const selectedTiebreakerPicks = useMemo(() => {
     if (!selectedTiebreaker || !tiebreakerPicks[selectedTiebreaker.tiebreaker_id]) return null;
     return tiebreakerPicks[selectedTiebreaker.tiebreaker_id];
@@ -452,7 +359,7 @@ export default function Live() {
                               <span className="mx-2 d-inline-block" style={{ verticalAlign: 'middle' }}>@</span>
                               <span className="text-truncate d-inline-block" style={{ maxWidth: '40%', verticalAlign: 'middle' }}>{game.home_team}</span>
                             </>
-                          ); // Fallback if score is not available
+                          );
                       })()}
                     </Card.Text>
                     <div className="mt-2">
@@ -465,7 +372,6 @@ export default function Live() {
               </div>
             ))}
             
-            {/* Include tiebreakers in the same row as games */}
             {liveTiebreakers.map((tiebreaker) => (
               <div key={tiebreaker.tiebreaker_id} className="col-md-6 col-lg-4 mb-4">
                 <Card 
@@ -504,7 +410,6 @@ export default function Live() {
           <Modal.Title className="w-100 text-center">
             {selectedGame && (
               <div className="d-flex justify-content-between align-items-center">
-                {/* Centered Team Names */}
                 <div className="text-center w-100">
                   <span className="mx-3">{selectedGame.away_team} @ {selectedGame.home_team}</span>
                 </div>
@@ -519,7 +424,6 @@ export default function Live() {
                 const score = getGameScore(selectedGame);
                 return (
                   <div className="text-center mb-4">
-                    {/* Centered Time Badge */}
                     <Badge bg="info" className="py-2 px-3" style={{ fontSize: '1rem' }}>
                       {score ? score.Time : "Starting soon"}
                     </Badge>
@@ -583,9 +487,9 @@ export default function Live() {
                                   })
                                 }}
                               >
-                                {pick.full_name}
+                                {pick.display_name}
                                 {pick.lock && (
-                                  <FaLock className="text-dark" size={12} title="Lock of the Week" />
+                                  <FaLock className="text-dark" size={12} title="Lock of the day" />
                                 )}
                               </Badge>
                             ))}
@@ -616,9 +520,9 @@ export default function Live() {
                                   })
                                 }}
                               >
-                                {pick.full_name}
+                                {pick.display_name}
                                 {pick.lock && (
-                                  <FaLock className="text-dark" size={12} title="Lock of the Week" />
+                                  <FaLock className="text-dark" size={12} title="Lock of the day" />
                                 )}
                               </Badge>
                             ))}
@@ -704,30 +608,25 @@ export default function Live() {
                   
                   <Row>
                     {(() => {
-                      // Filter picks based on search term
                       const filteredPicks = selectedTiebreakerPicks
                         .filter(pick => 
-                          pick.full_name.toLowerCase().includes(searchTerm.toLowerCase())
+                          pick.display_name.toLowerCase().includes(searchTerm.toLowerCase())
                         );
                       
-                      // Sort picks based on option
                       const sortedPicks = [...filteredPicks].sort((a, b) => {
                         if (sortOption === "name") {
-                          return a.full_name.localeCompare(b.full_name);
+                          return a.display_name.localeCompare(b.display_name);
                         } else {
-                          // Sort by answer
                           const answerA = isNaN(a.answer) ? a.answer : (Number.isInteger(a.answer) ? a.answer : Math.floor(a.answer)).toString();
                           const answerB = isNaN(b.answer) ? b.answer : (Number.isInteger(b.answer) ? b.answer : Math.floor(b.answer)).toString();
                           return answerA.localeCompare(answerB);
                         }
                       });
                       
-                      // Paginate picks
                       const indexOfLastPick = currentPage * picksPerPage;
                       const indexOfFirstPick = indexOfLastPick - picksPerPage;
                       const currentPicks = sortedPicks.slice(indexOfFirstPick, indexOfLastPick);
                       
-                      // Calculate total pages
                       const totalPages = Math.ceil(sortedPicks.length / picksPerPage);
                       
                       return (
@@ -735,8 +634,8 @@ export default function Live() {
                           {currentPicks.map((pick, index) => (
                             <Col key={index} xs={12} sm={6} md={4} className="mb-3">
                               <div className="border rounded p-2 h-100 d-flex flex-column justify-content-between">
-                                <div className="text-truncate fw-bold text-secondary mb-1" title={pick.full_name}>
-                                  {pick.full_name}
+                                <div className="text-truncate fw-bold text-secondary mb-1" title={pick.display_name}>
+                                  {pick.display_name}
                                 </div>
                                 <Badge bg="secondary" className="py-2 px-3 align-self-end">
                                   {isNaN(pick.answer) ? pick.answer : (Number.isInteger(pick.answer) ? pick.answer : Math.floor(pick.answer))}
@@ -758,7 +657,6 @@ export default function Live() {
                                 />
                                 
                                 {Array.from({ length: Math.min(5, totalPages) }).map((_, idx) => {
-                                  // Show pagination centered around current page
                                   let pageNum;
                                   if (totalPages <= 5) {
                                     pageNum = idx + 1;

@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Container, Form, Button, Table, Alert, Modal } from 'react-bootstrap';
-import axios from 'axios';
-import { API_URL } from "../config";
+import api from '../api';
 
 const AdminTiebreakers = () => {
   const [tiebreakers, setTiebreakers] = useState([]);
@@ -19,23 +18,13 @@ const AdminTiebreakers = () => {
   const [tiebreakerToFinish, setTiebreakerToFinish] = useState(null);
   const [finishScore, setFinishScore] = useState('');
 
-  // Fetch tiebreakers on component mount
   useEffect(() => {
     fetchTiebreakers();
   }, []);
 
-  const getAuthHeaders = () => {
-    const token = localStorage.getItem('token');
-    return {
-      'Authorization': `Bearer ${token}`
-    };
-  };
-
   const fetchTiebreakers = async () => {
     try {
-      const response = await axios.get(`${API_URL}/admin/tiebreakers`, {
-        headers: getAuthHeaders()
-      });
+      const response = await api.get('/admin/tiebreakers');
       setTiebreakers(response.data);
     } catch (err) {
       setError('Failed to fetch tiebreakers. Please try again.');
@@ -51,7 +40,6 @@ const AdminTiebreakers = () => {
     }));
   };
 
-  // Helper function to format date for display
   const formatDateForDisplay = (dateString) => {
     const date = new Date(dateString);
     return date.toLocaleString('en-US', {
@@ -70,12 +58,7 @@ const AdminTiebreakers = () => {
     setSuccess(null);
     
     try {
-      // The datetime-local input is in the user's local timezone
-      // We need to convert it to UTC for storage
       const localDate = new Date(newTiebreaker.start_time);
-      
-      // The toISOString() method automatically converts to UTC
-      // This is the correct way to convert local time to UTC
       const utcDateString = localDate.toISOString();
       
       const tiebreakerData = {
@@ -83,9 +66,7 @@ const AdminTiebreakers = () => {
         start_time: utcDateString,
       };
 
-      const response = await axios.post(`${API_URL}/tiebreakers`, tiebreakerData, {
-        headers: getAuthHeaders()
-      });
+      await api.post('/tiebreakers', tiebreakerData);
       
       await fetchTiebreakers();
       setNewTiebreaker({
@@ -107,13 +88,8 @@ const AdminTiebreakers = () => {
   };
 
   const handleEditClick = (tiebreaker) => {
-    // Convert UTC start_time to local time for datetime-local input
     const utcDate = new Date(tiebreaker.start_time);
-    
-    // Create a new Date object in local timezone
     const localDate = new Date(utcDate.getTime() - (utcDate.getTimezoneOffset() * 60000));
-    
-    // Format as YYYY-MM-DDTHH:MM for datetime-local input
     const localDateString = localDate.toISOString().slice(0, 16);
     
     setEditingTiebreaker({
@@ -129,7 +105,6 @@ const AdminTiebreakers = () => {
     setSuccess(null);
     
     try {
-      // Convert local time back to UTC for storage
       const localDate = new Date(editingTiebreaker.start_time);
       const utcDateString = localDate.toISOString();
       
@@ -138,9 +113,7 @@ const AdminTiebreakers = () => {
         start_time: utcDateString,
       };
       
-      await axios.put(`${API_URL}/tiebreakers/${editingTiebreaker.id}`, tiebreakerData, {
-        headers: getAuthHeaders()
-      });
+      await api.put(`/tiebreakers/${editingTiebreaker.id}`, tiebreakerData);
       
       await fetchTiebreakers();
       setShowEditModal(false);
@@ -175,9 +148,7 @@ const AdminTiebreakers = () => {
     setSuccess(null);
     
     try {
-      await axios.delete(`${API_URL}/tiebreakers/${tiebreakerToDelete.id}`, {
-        headers: getAuthHeaders()
-      });
+      await api.delete(`/tiebreakers/${tiebreakerToDelete.id}`);
       
       await fetchTiebreakers();
       setShowDeleteConfirm(false);
@@ -195,7 +166,6 @@ const AdminTiebreakers = () => {
   };
 
   const handleFinishClick = (tiebreaker) => {
-    console.log('Starting finish process for tiebreaker:', tiebreaker);
     setTiebreakerToFinish(tiebreaker);
     setFinishScore('');
     setShowFinishModal(true);
@@ -207,9 +177,6 @@ const AdminTiebreakers = () => {
     setSuccess(null);
     
     try {
-      console.log('Preparing to finish tiebreaker:', tiebreakerToFinish);
-      console.log('Finish answer entered:', finishScore);
-      
       const finishData = {
         question: tiebreakerToFinish.question,
         start_time: tiebreakerToFinish.start_time,
@@ -217,14 +184,7 @@ const AdminTiebreakers = () => {
         is_active: false
       };
       
-      console.log('Sending finish data to API:', finishData);
-      console.log('API endpoint:', `${API_URL}/tiebreakers/${tiebreakerToFinish.id}`);
-      
-      const response = await axios.put(`${API_URL}/tiebreakers/${tiebreakerToFinish.id}`, finishData, {
-        headers: getAuthHeaders()
-      });
-      
-      console.log('API response:', response.data);
+      await api.put(`/tiebreakers/${tiebreakerToFinish.id}`, finishData);
       
       await fetchTiebreakers();
       setShowFinishModal(false);
@@ -234,7 +194,6 @@ const AdminTiebreakers = () => {
         message: err.message,
         response: err.response?.data,
         status: err.response?.status,
-        headers: err.response?.headers
       });
       
       if (err.response?.status === 401) {
@@ -268,7 +227,7 @@ const AdminTiebreakers = () => {
         </Form.Group>
 
         <Form.Group className="mb-3">
-          <Form.Label>Start Time</Form.Label>
+          <Form.Label>Scheduled start (answers lock 1 minute before)</Form.Label>
           <Form.Control
             type="datetime-local"
             name="start_time"
@@ -366,7 +325,7 @@ const AdminTiebreakers = () => {
             </Form.Group>
 
             <Form.Group className="mb-3">
-              <Form.Label>Start Time (Question locks at this time)</Form.Label>
+              <Form.Label>Scheduled start (answers lock 1 minute before)</Form.Label>
               <Form.Control
                 type="datetime-local"
                 name="start_time"
@@ -439,4 +398,4 @@ const AdminTiebreakers = () => {
   );
 };
 
-export default AdminTiebreakers; 
+export default AdminTiebreakers;

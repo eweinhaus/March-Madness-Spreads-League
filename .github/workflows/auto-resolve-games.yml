@@ -1,7 +1,10 @@
-# Free scheduler (Vercel Hobby cron is daily-only). Runs every 5 minutes during the tournament.
-# Repo → Settings → Secrets → Actions:
-#   AUTO_RESOLVE_BACKEND_URL  e.g. https://your-api.vercel.app (no trailing slash)
-#   CRON_SECRET               same value as CRON_SECRET on Vercel backend env
+# Peak (1:30pm–1:00am Eastern): POST every workflow run (~5 min) — GitHub cannot schedule faster.
+# Off-peak: POST only at the top of each hour Eastern (first run in that hour).
+#
+# For ~30s polling during games, use an external cron (e.g. cron-job.org) hitting the same URL;
+# see docs/AUTO_RESOLVE.md.
+#
+# Secrets: AUTO_RESOLVE_BACKEND_URL, CRON_SECRET (same as backend CRON_SECRET)
 
 name: Auto-resolve games
 
@@ -14,15 +17,37 @@ jobs:
   call-auto-resolve:
     runs-on: ubuntu-latest
     steps:
-      - name: POST /internal/auto-resolve-games
+      - name: POST /internal/auto-resolve-games (peak vs off-peak)
         env:
           BACKEND_URL: ${{ secrets.AUTO_RESOLVE_BACKEND_URL }}
           SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          if [ -z "$BACKEND_URL" ] || [ -z "$SECRET" ]; then
+          set -euo pipefail
+          if [ -z "${BACKEND_URL:-}" ] || [ -z "${SECRET:-}" ]; then
             echo "Set GitHub Actions secrets: AUTO_RESOLVE_BACKEND_URL and CRON_SECRET"
             exit 1
           fi
+
+          # %-H / %-M = no leading zero (avoids bash octal issues with 08, 09)
+          NYH=$(TZ=America/New_York date +%-H)
+          NYM=$(TZ=America/New_York date +%-M)
+
+          # Peak: 1:30pm Eastern through 12:59am (next calendar morning); 1:00am Eastern = off
+          PEAK=0
+          if [ "$NYH" -gt 13 ]; then PEAK=1; fi
+          if [ "$NYH" -eq 13 ] && [ "$NYM" -ge 30 ]; then PEAK=1; fi
+          if [ "$NYH" -eq 0 ]; then PEAK=1; fi
+
+          if [ "$PEAK" -eq 1 ]; then
+            echo "Eastern peak window (1:30pm–1am): auto-resolve"
+          else
+            if [ "$NYM" -ne 0 ]; then
+              echo "Off-peak: skipping (hourly only at :00 Eastern; current NY time ${NYH}:${NYM})"
+              exit 0
+            fi
+            echo "Off-peak: top of hour Eastern — auto-resolve"
+          fi
+
           curl -sfS -X POST "${BACKEND_URL}/internal/auto-resolve-games" \
             -H "Authorization: Bearer ${SECRET}" \
             -H "Content-Type: application/json"

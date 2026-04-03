@@ -25,3 +25,4 @@ dist-ssr
 
 #Any file starting with "test_"
 test_*
+.vercel
