@@ -1,7 +1,6 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { Container, Row, Col, Card, Button, Alert, Form, Modal } from "react-bootstrap";
 import { useNavigate } from "react-router-dom";
-import { FaLock, FaUnlock } from "react-icons/fa";
 import api from "../api";
 import { sameLockDay, getLockDayBounds } from "../utils/etLockDay";
 
@@ -477,11 +476,6 @@ export default function Picks() {
                               <small className="text-muted mx-1">@</small>
                               <span className="text-truncate ms-1">{game.home_team}</span>
                             </div>
-                            {SHOW_LOCK_OF_THE_DAY_UI && (
-                              <Button variant="outline-secondary" size="sm" onClick={() => handleLockToggle(game.game_id)} className="p-2" title={isLocked ? "Unlock pick" : "Lock pick"}>
-                                {isLocked ? <FaLock className="text-warning" size={16} /> : <FaUnlock className="text-muted" size={16} />}
-                              </Button>
-                            )}
                           </Card.Title>
                           <Card.Text className="mb-3">
                             <div className="mb-1"><strong>Spread:</strong> {game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} -${Math.abs(game.spread)}`}</div>
@@ -489,7 +483,7 @@ export default function Picks() {
                             {existingPick && (
                               <div className="mt-2 text-success">
                                 <strong>Your pick: {existingPick}</strong>
-                                {isLocked && <span className="ms-2 text-warning"><FaLock /> Lock of the day</span>}
+                                {isLocked && <span className="ms-2 text-warning">Lock of the day</span>}
                               </div>
                             )}
                           </Card.Text>
