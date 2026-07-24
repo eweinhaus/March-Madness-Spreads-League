@@ -29,6 +29,14 @@ from firestore_client import (
     check_firestore_health,
     server_timestamp,
 )
+from scoring import (
+    normalize_datetime,
+    get_lock_day_bounds,
+    picks_locked_for_game,
+    compute_covering_team,
+    score_pick_points,
+    PICK_LOCK_BEFORE_TIP,
+)
 
 load_dotenv()
 
@@ -43,14 +51,6 @@ LEAGUE_ID = os.getenv("LEAGUE_ID", "march_madness_2025")
 
 def get_current_utc_time():
     return datetime.now(timezone.utc)
-
-
-def normalize_datetime(dt):
-    if dt is None:
-        return None
-    if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc)
-    return dt.replace(tzinfo=timezone.utc)
 
 
 def _fs_timestamp_to_dt(val):
@@ -530,31 +530,6 @@ def _compute_and_store_leaderboard_cache(db) -> Dict[str, list]:
     return cached
 
 
-def get_lock_day_bounds(dt_utc):
-    """Lock-of-the-day window: 3:00 AM ET through next day 3:00 AM ET."""
-    dt_utc = normalize_datetime(dt_utc)
-    z = ZoneInfo("America/New_York")
-    local = dt_utc.astimezone(z)
-    if local.hour < 3:
-        day = local.date() - timedelta(days=1)
-    else:
-        day = local.date()
-    start_ny = datetime(day.year, day.month, day.day, 3, 0, 0, tzinfo=z)
-    end_ny = start_ny + timedelta(days=1)
-    return start_ny.astimezone(timezone.utc), end_ny.astimezone(timezone.utc)
-
-
-PICK_LOCK_BEFORE_TIP = timedelta(minutes=1)
-
-
-def picks_locked_for_game(current_time, scheduled_utc) -> bool:
-    """True when user picks/answers may no longer be submitted or changed (game tip or tiebreaker start)."""
-    scheduled_utc = normalize_datetime(scheduled_utc)
-    if scheduled_utc is None:
-        return False
-    return current_time >= scheduled_utc - PICK_LOCK_BEFORE_TIP
-
-
 # ---------------------------------------------------------------------------
 # Scoring helpers
 # ---------------------------------------------------------------------------
@@ -571,15 +546,11 @@ def update_game_scores(db, game_id: str, winning_team: str) -> Tuple[list, Dict[
         pick_id = snap.id
         old_pts = int(pick.get("points_awarded") or 0)
 
-        if winning_team == "PUSH":
-            points = 0
-        else:
-            norm_picked = pick.get("picked_team", "").rstrip(" *")
-            norm_winner = winning_team.rstrip(" *")
-            if norm_picked == norm_winner:
-                points = 2 if pick.get("lock") else 1
-            else:
-                points = 0
+        points = score_pick_points(
+            pick.get("picked_team", ""),
+            winning_team,
+            bool(pick.get("lock")),
+        )
 
         picks_ref.document(pick_id).update({"points_awarded": points})
         pick["points_awarded"] = points
@@ -2266,37 +2237,6 @@ def league_home_away_scores_from_cbs_row(game: dict, row: dict) -> Optional[Tupl
         return (p[1], p[0]) if p else None
 
     return None
-
-
-def compute_covering_team(
-    home_pts: int, away_pts: int, spread: float, home_team: str, away_team: str
-) -> str:
-    """
-    spread > 0  -> home favored by spread (home -spread).
-    spread < 0  -> away favored by |spread|.
-    spread == 0 -> pick'em (straight winner / push on tie).
-    """
-    s = float(spread)
-    if s == 0:
-        if home_pts > away_pts:
-            return home_team
-        if away_pts > home_pts:
-            return away_team
-        return "PUSH"
-    if s > 0:
-        margin = home_pts - away_pts
-        if margin > s:
-            return home_team
-        if margin < s:
-            return away_team
-        return "PUSH" if s == int(s) else away_team
-    fav = -s
-    away_margin = away_pts - home_pts
-    if away_margin > fav:
-        return away_team
-    if away_margin < fav:
-        return home_team
-    return "PUSH" if fav == int(fav) else home_team
 
 
 def run_auto_resolve_games(db) -> dict:

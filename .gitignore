@@ -6,6 +6,7 @@ __pycache__/
 .Python
 .venv/
 venv/
+mmvenv/
 ENV/
 env/
 build/
@@ -51,32 +52,25 @@ yarn-error.log*
 
 # Logs
 *.log
-logs/ 
-
-# Test files
-#Any file starting with "test_"
-test_*
+logs/
 
 # Database exports and backups
 database_exports
 backups/
 
-# Backup and validation files (created during scoring fix implementation)
+# Backup and validation artifacts (one-off scoring fix work)
 *.backup
 *_backup_*
 *_validation_*
 backup_*.py
 verify_backup.py
 test_backup.py
-test_scoring_*.py
 restore_instructions.md
 IMPLEMENTATION_COMPLETE.md
 
-# Analysis and documentation files (temporary)
-*_analysis.md
+# Analysis artifacts (temporary)
 scoring_fix_*.txt
 validation_report_*.txt
-
 
 memory-bank/
 
@@ -90,4 +84,9 @@ ui-debug.log
 *service-account*.json
 *serviceAccount*.json
 
-/docs
+# Internal migration notes (not needed for portfolio)
+docs/PRD_VERCEL_FIREBASE_MIGRATION.md
+docs/VERCEL_MIGRATION.md
+docs/FREE_TIER_ANALYSIS.md
+docs/EMAIL_SETUP.md
+docs/FIRESTORE_USAGE_ALERTS.md
