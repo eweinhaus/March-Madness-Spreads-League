@@ -2619,14 +2619,6 @@ async def internal_auto_resolve_games(
         "updated_games": []
     }
 
-    db = get_db()
-    try:
-        result = run_auto_resolve_games(db)
-    except Exception as e:
-        logger.exception("auto-resolve failed")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    return result
-
 # ---------------------------------------------------------------------------
 # Run (local dev)
 # ---------------------------------------------------------------------------
