@@ -125,15 +125,13 @@ export default function Leaderboard() {
         </Form.Select>
       </div>
       
-      {error && (
-        <Alert variant="danger" className="mb-3 mb-md-4">
-          {error}
-        </Alert>
-      )}
-      
-      {!loaded && !error ? (
+      {!loaded ? (
         <Alert variant="info">
           Loading leaderboard...
+        </Alert>
+      ) : error ? (
+        <Alert variant="danger" className="mb-3 mb-md-4">
+          {error}
         </Alert>
       ) : leaderboard.length === 0 ? (
         <Alert variant="info">

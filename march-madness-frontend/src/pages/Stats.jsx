@@ -86,15 +86,13 @@ export default function Stats() {
         <h2 className="mb-0">Player Statistics</h2>
       </div>
 
-      {error && (
-        <Alert variant="danger" className="mb-4">
-          {error}
-        </Alert>
-      )}
-
-      {!loaded && !error ? (
+      {!loaded ? (
         <Alert variant="info">
           Loading player statistics...
+        </Alert>
+      ) : error ? (
+        <Alert variant="danger" className="mb-4">
+          {error}
         </Alert>
       ) : stats.length === 0 ? (
         <Alert variant="info">
