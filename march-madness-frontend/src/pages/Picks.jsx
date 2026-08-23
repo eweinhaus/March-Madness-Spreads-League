@@ -371,7 +371,7 @@ export default function Picks() {
       requestAnimationFrame(() => {
         const w = computeSubmitWarnings(games, tbs);
         setIsCheckingWarnings(false);
-        const needsLockWarning = SHOW_LOCK_OF_THE_DAY_UI && w.missingLockDays.length > 0;
+        const needsLockWarning = showLockUI && w.missingLockDays.length > 0;
         if (
           w.missingGames.length > 0 ||
           needsLockWarning ||
@@ -562,7 +562,7 @@ export default function Picks() {
         </Modal.Header>
         <Modal.Body>
           {(submitWarnings.missingGames.length > 0 ||
-            (SHOW_LOCK_OF_THE_DAY_UI && submitWarnings.missingLockDays.length > 0) ||
+            (showLockUI && submitWarnings.missingLockDays.length > 0) ||
             submitWarnings.missingQuestions.length > 0) && (
             <p className="text-muted small mb-3">
               You still have incomplete entries. You can go back to finish them, or save anyway — only games and answers you&apos;ve changed will be saved.
@@ -581,7 +581,7 @@ export default function Picks() {
               </ul>
             </>
           )}
-          {SHOW_LOCK_OF_THE_DAY_UI && submitWarnings.missingLockDays.length > 0 && (
+          {showLockUI && submitWarnings.missingLockDays.length > 0 && (
             <>
               <h6 className="fw-bold">Game days without a lock of the day</h6>
               <ul className="small mb-3 ps-3">

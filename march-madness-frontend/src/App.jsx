@@ -5,7 +5,7 @@ import { FaLock } from 'react-icons/fa';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import './App.css';
 import { onAuthStateChanged } from 'firebase/auth';
-import { auth, signOut } from './firebase';
+import { auth, signOut, getRedirectResult } from './firebase';
 import api from './api';
 
 import Home from './pages/Home';
@@ -58,6 +58,12 @@ function AppContent() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    // Check for redirect result first (user returning from Google OAuth)
+    getRedirectResult(auth).catch((err) => {
+      // Ignore errors - they're handled in Login.jsx
+      console.debug('Redirect result check (expected on normal loads):', err.code);
+    });
+
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       setFirebaseUser(fbUser);
       if (fbUser) {
