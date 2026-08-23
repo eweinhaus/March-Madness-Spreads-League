@@ -14,6 +14,7 @@ function nyParts(ms) {
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
+    hourCycle: 'h23',  // Ensure midnight is hour 0, not 24
   });
   const o = {};
   for (const x of f.formatToParts(new Date(ms))) {

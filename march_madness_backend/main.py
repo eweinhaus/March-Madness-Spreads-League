@@ -87,10 +87,17 @@ def _serialize_doc(doc_dict: dict) -> dict:
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+# Disable interactive docs in production for security
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+is_production = ENVIRONMENT == "production"
+
 app = FastAPI(
-    title="March Madness Spreads API",
-    description="API for March Madness spread betting pool",
+    title="Spread Pools API",
+    description="API for multi-sport spread betting pools (football, basketball)",
     version="2.0.0",
+    docs_url=None if is_production else "/docs",
+    redoc_url=None if is_production else "/redoc",
+    openapi_url=None if is_production else "/openapi.json",
 )
 
 FRONTEND_ORIGINS = [
@@ -337,6 +344,9 @@ def get_week_ranges():
     Returns different ranges based on sport mode:
     - March Madness: overall, first_half, second_half
     - Football: overall + 15 weeks (week_0 through week_14)
+    
+    Football week bounds use ET civil time (Wednesday-to-Wednesday) with
+    DST-aware conversion to UTC, matching get_week_bounds() behavior.
     """
     mode = get_sport_mode()
     
@@ -347,15 +357,22 @@ def get_week_ranges():
             "second_half": {"start": None, "end": None, "label": "Second Half (Mar 24+)"},
         }
     
-    # Football mode
+    # Football mode: compute week bounds using ET civil date math (handles DST)
     ranges = {"overall": {"start": None, "end": None, "label": "Overall"}}
+    z = ZoneInfo("America/New_York")
     
     for week in get_football_week_labels():
-        start_dt = datetime.fromisoformat(week["start_date"])
-        end_dt = start_dt + timedelta(weeks=1)
+        # Parse start_date as UTC, convert to ET
+        start_dt_utc = datetime.fromisoformat(week["start_date"])
+        start_dt_et = start_dt_utc.astimezone(z)
+        
+        # Add 7 days in ET civil time (not UTC hours)
+        end_dt_et = start_dt_et + timedelta(weeks=1)
+        end_dt_utc = end_dt_et.astimezone(timezone.utc)
+        
         ranges[week["key"]] = {
-            "start": start_dt,
-            "end": end_dt,
+            "start": start_dt_utc,
+            "end": end_dt_utc,
             "label": week["label"],
         }
     
@@ -428,6 +445,7 @@ def _get_leaderboard_filter_keys():
     """Return tuple of valid leaderboard filter keys for current sport mode."""
     return tuple(get_week_ranges().keys())
 
+# Computed at import time (safe: sport mode and season dates are fixed per process)
 _LEADERBOARD_FILTER_KEYS = _get_leaderboard_filter_keys()
 
 
@@ -759,13 +777,24 @@ def apply_leaderboard_point_deltas(db, user_deltas: Dict[str, int]) -> None:
 
 
 def update_leaderboard_totals(db, user_ids: list):
-    """Recalculate total_points for each user_id from picks + tiebreaker_picks."""
+    """
+    Recalculate total_points for each user_id from picks.
+    
+    Football mode: total_points = game picks only (tiebreaker used for ranking tiebreak, not points).
+    March Madness mode: total_points = game picks + tiebreaker picks (both award points).
+    """
+    mode = get_sport_mode()
+    
     for uid in user_ids:
         total = 0
+        # Always include game picks points
         for snap in db.collection("picks").where("user_id", "==", uid).stream():
             total += snap.to_dict().get("points_awarded", 0)
-        for snap in db.collection("tiebreaker_picks").where("user_id", "==", uid).stream():
-            total += snap.to_dict().get("points_awarded", 0)
+        
+        # Only include tiebreaker points in March Madness mode
+        if mode == SportMode.MARCH_MADNESS:
+            for snap in db.collection("tiebreaker_picks").where("user_id", "==", uid).stream():
+                total += snap.to_dict().get("points_awarded", 0)
 
         db.collection("leaderboard").document(uid).set(
             {"user_id": uid, "total_points": total, "last_updated": server_timestamp()},
@@ -811,7 +840,7 @@ def health():
 @app.get("/")
 @app.head("/")
 def root():
-    return {"message": "March Madness Spreads API v2 – Firestore"}
+    return {"message": "Spread Pools API v2 – Firestore"}
 
 
 @app.get("/app-config")
@@ -2337,9 +2366,12 @@ def get_player_detailed_stats(uid: str):
     best_streak = {"result": "W", "streak_length": mw}
     worst_streak = {"result": "L", "streak_length": ml}
 
-    # Favorite teams
+    # Favorite teams (settled picks only)
     team_counts = {}
     for p in user_picks_raw:
+        game = all_games.get(p.get("game_id"), {})
+        if not pick_is_settled(game):
+            continue  # Skip unsettled picks
         team = p.get("picked_team", "")
         if team not in team_counts:
             team_counts[team] = {"count": 0, "correct": 0}
@@ -2354,12 +2386,12 @@ def get_player_detailed_stats(uid: str):
         for t, d in favorite_teams
     ]
 
-    # Least favorite team (picked against most)
+    # Least favorite team (picked against most) - settled picks only
     against_counts = {}
     for p in user_picks_raw:
         game = all_games.get(p.get("game_id"))
-        if not game:
-            continue
+        if not game or not pick_is_settled(game):
+            continue  # Skip unsettled picks
         picked = p.get("picked_team", "")
         other = game["away_team"] if picked == game["home_team"] else game["home_team"]
         if other not in against_counts:
@@ -2409,8 +2441,12 @@ def get_player_detailed_stats(uid: str):
     worst_game = None
     worst_against = -1
     for p in user_picks_raw:
+        game = all_games.get(p.get("game_id"), {})
+        if not pick_is_settled(game):
+            continue  # Skip unsettled picks
         pts = p.get("points_awarded", 0)
-        wt = p.get("winning_team", "")
+        wt = game.get("winning_team", "")
+        # Only count incorrect picks (not pushes, not unsettled)
         if pts == 0 and wt != "PUSH":
             key = (p.get("game_id"), wt)
             against = all_picks_for_consensus.get(key, 0)
@@ -2435,19 +2471,25 @@ def get_player_detailed_stats(uid: str):
     
     if mode == SportMode.FOOTBALL:
         # Football: 15 weeks (week_0 through week_14)
+        # Use ET civil date math (handles DST correctly)
         period_meta = {}
         week_labels = get_football_week_labels()
         for week_info in week_labels:
-            start_dt = datetime.fromisoformat(week_info["start_date"])
-            end_dt = start_dt + timedelta(weeks=1)
+            start_dt_utc = datetime.fromisoformat(week_info["start_date"])
+            start_dt_et = start_dt_utc.astimezone(z)
+            end_dt_et = start_dt_et + timedelta(weeks=1)
+            end_dt_utc = end_dt_et.astimezone(timezone.utc)
             period_meta[week_info["key"]] = {
                 "label": week_info["label"],
-                "week_start": start_dt,
-                "week_end": end_dt,
+                "week_start": start_dt_utc,
+                "week_end": end_dt_utc,
             }
         
         week_stats = {}
         for p in user_picks_raw:
+            game = all_games.get(p.get("game_id"), {})
+            if not pick_is_settled(game):
+                continue  # Skip unsettled picks
             gd = p.get("game_date")
             if not gd:
                 continue
@@ -2498,6 +2540,9 @@ def get_player_detailed_stats(uid: str):
         }
         week_stats = {}
         for p in user_picks_raw:
+            game = all_games.get(p.get("game_id"), {})
+            if not pick_is_settled(game):
+                continue  # Skip unsettled picks
             gd = p.get("game_date")
             if not gd:
                 continue
