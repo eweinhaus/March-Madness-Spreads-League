@@ -123,7 +123,7 @@ def get_league_id() -> str:
     Returns:
         str: League ID (e.g., "football_2026", "march_madness_2025")
     """
-    return os.getenv("LEAGUE_ID", "march_madness_2025")
+    return os.getenv("LEAGUE_ID", "football_2026")
 
 
 def get_sport_display_config() -> Dict[str, Any]:

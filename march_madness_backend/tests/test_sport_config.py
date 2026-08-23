@@ -59,7 +59,7 @@ def test_get_league_id_default():
     """Test default league ID when not set."""
     with mock.patch.dict(os.environ, {}, clear=True):
         league_id = get_league_id()
-        assert league_id == "march_madness_2025"
+        assert league_id == "football_2026"
 
 
 def test_get_league_id_custom():
