@@ -115,6 +115,44 @@ export function sameWeek(dateIsoA, dateIsoB) {
   return a === b;
 }
 
+/**
+ * Get the current football week key (week_0 through week_14) or "overall".
+ * 
+ * Football season: 2026-08-26 (Wed Week 0 start) through 2026-12-09 (end of Week 14).
+ * Returns "overall" if current time is outside season bounds.
+ * 
+ * @returns {string} Week key (e.g., "week_3") or "overall"
+ */
+export function getCurrentFootballWeek() {
+  const now = Date.now();
+  
+  // Football season starts Wed 2026-08-26 00:00 ET
+  const seasonStartMs = utcMillisForNyWallClock(2026, 8, 26, 0, 0, 0);
+  
+  // Season ends 15 weeks later (Week 14 ends Wed 2026-12-09 00:00 ET)
+  const seasonEndDate = new Date(seasonStartMs);
+  seasonEndDate.setTime(seasonStartMs + (15 * 7 * 24 * 60 * 60 * 1000));
+  const seasonEndMs = seasonEndDate.getTime();
+  
+  // Before season starts or after season ends → overall
+  if (now < seasonStartMs || now >= seasonEndMs) {
+    return 'overall';
+  }
+  
+  // Find which week contains now
+  for (let i = 0; i < 15; i++) {
+    const weekStartMs = seasonStartMs + (i * 7 * 24 * 60 * 60 * 1000);
+    const weekEndMs = weekStartMs + (7 * 24 * 60 * 60 * 1000);
+    
+    if (now >= weekStartMs && now < weekEndMs) {
+      return `week_${i}`;
+    }
+  }
+  
+  // Fallback (should never reach here)
+  return 'overall';
+}
+
 /** Tip-offs before this instant (ET Mar 24 2026 00:00) = first half */
 export function getSecondHalfStartDate() {
   return new Date(utcMillisForNyWallClock(2026, 3, 24, 0, 0, 0));
@@ -134,4 +172,51 @@ export function groupPicksByTournamentHalf(picks) {
       picks: picks.filter((p) => new Date(p.game_date).getTime() >= boundary),
     },
   };
+}
+
+/**
+ * Group picks by football week for Overall view.
+ * 
+ * @param {Array} picks - Array of pick objects with game_date
+ * @returns {Object} Map of week keys to {key, label, picks} objects
+ */
+export function groupPicksByWeek(picks) {
+  const seasonStartMs = utcMillisForNyWallClock(2026, 8, 26, 0, 0, 0);
+  const weekLabels = [
+    "CFB Week 0",
+    "CFB Week 1",
+    "CFB Week 2, NFL Week 1",
+    "CFB Week 3, NFL Week 2",
+    "CFB Week 4, NFL Week 3",
+    "CFB Week 5, NFL Week 4",
+    "CFB Week 6, NFL Week 5",
+    "CFB Week 7, NFL Week 6",
+    "CFB Week 8, NFL Week 7",
+    "CFB Week 9, NFL Week 8",
+    "CFB Week 10, NFL Week 9",
+    "CFB Week 11, NFL Week 10",
+    "CFB Week 12, NFL Week 11",
+    "CFB Week 13, NFL Week 12",
+    "CFB Week 14, NFL Week 13",
+  ];
+  
+  const weeks = {};
+  
+  for (let i = 0; i < 15; i++) {
+    const weekStartMs = seasonStartMs + (i * 7 * 24 * 60 * 60 * 1000);
+    const weekEndMs = weekStartMs + (7 * 24 * 60 * 60 * 1000);
+    
+    const weekPicks = picks.filter((p) => {
+      const pickTime = new Date(p.game_date).getTime();
+      return pickTime >= weekStartMs && pickTime < weekEndMs;
+    });
+    
+    weeks[`week_${i}`] = {
+      key: `week_${i}`,
+      label: weekLabels[i],
+      picks: weekPicks,
+    };
+  }
+  
+  return weeks;
 }

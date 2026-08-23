@@ -47,6 +47,34 @@ def get_sport_mode() -> SportMode:
 # Football season configuration
 FOOTBALL_SEASON_START_DATE = "2026-08-26"  # Wednesday, CFB Week 0
 
+# Live score scraping URLs
+FOOTBALL_SCOREBOARD_URLS = {
+    "nfl": "https://www.cbssports.com/nfl/scoreboard/?layout=compact",
+    "cfb": "https://www.cbssports.com/college-football/scoreboard/?layout=compact",
+}
+
+MARCH_MADNESS_SCOREBOARD_URL = "https://www.cbssports.com/college-basketball/scoreboard/?layout=compact"
+
+
+def get_scoreboard_urls() -> Dict[str, str]:
+    """
+    Get live score scraping URLs for the current sport mode.
+    
+    Returns:
+        Dict mapping sport keys to CBS scoreboard URLs.
+        Football mode: {"nfl": "...", "cfb": "..."}
+        March Madness mode: {"college-basketball": "..."}
+    """
+    mode = get_sport_mode()
+    
+    if mode == SportMode.FOOTBALL:
+        return FOOTBALL_SCOREBOARD_URLS
+    elif mode == SportMode.MARCH_MADNESS:
+        return {"college-basketball": MARCH_MADNESS_SCOREBOARD_URL}
+    
+    # Fallback
+    return FOOTBALL_SCOREBOARD_URLS
+
 
 def get_football_week_labels() -> List[Dict[str, Any]]:
     """

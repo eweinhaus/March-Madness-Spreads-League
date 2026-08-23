@@ -470,9 +470,22 @@ def _leaderboard_list_for_filter(
     all_tb_picks: list,
     filter_key: str,
 ) -> list:
+    """
+    Compute leaderboard for a given filter period.
+    
+    Football mode: total_points (game picks only) DESC, first_tiebreaker_diff ASC,
+                   correct_locks DESC, display_name ASC. One numerical TB per period
+                   (earliest start_time); TB awards 0 points (ranking-only).
+    
+    March Madness mode: Uses 3 TBs, includes TB points in total_points, separate
+                        overall vs period sort logic.
+    """
     filtered_picks = _filter_by_week(all_picks, "game_date", filter_key)
     filtered_tb_picks = _filter_by_week(all_tb_picks, "start_time", filter_key)
+    
+    mode = get_sport_mode()
 
+    # Compute game points and correct locks (same for both modes)
     user_game_points = {}
     user_correct_locks = {}
     for p in filtered_picks:
@@ -483,13 +496,7 @@ def _leaderboard_list_for_filter(
         if p.get("lock") and p.get("points_awarded") == 2:
             user_correct_locks[uid] = user_correct_locks.get(uid, 0) + 1
 
-    user_tb_points = {}
-    for tp in filtered_tb_picks:
-        uid = tp.get("user_id")
-        if uid not in users:
-            continue
-        user_tb_points[uid] = user_tb_points.get(uid, 0) + (tp.get("points_awarded") or 0)
-
+    # Compute tiebreaker accuracy
     user_tb_accuracy = {}
     for tp in filtered_tb_picks:
         uid = tp.get("user_id")
@@ -508,38 +515,79 @@ def _leaderboard_list_for_filter(
             user_tb_accuracy[uid] = []
         user_tb_accuracy[uid].append((tb.get("start_time"), diff))
 
+    # Sort tiebreakers by start_time (earliest first)
     for uid in user_tb_accuracy:
         user_tb_accuracy[uid].sort(key=lambda x: x[0] or datetime.min.replace(tzinfo=timezone.utc))
 
+    # Build leaderboard based on sport mode
     leaderboard = []
-    for uid, u in users.items():
-        total_points = user_game_points.get(uid, 0) + user_tb_points.get(uid, 0)
-        correct_locks = user_correct_locks.get(uid, 0)
-        accuracy_list = user_tb_accuracy.get(uid, [])
-        first_diff = accuracy_list[0][1] if len(accuracy_list) > 0 else 999999
-        second_diff = accuracy_list[1][1] if len(accuracy_list) > 1 else 999999
-        third_diff = accuracy_list[2][1] if len(accuracy_list) > 2 else 999999
+    
+    if mode == SportMode.FOOTBALL:
+        # Football: total_points = game picks only (no TB points)
+        # Ranking: total_points DESC, first_tiebreaker_diff ASC, correct_locks DESC, display_name ASC
+        for uid, u in users.items():
+            total_points = user_game_points.get(uid, 0)  # Game picks only
+            correct_locks = user_correct_locks.get(uid, 0)
+            accuracy_list = user_tb_accuracy.get(uid, [])
+            first_diff = accuracy_list[0][1] if len(accuracy_list) > 0 else 999999
 
-        leaderboard.append({
-            "display_name": u.get("display_name", u.get("email", "")),
-            "uid": uid,
-            "total_points": total_points,
-            "correct_locks": correct_locks,
-            "first_tiebreaker_diff": first_diff,
-            "second_tiebreaker_diff": second_diff,
-            "third_tiebreaker_diff": third_diff,
-        })
+            leaderboard.append({
+                "display_name": u.get("display_name", u.get("email", "")),
+                "uid": uid,
+                "total_points": total_points,
+                "correct_locks": correct_locks,
+                "first_tiebreaker_diff": first_diff,
+                "second_tiebreaker_diff": 999999,  # Not used in football
+                "third_tiebreaker_diff": 999999,   # Not used in football
+            })
 
-    if filter_key == "overall":
-        leaderboard.sort(key=lambda x: (-x["total_points"], -x["correct_locks"]))
-    else:
+        # Same sort for all filters (including overall)
         leaderboard.sort(key=lambda x: (
-            -x["total_points"],
-            -x["correct_locks"],
-            x["first_tiebreaker_diff"],
-            x["second_tiebreaker_diff"],
-            x["third_tiebreaker_diff"],
+            -x["total_points"],              # Game points DESC
+            x["first_tiebreaker_diff"],      # Closest TB guess ASC
+            -x["correct_locks"],             # Correct locks DESC
+            x["display_name"].lower(),       # Name ASC (case-insensitive)
         ))
+    
+    else:  # March Madness mode
+        # Compute TB points (only in MM mode)
+        user_tb_points = {}
+        for tp in filtered_tb_picks:
+            uid = tp.get("user_id")
+            if uid not in users:
+                continue
+            user_tb_points[uid] = user_tb_points.get(uid, 0) + (tp.get("points_awarded") or 0)
+
+        for uid, u in users.items():
+            total_points = user_game_points.get(uid, 0) + user_tb_points.get(uid, 0)
+            correct_locks = user_correct_locks.get(uid, 0)
+            accuracy_list = user_tb_accuracy.get(uid, [])
+            first_diff = accuracy_list[0][1] if len(accuracy_list) > 0 else 999999
+            second_diff = accuracy_list[1][1] if len(accuracy_list) > 1 else 999999
+            third_diff = accuracy_list[2][1] if len(accuracy_list) > 2 else 999999
+
+            leaderboard.append({
+                "display_name": u.get("display_name", u.get("email", "")),
+                "uid": uid,
+                "total_points": total_points,
+                "correct_locks": correct_locks,
+                "first_tiebreaker_diff": first_diff,
+                "second_tiebreaker_diff": second_diff,
+                "third_tiebreaker_diff": third_diff,
+            })
+
+        # March Madness: different sort for overall vs period
+        if filter_key == "overall":
+            leaderboard.sort(key=lambda x: (-x["total_points"], -x["correct_locks"]))
+        else:
+            leaderboard.sort(key=lambda x: (
+                -x["total_points"],
+                -x["correct_locks"],
+                x["first_tiebreaker_diff"],
+                x["second_tiebreaker_diff"],
+                x["third_tiebreaker_diff"],
+            ))
+    
     return leaderboard
 
 
@@ -2196,6 +2244,7 @@ def get_player_detailed_stats(uid: str):
 # Game scores (CBS scraper – no DB dependency) + auto-resolve
 # ---------------------------------------------------------------------------
 
+# Legacy constant for backwards compatibility
 CBS_SCOREBOARD_URL = "https://www.cbssports.com/college-basketball/scoreboard/?layout=compact"
 
 
@@ -2239,11 +2288,22 @@ def team_names_match_scoreboard(a: str, b: str) -> bool:
     return na in nb or nb in na
 
 
-def fetch_cbs_games_data() -> List[dict]:
-    """Scrape CBS compact scoreboard. Same shape as /api/gamescores response."""
+def fetch_cbs_games_data(url: str = None) -> List[dict]:
+    """
+    Scrape CBS compact scoreboard from given URL.
+    
+    Args:
+        url: CBS scoreboard URL. Defaults to college-basketball for backwards compatibility.
+    
+    Returns:
+        List of game dicts with AwayTeam, HomeTeam, AwayScore, HomeScore, Time, normalized names.
+    """
+    if url is None:
+        url = CBS_SCOREBOARD_URL
+    
     games_data: List[dict] = []
     try:
-        resp = requests.get(CBS_SCOREBOARD_URL, timeout=15)
+        resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         for game in soup.find_all("div", class_="single-score-card"):
@@ -2276,8 +2336,49 @@ def fetch_cbs_games_data() -> List[dict]:
                 continue
         return games_data
     except Exception as e:
-        logger.warning("fetch_cbs_games_data failed: %s", e)
+        logger.warning("fetch_cbs_games_data failed for %s: %s", url, e)
         return games_data
+
+
+def fetch_live_scores_merged() -> List[dict]:
+    """
+    Fetch and merge live scores for the current sport mode.
+    
+    Football mode: Scrapes both NFL and CFB CBS scoreboards, merges results.
+    March Madness mode: Scrapes college-basketball scoreboard.
+    
+    Returns:
+        Merged list of game score dicts.
+    """
+    mode = get_sport_mode()
+    all_games = []
+    
+    if mode == SportMode.FOOTBALL:
+        scoreboard_urls = get_scoreboard_urls()
+        
+        # Fetch NFL scores
+        try:
+            nfl_games = fetch_cbs_games_data(scoreboard_urls.get("nfl"))
+            all_games.extend(nfl_games)
+            logger.info("Fetched %d NFL games from CBS", len(nfl_games))
+        except Exception as e:
+            logger.warning("Failed to fetch NFL scores: %s", e)
+        
+        # Fetch CFB scores
+        try:
+            cfb_games = fetch_cbs_games_data(scoreboard_urls.get("cfb"))
+            all_games.extend(cfb_games)
+            logger.info("Fetched %d CFB games from CBS", len(cfb_games))
+        except Exception as e:
+            logger.warning("Failed to fetch CFB scores: %s", e)
+    
+    elif mode == SportMode.MARCH_MADNESS:
+        scoreboard_urls = get_scoreboard_urls()
+        basketball_url = scoreboard_urls.get("college-basketball", CBS_SCOREBOARD_URL)
+        all_games = fetch_cbs_games_data(basketball_url)
+        logger.info("Fetched %d college-basketball games from CBS", len(all_games))
+    
+    return all_games
 
 
 def cbs_status_is_final(time_str: str) -> bool:
@@ -2408,7 +2509,13 @@ def run_auto_resolve_games(db) -> dict:
 
 @app.get("/api/gamescores")
 async def get_game_scores(request: Request):
-    return fetch_cbs_games_data()
+    """
+    Fetch live game scores from CBS scoreboards.
+    
+    Football mode: Returns merged NFL + CFB scores.
+    March Madness mode: Returns college-basketball scores.
+    """
+    return fetch_live_scores_merged()
 
 
 @app.post("/internal/auto-resolve-games")
