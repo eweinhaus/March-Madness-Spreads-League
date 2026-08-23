@@ -37,6 +37,7 @@ from scoring import (
     score_pick_points,
     PICK_LOCK_BEFORE_TIP,
 )
+from sport_config import get_sport_display_config
 
 load_dotenv()
 
@@ -633,6 +634,17 @@ def health():
 @app.head("/")
 def root():
     return {"message": "March Madness Spreads API v2 – Firestore"}
+
+
+@app.get("/app-config")
+def get_app_config():
+    """
+    Return sport configuration for the frontend.
+    
+    No authentication required – this endpoint is called on initial app load
+    to determine sport mode, display strings, and conditional UI rendering.
+    """
+    return get_sport_display_config()
 
 # ---------------------------------------------------------------------------
 # Auth / current user
