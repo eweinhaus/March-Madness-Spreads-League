@@ -1014,7 +1014,7 @@ def _apply_game_result(db, game_id: str, winning_team: str, auto: bool = False) 
 
 
 @app.post("/update_score")
-def update_score(result: GameResult):
+async def update_score(result: GameResult, current_user: User = Depends(get_current_admin_user)):
     db = get_db()
     game_ref = db.collection("games").document(result.game_id)
     game_snap = game_ref.get()
@@ -1345,6 +1345,19 @@ def get_live_games():
 @app.get("/live_games/{game_id}/picks")
 def get_game_picks(game_id: str):
     db = get_db()
+    
+    # Check if game has started - do not leak picks before kickoff
+    game_snap = db.collection("games").document(game_id).get()
+    if not game_snap.exists:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    game = game_snap.to_dict()
+    game_date = _fs_timestamp_to_dt(game.get("game_date"))
+    current_time = get_current_utc_time()
+    
+    if game_date and game_date > current_time:
+        raise HTTPException(status_code=403, detail="Picks not available until game starts")
+    
     result = []
     for snap in db.collection("picks").where("game_id", "==", game_id).stream():
         p = snap.to_dict()
@@ -1662,11 +1675,22 @@ async def create_tiebreaker(tiebreaker: TiebreakerCreate, current_user: User = D
 def get_tiebreakers():
     db = get_db()
     current_time = get_current_utc_time()
+    
+    # Avoid compound query (is_active + start_time + order_by) that requires composite index
+    # Filter and sort in-process like /picks_data does (lines 1100-1114)
     result = []
-    for doc in db.collection("tiebreakers").where("start_time", ">", current_time).where("is_active", "==", True).order_by("start_time").stream():
+    for doc in db.collection("tiebreakers").stream():
         t = doc.to_dict()
+        if not t.get("is_active", True):
+            continue
+        st = _fs_timestamp_to_dt(t.get("start_time"))
+        if st is None or st <= current_time:
+            continue
         t["id"] = doc.id
         result.append(_serialize_doc(t))
+    
+    # Sort by start_time ascending
+    result.sort(key=lambda x: x.get("start_time") or "")
     return result
 
 
@@ -1735,6 +1759,19 @@ def get_live_tiebreakers():
 @app.get("/live_tiebreakers/{tiebreaker_id}/picks")
 def get_tiebreaker_picks_detail(tiebreaker_id: str):
     db = get_db()
+    
+    # Check if tiebreaker has started - do not leak picks before start time
+    tb_snap = db.collection("tiebreakers").document(tiebreaker_id).get()
+    if not tb_snap.exists:
+        raise HTTPException(status_code=404, detail="Tiebreaker not found")
+    
+    tb = tb_snap.to_dict()
+    start_time = _fs_timestamp_to_dt(tb.get("start_time"))
+    current_time = get_current_utc_time()
+    
+    if start_time and start_time > current_time:
+        raise HTTPException(status_code=403, detail="Picks not available until tiebreaker starts")
+    
     result = []
     for snap in db.collection("tiebreaker_picks").where("tiebreaker_id", "==", tiebreaker_id).stream():
         tp = snap.to_dict()
@@ -1966,6 +2003,7 @@ def get_player_stats():
 @app.get("/stats/{uid}")
 def get_player_detailed_stats(uid: str):
     db = get_db()
+    current_time = get_current_utc_time()
 
     user_snap = db.collection("users").document(uid).get()
     if not user_snap.exists:
@@ -1994,6 +2032,11 @@ def get_player_detailed_stats(uid: str):
 
     recent_picks = []
     for p in user_picks_raw[:20]:
+        # Filter out future games - do not leak unstarted picks
+        game_date = p.get("game_date")
+        if game_date and game_date > current_time:
+            continue
+        
         pts = p.get("points_awarded", 0)
         wt = p.get("winning_team", "")
         if pts > 0:
