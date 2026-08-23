@@ -2328,9 +2328,23 @@ async def internal_auto_resolve_games(
     x_cron_secret: Optional[str] = Header(None, alias="X-Cron-Secret"),
 ):
     """
-    Secured by CRON_SECRET. Call from GitHub Actions or another scheduler every few minutes.
-    Accepts Authorization: Bearer <secret> or X-Cron-Secret: <secret>.
+    DEPRECATED: Auto-resolve pipeline is no longer active. See PRD-01.
+    
+    This endpoint is preserved for backwards compatibility but returns early.
+    Admins now manually enter final scores via the Admin Games UI.
+    
+    Original behavior: Secured by CRON_SECRET, called from GitHub Actions scheduler
+    to scrape CBS scores and auto-resolve game results.
     """
+    # Return early with deprecation message
+    return {
+        "status": "deprecated",
+        "message": "Auto-resolve is deprecated. Admins manually enter game results.",
+        "resolved_count": 0,
+        "updated_games": []
+    }
+    
+    # Original auto-resolve logic below (preserved for reference, never executed)
     secret = (os.getenv("CRON_SECRET") or "").strip()
     # Empty: disabled. Too short: refuse (avoids accidental weak / empty-string env quirks).
     _min_cron = 16

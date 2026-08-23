@@ -1,3 +1,10 @@
+# DEPRECATED: Manual game resolution only. See PRD-01.
+#
+# This auto-resolve pipeline was unreliable and is no longer used.
+# Admins manually enter final scores and results via the Admin Games UI.
+# The workflow is preserved for historical reference but will not trigger.
+#
+# Original behavior:
 # Peak (1:30pm–1:00am Eastern): POST every workflow run (~5 min) — GitHub cannot schedule faster.
 # Off-peak: POST only at the top of each hour Eastern (first run in that hour).
 #
@@ -6,12 +13,13 @@
 #
 # Secrets: AUTO_RESOLVE_BACKEND_URL, CRON_SECRET (same as backend CRON_SECRET)
 
-name: Auto-resolve games
+name: Auto-resolve games (DEPRECATED)
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
-  workflow_dispatch:
+  # Cron schedule disabled - workflow will not run automatically
+  # schedule:
+  #   - cron: "*/5 * * * *"
+  workflow_dispatch:  # Keep manual trigger for testing/reference
 
 jobs:
   call-auto-resolve:
