@@ -38,7 +38,7 @@ from scoring import (
     score_pick_points,
     PICK_LOCK_BEFORE_TIP,
 )
-from sport_config import get_app_config, get_sport_mode, get_football_week_labels, SportMode
+from sport_config import get_app_config, get_sport_mode, get_football_week_labels, get_scoreboard_urls, SportMode
 
 load_dotenv()
 
