@@ -274,7 +274,7 @@ export default function Picks() {
     try {
       const gamesToSubmit = new Set([...Object.keys(picks), ...Object.keys(locks)]);
 
-      const gamePickResponses = await Promise.all(
+      const gamePickResults = await Promise.allSettled(
         Array.from(gamesToSubmit).map((gid) => {
           const pickedTeam = picks[gid] || existingPicks[gid];
           if (!pickedTeam) throw new Error(`No pick found for game ${gid}`);
@@ -285,39 +285,106 @@ export default function Picks() {
           const data = { game_id: gid, picked_team: pickedTeam };
           if (hasLockChange) data.lock = isLocked;
 
-          return api.post("/submit_pick", data);
+          return api.post("/submit_pick", data).then(res => ({ gid, res, data }));
         })
       );
 
-      const tiebreakerPickResponses = await Promise.all(
+      const tiebreakerPickResults = await Promise.allSettled(
         Object.entries(tiebreakerPicks).map(([tid, answer]) =>
-          api.post("/tiebreaker_picks", { tiebreaker_id: tid, answer })
+          api.post("/tiebreaker_picks", { tiebreaker_id: tid, answer }).then(res => ({ tid, res, answer }))
         )
       );
 
-      const gameMessages = gamePickResponses.map((r) => r.data.message).filter(Boolean);
-      const tbMessages = tiebreakerPickResponses.map((r) => r.data.message).filter(Boolean);
+      // Count successes/failures
+      const gameFulfilled = gamePickResults.filter(r => r.status === "fulfilled");
+      const gameRejected = gamePickResults.filter(r => r.status === "rejected");
+      const tbFulfilled = tiebreakerPickResults.filter(r => r.status === "fulfilled");
+      const tbRejected = tiebreakerPickResults.filter(r => r.status === "rejected");
 
-      let msg = "";
-      if (gameMessages.length > 0) {
-        const unique = [...new Set(gameMessages)];
-        msg = unique.length === 1 ? unique[0] : `Updated ${gameMessages.length} picks successfully`;
-      }
-      if (tbMessages.length > 0) {
-        if (msg) msg += "\n";
-        const unique = [...new Set(tbMessages)];
-        msg += unique.length === 1 ? unique[0] : `Updated ${tbMessages.length} tiebreakers successfully`;
-      }
+      // Merge successful picks into state
+      const newExistingPicks = { ...existingPicks };
+      const newExistingLocks = { ...existingLocks };
+      const newExistingTiebreakerPicks = { ...existingTiebreakerPicks };
+
+      gameFulfilled.forEach(result => {
+        const { gid, data } = result.value;
+        newExistingPicks[gid] = data.picked_team;
+        if (data.lock !== undefined) {
+          newExistingLocks[gid] = data.lock;
+        }
+      });
+
+      tbFulfilled.forEach(result => {
+        const { tid, answer } = result.value;
+        newExistingTiebreakerPicks[tid] = answer;
+      });
+
+      setExistingPicks(newExistingPicks);
+      setExistingLocks(newExistingLocks);
+      setExistingTiebreakerPicks(newExistingTiebreakerPicks);
+
+      // Clear pending state for successful items
+      const newPicks = { ...picks };
+      const newLocks = { ...locks };
+      const newTiebreakerPicks = { ...tiebreakerPicks };
+      
+      gameFulfilled.forEach(result => {
+        const { gid } = result.value;
+        delete newPicks[gid];
+        delete newLocks[gid];
+      });
+      
+      tbFulfilled.forEach(result => {
+        const { tid } = result.value;
+        delete newTiebreakerPicks[tid];
+      });
+
+      setPicks(newPicks);
+      setLocks(newLocks);
+      setTiebreakerPicks(newTiebreakerPicks);
 
       setIsSubmitting(false);
+
+      // Build feedback message
+      const totalGames = gamePickResults.length;
+      const totalTBs = tiebreakerPickResults.length;
+      const savedGames = gameFulfilled.length;
+      const failedGames = gameRejected.length;
+      const savedTBs = tbFulfilled.length;
+      const failedTBs = tbRejected.length;
+
+      let msg = "";
+      if (totalGames > 0) {
+        if (failedGames === 0) {
+          msg = `Saved ${savedGames} pick${savedGames !== 1 ? 's' : ''}`;
+        } else if (savedGames === 0) {
+          msg = `Failed to save ${failedGames} pick${failedGames !== 1 ? 's' : ''}`;
+        } else {
+          msg = `Saved ${savedGames} pick${savedGames !== 1 ? 's' : ''}, ${failedGames} failed`;
+        }
+      }
+
+      if (totalTBs > 0) {
+        if (msg) msg += "; ";
+        if (failedTBs === 0) {
+          msg += `Saved ${savedTBs} tiebreaker${savedTBs !== 1 ? 's' : ''}`;
+        } else if (savedTBs === 0) {
+          msg += `Failed to save ${failedTBs} tiebreaker${failedTBs !== 1 ? 's' : ''}`;
+        } else {
+          msg += `Saved ${savedTBs} tiebreaker${savedTBs !== 1 ? 's' : ''}, ${failedTBs} failed`;
+        }
+      }
+
       if (msg) alert(msg);
-      setError(null);
-      setExistingPicks({ ...existingPicks, ...picks });
-      setExistingTiebreakerPicks({ ...existingTiebreakerPicks, ...tiebreakerPicks });
-      setExistingLocks({ ...existingLocks, ...locks });
-      setPicks({});
-      setTiebreakerPicks({});
-      setLocks({});
+      
+      // Show first error if any failures
+      if (gameRejected.length > 0 || tbRejected.length > 0) {
+        const firstError = gameRejected[0]?.reason || tbRejected[0]?.reason;
+        const errorMsg = firstError?.response?.data?.detail || firstError?.message || "Unknown error";
+        setError(`Some picks failed: ${errorMsg}`);
+      } else {
+        setError(null);
+      }
     } catch (err) {
       if (!handleAuthError(err)) {
         if (err.response && err.response.status === 403) {
@@ -473,7 +540,14 @@ export default function Picks() {
                             )}
                           </Card.Title>
                           <Card.Text className="mb-3">
-                            <div className="mb-1"><strong>Spread:</strong> {game.spread > 0 ? `${game.home_team} -${game.spread}` : `${game.away_team} -${Math.abs(game.spread)}`}</div>
+                            <div className="mb-1">
+                              <strong>Spread:</strong>{' '}
+                              {game.spread === 0 
+                                ? "Pick'em" 
+                                : game.spread > 0 
+                                  ? `${game.home_team} -${game.spread}` 
+                                  : `${game.away_team} -${Math.abs(game.spread)}`}
+                            </div>
                             <div className="mb-1"><strong>Game time:</strong> {formatDateForDisplay(game.game_date)}</div>
                             {existingPick && (
                               <div className="mt-2 text-success">
@@ -484,10 +558,12 @@ export default function Picks() {
                           </Card.Text>
                           <div className="d-grid gap-2 mt-auto">
                             <Button variant={selectedTeam === game.away_team ? "success" : "outline-primary"} onClick={() => handlePick(game.game_id, game.away_team)} className="py-2">
-                              {game.away_team} {game.spread > 0 ? `+${game.spread}` : `-${Math.abs(game.spread)}`}
+                              {game.away_team}
+                              {game.spread !== 0 && (game.spread > 0 ? ` +${game.spread}` : ` -${Math.abs(game.spread)}`)}
                             </Button>
                             <Button variant={selectedTeam === game.home_team ? "success" : "outline-primary"} onClick={() => handlePick(game.game_id, game.home_team)} className="py-2">
-                              {game.home_team} {game.spread > 0 ? `-${game.spread}` : `+${Math.abs(game.spread)}`}
+                              {game.home_team}
+                              {game.spread !== 0 && (game.spread > 0 ? ` -${game.spread}` : ` +${Math.abs(game.spread)}`)}
                             </Button>
                           </div>
                         </Card.Body>

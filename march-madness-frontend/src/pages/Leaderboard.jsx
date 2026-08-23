@@ -156,11 +156,18 @@ export default function Leaderboard() {
                 <span className="badge bg-warning text-dark rounded-pill d-flex align-items-center gap-1" style={{ fontSize: '0.75rem' }}>
                   {player.correct_locks} <FaLock className="text-dark" size={10} />
                 </span>
-                {filter !== 'overall' && player.first_tiebreaker_diff !== 999999 && (
-                  <span className="badge bg-info rounded-pill" style={{ fontSize: '0.75rem' }}>
-                    TB: {player.first_tiebreaker_diff.toFixed(1)}
-                  </span>
-                )}
+                {(() => {
+                  const isFootball = config?.sport_mode === 'football';
+                  const showTB = isFootball 
+                    ? player.first_tiebreaker_diff !== 999999
+                    : filter !== 'overall' && player.first_tiebreaker_diff !== 999999;
+                  
+                  return showTB && (
+                    <span className="badge bg-info rounded-pill" style={{ fontSize: '0.75rem' }}>
+                      TB: {player.first_tiebreaker_diff.toFixed(1)}
+                    </span>
+                  );
+                })()}
               </div>
             </li>
           ))}

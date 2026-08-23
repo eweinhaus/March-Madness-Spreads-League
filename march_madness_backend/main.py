@@ -22,6 +22,8 @@ import requests
 from bs4 import BeautifulSoup
 import re
 
+import google.cloud.firestore
+
 from auth import User
 from firestore_client import (
     get_db,
@@ -958,6 +960,114 @@ async def delete_game(game_id: str, current_user: User = Depends(get_current_adm
 # Picks
 # ---------------------------------------------------------------------------
 
+@google.cloud.firestore.transactional
+def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, game_id: str, game_date, picked_team: str, mode: SportMode, current_time, points_awarded: int = 0):
+    """
+    Atomically swap LOTW and update/create pick with lock=True.
+    
+    Firestore transaction rules: ALL READS FIRST, THEN ALL WRITES.
+    1. Read: Query existing locks + get their games + get target pick
+    2. Write: Unlock same-period lock(s) + set lock=True on target pick
+    
+    Transaction retries automatically on contention.
+    
+    Args:
+        transaction: Firestore transaction object
+        db: Firestore client
+        user_id: User ID
+        pick_id: Deterministic pick document ID ({uid}_{game_id})
+        game_id: Game ID for the pick
+        game_date: Game date for period calculation
+        picked_team: Team being picked
+        mode: Sport mode (FOOTBALL or MARCH_MADNESS)
+        current_time: Current UTC time
+        points_awarded: Points (default 0 for new picks)
+        
+    Raises:
+        HTTPException: If cannot unlock started game lock in same period
+    """
+    from google.cloud.firestore_v1.base_query import FieldFilter
+    
+    # ===== PHASE 1: ALL READS =====
+    
+    # Read 1: Query existing locks
+    picks_ref = db.collection("picks")
+    query = picks_ref.where(filter=FieldFilter("user_id", "==", user_id)).where(filter=FieldFilter("lock", "==", True))
+    
+    existing_locks = []
+    for snap in query.stream(transaction=transaction):
+        ld = snap.to_dict()
+        ld["_id"] = snap.id
+        # Read 2: Get game for each lock
+        g_snap = transaction.get(db.collection("games").document(ld["game_id"]))
+        if g_snap.exists:
+            ld["game_date"] = _fs_timestamp_to_dt(g_snap.to_dict()["game_date"])
+        existing_locks.append(ld)
+    
+    # Read 3: Get target pick BEFORE any writes
+    pick_ref = db.collection("picks").document(pick_id)
+    pick_snap = transaction.get(pick_ref)
+    
+    # ===== PHASE 2: VALIDATION (no reads or writes) =====
+    
+    # Determine target period
+    if mode == SportMode.FOOTBALL:
+        target_start, target_end = get_week_bounds(game_date)
+        period_label = "week (Wed–Tue ET)"
+    else:
+        target_start, target_end = get_lock_day_bounds(game_date)
+        period_label = "day (3am ET–3am ET)"
+    
+    # Find same-period lock to unlock
+    lock_to_unlock = None
+    for lock in existing_locks:
+        if lock["game_id"] == game_id:
+            continue
+        
+        lock_game_date = lock.get("game_date")
+        if lock_game_date is None:
+            continue
+        
+        if mode == SportMode.FOOTBALL:
+            lock_start, lock_end = get_week_bounds(lock_game_date)
+        else:
+            lock_start, lock_end = get_lock_day_bounds(lock_game_date)
+        
+        same_period = not (target_start >= lock_end or target_end <= lock_start)
+        if same_period:
+            if picks_locked_for_game(current_time, lock_game_date):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot lock this game because you already have a lock on a game whose picks have locked for the same {period_label}.",
+                )
+            lock_to_unlock = lock
+            break  # Only one lock per period
+    
+    # ===== PHASE 3: ALL WRITES =====
+    
+    # Write 1: Unlock old same-period lock if found
+    if lock_to_unlock:
+        transaction.update(db.collection("picks").document(lock_to_unlock["_id"]), {"lock": False})
+    
+    # Write 2: Set lock=True on target pick (completes atomic swap)
+    if pick_snap.exists:
+        # Update existing pick: set picked_team and lock=True
+        transaction.update(pick_ref, {
+            "picked_team": picked_team,
+            "lock": True
+        })
+    else:
+        # Create new pick with lock=True
+        transaction.set(pick_ref, {
+            "user_id": user_id,
+            "game_id": game_id,
+            "picked_team": picked_team,
+            "points_awarded": points_awarded,
+            "lock": True,
+            "created_at": server_timestamp()
+        })
+
+
 @app.post("/submit_pick")
 async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_current_user)):
     if not current_user.make_picks:
@@ -973,60 +1083,51 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
     # Validate picked_team against game teams
     assert_valid_pick_team(game, pick.picked_team)
 
-    existing_pick_snap = None
-    existing_pick = None
-    for snap in db.collection("picks").where("user_id", "==", current_user.uid).where("game_id", "==", pick.game_id).stream():
-        existing_pick_snap = snap
-        existing_pick = snap.to_dict()
-        break
+    # Determine pick document ID: prefer deterministic {uid}_{game_id}, fall back to legacy query
+    pick_id = f"{current_user.uid}_{pick.game_id}"
+    
+    existing_pick_snap = db.collection("picks").document(pick_id).get()
+    existing_pick = existing_pick_snap.to_dict() if existing_pick_snap.exists else None
+    
+    if not existing_pick:
+        # Fall back to query for legacy random-ID picks
+        for snap in db.collection("picks").where("user_id", "==", current_user.uid).where("game_id", "==", pick.game_id).stream():
+            existing_pick_snap = snap
+            existing_pick = snap.to_dict()
+            pick_id = snap.id  # Use legacy ID for this update
+            break
 
     current_time = get_current_utc_time()
     game_date = _fs_timestamp_to_dt(game["game_date"])
     picks_locked = picks_locked_for_game(current_time, game_date)
 
     # Lock logic
+    lock_swap_used = False
     if pick.lock is not None:
-        existing_locks = []
-        for snap in db.collection("picks").where("user_id", "==", current_user.uid).where("lock", "==", True).stream():
-            ld = snap.to_dict()
-            ld["_id"] = snap.id
-            g_snap = db.collection("games").document(ld["game_id"]).get()
-            if g_snap.exists:
-                ld["game_date"] = _fs_timestamp_to_dt(g_snap.to_dict()["game_date"])
-            existing_locks.append(ld)
-
         if pick.lock:
-            # Determine period bounds based on sport mode
+            # Use transaction for atomic lock swap (query locks + unlock old + set new lock in one transaction)
             mode = get_sport_mode()
-            if mode == SportMode.FOOTBALL:
-                target_start, target_end = get_week_bounds(game_date)
-                period_label = "week (Wed–Tue ET)"
-            else:
-                target_start, target_end = get_lock_day_bounds(game_date)
-                period_label = "day (3am ET–3am ET)"
-            
-            for lock in existing_locks:
-                if lock["game_id"] != pick.game_id:
-                    lock_game_date = lock.get("game_date")
-                    if lock_game_date is None:
-                        continue
-                    
-                    # Get period bounds for existing lock
-                    if mode == SportMode.FOOTBALL:
-                        lock_start, lock_end = get_week_bounds(lock_game_date)
-                    else:
-                        lock_start, lock_end = get_lock_day_bounds(lock_game_date)
-                    
-                    # Check if same period (half-open intervals)
-                    same_period = not (target_start >= lock_end or target_end <= lock_start)
-                    if same_period:
-                        if picks_locked_for_game(current_time, lock_game_date):
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Cannot lock this game because you already have a lock on a game whose picks have locked for the same {period_label}.",
-                            )
-                        # Unlock the previous lock (picks not yet locked for that game)
-                        db.collection("picks").document(lock["_id"]).update({"lock": False})
+            try:
+                transaction = db.transaction()
+                points = existing_pick.get("points_awarded", 0) if existing_pick else 0
+                _atomic_lock_swap_and_update(
+                    transaction, 
+                    db, 
+                    current_user.uid, 
+                    pick_id, 
+                    pick.game_id, 
+                    game_date,
+                    pick.picked_team,
+                    mode, 
+                    current_time,
+                    points
+                )
+                lock_swap_used = True  # Skip normal update path
+            except HTTPException:
+                raise  # Re-raise validation errors
+            except Exception as e:
+                logger.error(f"Lock swap transaction failed: {e}")
+                raise HTTPException(status_code=500, detail="Failed to update lock status")
 
         elif not pick.lock and existing_pick and existing_pick.get("lock"):
             if picks_locked:
@@ -1054,12 +1155,26 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
                 status_code=400,
                 detail="Your pick cannot be changed — picks lock 1 minute before scheduled tip-off.",
             )
-        return {"message": "No changes after picks locked.", "pick": _serialize_doc({**existing_pick, "id": existing_pick_snap.id})}
+        return {"message": "No changes after picks locked.", "pick": _serialize_doc({**existing_pick, "id": pick_id})}
+
+    # If lock swap was used, the transaction already created/updated the pick
+    if lock_swap_used:
+        invalidate_stats_cache(db)
+        result_pick = {
+            "user_id": current_user.uid,
+            "game_id": pick.game_id,
+            "picked_team": pick.picked_team,
+            "points_awarded": existing_pick.get("points_awarded", 0) if existing_pick else 0,
+            "lock": True,
+            "id": pick_id,
+            "created_at": existing_pick.get("created_at") if existing_pick else get_current_utc_time()
+        }
+        return {"message": "Pick submitted successfully", "pick": _serialize_doc(result_pick)}
 
     if existing_pick:
         lock_value = pick.lock if pick.lock is not None else existing_pick.get("lock", False)
         existing_pick_snap.reference.update({"picked_team": pick.picked_team, "lock": lock_value})
-        updated = {**existing_pick, "picked_team": pick.picked_team, "lock": lock_value, "id": existing_pick_snap.id}
+        updated = {**existing_pick, "picked_team": pick.picked_team, "lock": lock_value, "id": pick_id}
         invalidate_stats_cache(db)
         return {"message": "Pick updated successfully", "pick": _serialize_doc(updated)}
     else:
@@ -1072,9 +1187,10 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
             "lock": lock_value,
             "created_at": server_timestamp(),
         }
-        doc_ref = db.collection("picks").document()
-        doc_ref.set(new_pick_data)
-        new_pick_data["id"] = doc_ref.id
+        # Use deterministic ID with merge=True (idempotent)
+        doc_ref = db.collection("picks").document(pick_id)
+        doc_ref.set(new_pick_data, merge=True)
+        new_pick_data["id"] = pick_id
         new_pick_data["created_at"] = get_current_utc_time()
         invalidate_stats_cache(db)
         return {"message": "Pick submitted successfully", "pick": _serialize_doc(new_pick_data)}
