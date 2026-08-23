@@ -15,30 +15,25 @@ export default function Leaderboard() {
   const [showModal, setShowModal] = useState(false);
   const [filter, setFilter] = useState('overall');
   const [weekOptions, setWeekOptions] = useState([]);
-  const [appConfig, setAppConfig] = useState(null);
   const navigate = useNavigate();
 
   // Get sport config from provider
-  const { config } = useSportConfig();
+  const { config, loading: configLoading } = useSportConfig();
   const lockLabel = config?.lock_label || "lock of the day";
 
   useEffect(() => {
-    // Fetch app config to determine sport mode
-    api.get('/app-config')
-      .then(res => {
-        setAppConfig(res.data);
-        // Set default filter based on sport mode
-        if (res.data.sport_mode === 'football') {
-          const currentWeek = getCurrentFootballWeek();
-          setFilter(currentWeek);
-        } else {
-          setFilter('overall');
-        }
-      })
-      .catch(err => console.error('Failed to load app config:', err));
+    // Set default filter based on sport mode from provider
+    if (!configLoading && config) {
+      if (config.sport_mode === 'football') {
+        const currentWeek = getCurrentFootballWeek();
+        setFilter(currentWeek);
+      } else {
+        setFilter('overall');
+      }
+    }
     
     fetchWeekOptions();
-  }, []);
+  }, [config, configLoading]);
 
   useEffect(() => {
     if (filter) {
@@ -182,7 +177,7 @@ export default function Leaderboard() {
                 <>
                   {filter === 'overall' ? (
                     <Accordion defaultActiveKey="" className="mb-4">
-                      {appConfig?.sport_mode === 'football' 
+                      {config?.sport_mode === 'football' 
                         ? Object.values(groupPicksByWeek(userPicks.picks))
                             .filter((week) => week.picks.length > 0)
                             .map((weekData) => (

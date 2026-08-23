@@ -7,7 +7,6 @@ import './App.css';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth, signOut, getRedirectResult } from './firebase';
 import api from './api';
-import { SportConfigProvider } from './sportConfig';
 
 import Home from './pages/Home';
 import Picks from './pages/Picks';
@@ -166,9 +165,7 @@ function AppContent() {
 function App() {
   return (
     <Router>
-      <SportConfigProvider>
-        <AppContent />
-      </SportConfigProvider>
+      <AppContent />
     </Router>
   );
 }
