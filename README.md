@@ -4,11 +4,13 @@ Production full-stack web app for managing multi-user sports spread-picking leag
 
 **Live demo:** [spreadpools.com](https://www.spreadpools.com)
 
+**Current season:** Football 2026 (NFL + CFB). Supports multiple sports via `SPORT_MODE` configuration.
+
 ## Highlights
 
 - **React + Vite** frontend with Firebase Auth (Google OAuth)
 - **FastAPI** backend on Vercel with Firebase Admin SDK (server-only Firestore access)
-- **Automated scoring** — GitHub Actions cron triggers CBS scoreboard scraping to resolve cover/push results
+- **Multi-sport support** — switch between football and basketball modes via environment config
 - **Real-time leaderboards** with Firestore-backed caching and lock-of-the-day pick rules
 - **Admin tools** for game management, tiebreakers, and user pick oversight
 
@@ -18,8 +20,6 @@ Production full-stack web app for managing multi-user sports spread-picking leag
 Browser (React) ──► Firebase Auth (Google OAuth)
        │
        └──► FastAPI (Vercel) ──► Firestore (Admin SDK, client rules deny all)
-                    │
-                    └──► CBS scoreboard scrape (auto-resolve cron)
 ```
 
 | Layer | Technology |
@@ -87,7 +87,7 @@ scripts/                  Admin utilities
 ## Interview talking points
 
 - Migrated a live app from **Render + PostgreSQL** to **Vercel + Firestore** without downtime for users
-- Built a **reliable auto-resolve pipeline** (peak/off-peak cron, CBS scraping, cover/push logic)
+- Built a **multi-sport configuration system** allowing season switches via environment variables
 - Enforced **fail-closed security** — Firestore rules deny all client reads/writes; backend uses Admin SDK
 - Operated under real usage (**40+ users**) including scoring bug fixes with validation and rollback planning
 
