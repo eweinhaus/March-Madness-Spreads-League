@@ -22,6 +22,8 @@ import requests
 from bs4 import BeautifulSoup
 import re
 
+import google.cloud.firestore
+
 from auth import User
 from firestore_client import (
     get_db,
@@ -958,12 +960,32 @@ async def delete_game(game_id: str, current_user: User = Depends(get_current_adm
 # Picks
 # ---------------------------------------------------------------------------
 
-def _swap_lock_transactional(transaction, db, user_id: str, new_pick_game_id: str, new_pick_game_date, mode: SportMode, current_time):
+@google.cloud.firestore.transactional
+def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, game_id: str, game_date, picked_team: str, mode: SportMode, current_time, points_awarded: int = 0):
     """
-    Atomically check and unlock same-period lock within a Firestore transaction.
+    Atomically swap LOTW and update/create pick with lock=True.
     
-    Returns None if successful, raises HTTPException if validation fails.
-    Must be called within a transaction context.
+    All operations in one Firestore transaction:
+    1. Query existing locks
+    2. Unlock same-period lock if found
+    3. Set lock=True on target pick (create or update)
+    
+    Transaction retries automatically on contention.
+    
+    Args:
+        transaction: Firestore transaction object
+        db: Firestore client
+        user_id: User ID
+        pick_id: Deterministic pick document ID ({uid}_{game_id})
+        game_id: Game ID for the pick
+        game_date: Game date for period calculation
+        picked_team: Team being picked
+        mode: Sport mode (FOOTBALL or MARCH_MADNESS)
+        current_time: Current UTC time
+        points_awarded: Points (default 0 for new picks)
+        
+    Raises:
+        HTTPException: If cannot unlock started game lock in same period
     """
     from google.cloud.firestore_v1.base_query import FieldFilter
     
@@ -982,15 +1004,15 @@ def _swap_lock_transactional(transaction, db, user_id: str, new_pick_game_id: st
     
     # Determine target period
     if mode == SportMode.FOOTBALL:
-        target_start, target_end = get_week_bounds(new_pick_game_date)
+        target_start, target_end = get_week_bounds(game_date)
         period_label = "week (Wed–Tue ET)"
     else:
-        target_start, target_end = get_lock_day_bounds(new_pick_game_date)
+        target_start, target_end = get_lock_day_bounds(game_date)
         period_label = "day (3am ET–3am ET)"
     
     # Check for same-period lock and unlock if allowed
     for lock in existing_locks:
-        if lock["game_id"] == new_pick_game_id:
+        if lock["game_id"] == game_id:
             continue
         
         lock_game_date = lock.get("game_date")
@@ -1011,6 +1033,27 @@ def _swap_lock_transactional(transaction, db, user_id: str, new_pick_game_id: st
                 )
             # Unlock the old lock (transactionally)
             transaction.update(db.collection("picks").document(lock["_id"]), {"lock": False})
+    
+    # Set lock=True on the new pick (transactionally) - completes atomic swap
+    pick_ref = db.collection("picks").document(pick_id)
+    pick_snap = transaction.get(pick_ref)
+    
+    if pick_snap.exists:
+        # Update existing pick: set picked_team and lock=True
+        transaction.update(pick_ref, {
+            "picked_team": picked_team,
+            "lock": True
+        })
+    else:
+        # Create new pick with lock=True
+        transaction.set(pick_ref, {
+            "user_id": user_id,
+            "game_id": game_id,
+            "picked_team": picked_team,
+            "points_awarded": points_awarded,
+            "lock": True,
+            "created_at": server_timestamp()
+        })
 
 
 @app.post("/submit_pick")
@@ -1047,13 +1090,27 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
     picks_locked = picks_locked_for_game(current_time, game_date)
 
     # Lock logic
+    lock_swap_used = False
     if pick.lock is not None:
         if pick.lock:
-            # Use transaction for atomic lock swap
+            # Use transaction for atomic lock swap (query locks + unlock old + set new lock in one transaction)
             mode = get_sport_mode()
             try:
                 transaction = db.transaction()
-                _swap_lock_transactional(transaction, db, current_user.uid, pick.game_id, game_date, mode, current_time)
+                points = existing_pick.get("points_awarded", 0) if existing_pick else 0
+                _atomic_lock_swap_and_update(
+                    transaction, 
+                    db, 
+                    current_user.uid, 
+                    pick_id, 
+                    pick.game_id, 
+                    game_date,
+                    pick.picked_team,
+                    mode, 
+                    current_time,
+                    points
+                )
+                lock_swap_used = True  # Skip normal update path
             except HTTPException:
                 raise  # Re-raise validation errors
             except Exception as e:
@@ -1087,6 +1144,20 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
                 detail="Your pick cannot be changed — picks lock 1 minute before scheduled tip-off.",
             )
         return {"message": "No changes after picks locked.", "pick": _serialize_doc({**existing_pick, "id": pick_id})}
+
+    # If lock swap was used, the transaction already created/updated the pick
+    if lock_swap_used:
+        invalidate_stats_cache(db)
+        result_pick = {
+            "user_id": current_user.uid,
+            "game_id": pick.game_id,
+            "picked_team": pick.picked_team,
+            "points_awarded": existing_pick.get("points_awarded", 0) if existing_pick else 0,
+            "lock": True,
+            "id": pick_id,
+            "created_at": existing_pick.get("created_at") if existing_pick else get_current_utc_time()
+        }
+        return {"message": "Pick submitted successfully", "pick": _serialize_doc(result_pick)}
 
     if existing_pick:
         lock_value = pick.lock if pick.lock is not None else existing_pick.get("lock", False)
