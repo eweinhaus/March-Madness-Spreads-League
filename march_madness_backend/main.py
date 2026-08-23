@@ -37,7 +37,7 @@ from scoring import (
     score_pick_points,
     PICK_LOCK_BEFORE_TIP,
 )
-from sport_config import get_sport_display_config
+from sport_config import get_app_config
 
 load_dotenv()
 
@@ -637,14 +637,24 @@ def root():
 
 
 @app.get("/app-config")
-def get_app_config():
+def get_app_config_endpoint():
     """
-    Return sport configuration for the frontend.
+    Return app configuration for the frontend.
     
     No authentication required – this endpoint is called on initial app load
-    to determine sport mode, display strings, and conditional UI rendering.
+    to determine sport mode, league ID, display strings, and conditional UI rendering.
+    
+    Returns:
+        - product_name: "Spreads"
+        - league_id: from LEAGUE_ID env var
+        - sport_mode: "football" or "march_madness"
+        - display_name: season-specific display name
+        - season_label: season label for UI
+        - pick_noun: "game" or "matchup"
+        - period_type: "week" or "round"
+        - lock_label: "lock of the week" or "lock of the day"
     """
-    return get_sport_display_config()
+    return get_app_config()
 
 # ---------------------------------------------------------------------------
 # Auth / current user
@@ -2330,40 +2340,46 @@ async def internal_auto_resolve_games(
     """
     DEPRECATED: Auto-resolve pipeline is no longer active. See PRD-01.
     
-    This endpoint is preserved for backwards compatibility but returns early.
+    This endpoint is preserved for backwards compatibility and still requires
+    CRON_SECRET authentication, but returns a deprecation message instead of
+    performing auto-resolve.
+    
     Admins now manually enter final scores via the Admin Games UI.
     
     Original behavior: Secured by CRON_SECRET, called from GitHub Actions scheduler
     to scrape CBS scores and auto-resolve game results.
     """
-    # Return early with deprecation message
+    # Still require authentication before returning deprecation message
+    secret = (os.getenv("CRON_SECRET") or "").strip()
+    _min_cron = 16
+    
+    # If CRON_SECRET not configured, endpoint is disabled
+    if not secret or len(secret) < _min_cron:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "CRON_SECRET must be set to a random string of at least "
+                f"{_min_cron} characters. Auto-resolve endpoint is disabled."
+            ),
+        )
+    
+    # Verify provided token matches secret
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+    elif x_cron_secret:
+        token = x_cron_secret.strip()
+    
+    if not token or token != secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    # Authentication passed, return deprecation message
     return {
         "status": "deprecated",
         "message": "Auto-resolve is deprecated. Admins manually enter game results.",
         "resolved_count": 0,
         "updated_games": []
     }
-    
-    # Original auto-resolve logic below (preserved for reference, never executed)
-    secret = (os.getenv("CRON_SECRET") or "").strip()
-    # Empty: disabled. Too short: refuse (avoids accidental weak / empty-string env quirks).
-    _min_cron = 16
-    if not secret or len(secret) < _min_cron:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "CRON_SECRET must be set to a random string of at least "
-                f"{_min_cron} characters (Vercel env + GitHub Actions secret). "
-                "Auto-resolve is disabled until configured."
-            ),
-        )
-    token = None
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization[7:].strip()
-    elif x_cron_secret:
-        token = x_cron_secret.strip()
-    if not token or token != secret:
-        raise HTTPException(status_code=401, detail="Unauthorized")
 
     db = get_db()
     try:

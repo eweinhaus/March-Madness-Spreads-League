@@ -10,10 +10,12 @@ const SportConfigContext = createContext(null);
 
 const DEFAULT_CONFIG = {
   sport_mode: 'football',
-  display_name: 'Spread Pools',
+  product_name: 'Spreads',
+  display_name: 'Spreads',
   season_label: 'Current Season',
   pick_noun: 'game',
   period_type: 'week',
+  lock_label: 'lock of the week',
 };
 
 export function SportConfigProvider({ children }) {
@@ -46,11 +48,13 @@ export function SportConfigProvider({ children }) {
         // Fallback to VITE_SPORT_MODE or default to football
         const fallbackMode = import.meta.env.VITE_SPORT_MODE || 'football';
         const fallbackConfig = {
+          product_name: 'Spreads',
           sport_mode: fallbackMode,
           display_name: fallbackMode === 'march_madness' ? 'March Madness' : 'Football Season',
           season_label: fallbackMode === 'march_madness' ? 'Tournament' : 'Season',
           pick_noun: fallbackMode === 'march_madness' ? 'matchup' : 'game',
           period_type: fallbackMode === 'march_madness' ? 'round' : 'week',
+          lock_label: fallbackMode === 'march_madness' ? 'lock of the day' : 'lock of the week',
         };
         
         setConfig(fallbackConfig);

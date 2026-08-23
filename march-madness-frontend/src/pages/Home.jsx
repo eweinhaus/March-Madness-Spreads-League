@@ -11,7 +11,7 @@ export default function Home() {
         <Container>
           <Row className="align-items-center">
             <Col md={8} className="text-center text-md-start">
-              <h1 className="display-4 fw-bold mb-3 mb-md-4">Welcome to Spread Pools!</h1>
+              <h1 className="display-4 fw-bold mb-3 mb-md-4">Welcome to Spreads!</h1>
               <p className="lead mb-3 mb-md-4">
                 Make your picks against the spread for {config.display_name}{' '}
                 {config.pick_noun}s and compete with others to see who can predict the most teams that cover.

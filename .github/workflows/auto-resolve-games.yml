@@ -24,6 +24,7 @@ on:
 jobs:
   call-auto-resolve:
     runs-on: ubuntu-latest
+    if: false  # Disable job execution even for workflow_dispatch
     steps:
       - name: POST /internal/auto-resolve-games (peak vs off-peak)
         env:

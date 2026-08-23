@@ -40,7 +40,6 @@ cat .env | grep LEAGUE_ID
 From the repo root:
 
 ```bash
-cd /workspace
 python scripts/reset_season.py
 ```
 
