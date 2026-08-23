@@ -2142,46 +2142,98 @@ def get_player_detailed_stats(uid: str):
                     "against_count": against,
                 })
 
-    # Best/worst half (first vs second half by tip-off ET)
-    boundary = get_second_half_start_utc()
+    # Best/worst period stats (week for football, half for march_madness)
+    mode = get_sport_mode()
     z = ZoneInfo("America/New_York")
-    period_meta = {
-        "first_half": {
-            "label": "First Half (through Mar 23)",
-            "week_start": datetime(2026, 3, 17, 0, 0, 0, tzinfo=z).astimezone(timezone.utc),
-            "week_end": boundary - timedelta(seconds=1),
-        },
-        "second_half": {
-            "label": "Second Half (Mar 24+)",
-            "week_start": boundary,
-            "week_end": datetime(2026, 4, 8, 23, 59, 59, tzinfo=z).astimezone(timezone.utc),
-        },
-    }
-    week_stats = {}
-    for p in user_picks_raw:
-        gd = p.get("game_date")
-        if not gd:
-            continue
-        gd = normalize_datetime(gd) if isinstance(gd, datetime) else _parse_iso(str(gd))
-        wk = "first_half" if gd < boundary else "second_half"
-        if wk not in week_stats:
-            m = period_meta[wk]
-            week_stats[wk] = {
-                "label": m["label"],
-                "week_start": m["week_start"],
-                "week_end": m["week_end"],
-                "total_points": 0,
-                "total_picks": 0,
-                "correct_picks": 0,
-                "locks_used": 0,
+    
+    if mode == SportMode.FOOTBALL:
+        # Football: 15 weeks (week_0 through week_14)
+        period_meta = {}
+        week_labels = get_football_week_labels()
+        for week_info in week_labels:
+            start_dt = datetime.fromisoformat(week_info["start_date"])
+            end_dt = start_dt + timedelta(weeks=1)
+            period_meta[week_info["key"]] = {
+                "label": week_info["label"],
+                "week_start": start_dt,
+                "week_end": end_dt,
             }
-        s = week_stats[wk]
-        s["total_picks"] += 1
-        s["total_points"] += p.get("points_awarded", 0)
-        if (p.get("points_awarded") or 0) > 0:
-            s["correct_picks"] += 1
-        if p.get("lock"):
-            s["locks_used"] += 1
+        
+        week_stats = {}
+        for p in user_picks_raw:
+            gd = p.get("game_date")
+            if not gd:
+                continue
+            gd = normalize_datetime(gd) if isinstance(gd, datetime) else _parse_iso(str(gd))
+            
+            # Find which week this pick belongs to
+            wk = None
+            for week_key, meta in period_meta.items():
+                if meta["week_start"] <= gd < meta["week_end"]:
+                    wk = week_key
+                    break
+            
+            if not wk:
+                continue  # Pick outside season bounds
+            
+            if wk not in week_stats:
+                m = period_meta[wk]
+                week_stats[wk] = {
+                    "label": m["label"],
+                    "week_start": m["week_start"],
+                    "week_end": m["week_end"],
+                    "total_points": 0,
+                    "total_picks": 0,
+                    "correct_picks": 0,
+                    "locks_used": 0,
+                }
+            s = week_stats[wk]
+            s["total_picks"] += 1
+            s["total_points"] += p.get("points_awarded", 0)
+            if (p.get("points_awarded") or 0) > 0:
+                s["correct_picks"] += 1
+            if p.get("lock"):
+                s["locks_used"] += 1
+    
+    else:  # March Madness mode
+        boundary = get_second_half_start_utc()
+        period_meta = {
+            "first_half": {
+                "label": "First Half (through Mar 23)",
+                "week_start": datetime(2026, 3, 17, 0, 0, 0, tzinfo=z).astimezone(timezone.utc),
+                "week_end": boundary - timedelta(seconds=1),
+            },
+            "second_half": {
+                "label": "Second Half (Mar 24+)",
+                "week_start": boundary,
+                "week_end": datetime(2026, 4, 8, 23, 59, 59, tzinfo=z).astimezone(timezone.utc),
+            },
+        }
+        week_stats = {}
+        for p in user_picks_raw:
+            gd = p.get("game_date")
+            if not gd:
+                continue
+            gd = normalize_datetime(gd) if isinstance(gd, datetime) else _parse_iso(str(gd))
+            wk = "first_half" if gd < boundary else "second_half"
+            if wk not in week_stats:
+                m = period_meta[wk]
+                week_stats[wk] = {
+                    "label": m["label"],
+                    "week_start": m["week_start"],
+                    "week_end": m["week_end"],
+                    "total_points": 0,
+                    "total_picks": 0,
+                    "correct_picks": 0,
+                    "locks_used": 0,
+                }
+            s = week_stats[wk]
+            s["total_picks"] += 1
+            s["total_points"] += p.get("points_awarded", 0)
+            if (p.get("points_awarded") or 0) > 0:
+                s["correct_picks"] += 1
+            if p.get("lock"):
+                s["locks_used"] += 1
 
     def _fmt_period_bounds(s):
         ws = s["week_start"]

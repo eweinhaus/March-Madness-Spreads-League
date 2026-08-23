@@ -497,7 +497,7 @@ export default function Stats() {
 
               {(playerDetails.best_week || playerDetails.worst_week) && (
                 <div className="mb-section mb-md-3">
-                  <h6 className="mb-1 mb-md-2 fw-bold text-dark" style={{ fontSize: '1rem' }}>First / second half</h6>
+                  <h6 className="mb-1 mb-md-2 fw-bold text-dark" style={{ fontSize: '1rem' }}>Best / Worst Period</h6>
                   <Row className="g-1 g-md-2">
                     {playerDetails.best_week && (
                       <Col xs={12} md={6}>
@@ -511,7 +511,7 @@ export default function Stats() {
                           <Card.Body className="p-1 p-md-2">
                             <div className="d-flex align-items-center mb-card mb-md-2">
                               <FaChartLine className="me-1 text-success icon-size" style={{ fontSize: '0.9rem' }} />
-                              <small className="fw-semibold text-success" style={{ fontSize: '0.85rem' }}>Best half</small>
+                              <small className="fw-semibold text-success" style={{ fontSize: '0.85rem' }}>Best Period</small>
                             </div>
                             <div className="mb-card mb-md-2">
                               <div className="fw-bold mb-1" style={{ fontSize: '1.1rem', color: '#155724' }}>
@@ -564,7 +564,7 @@ export default function Stats() {
                           <Card.Body className="p-1 p-md-2">
                             <div className="d-flex align-items-center mb-card mb-md-2">
                               <FaArrowDown className="me-1 text-danger icon-size" style={{ fontSize: '0.9rem' }} />
-                              <small className="fw-semibold text-danger" style={{ fontSize: '0.85rem' }}>Worst half</small>
+                              <small className="fw-semibold text-danger" style={{ fontSize: '0.85rem' }}>Worst Period</small>
                             </div>
                             <div className="mb-card mb-md-2">
                               <div className="fw-bold mb-1" style={{ fontSize: '1.1rem', color: '#721c24' }}>

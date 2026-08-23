@@ -116,12 +116,13 @@ export function sameWeek(dateIsoA, dateIsoB) {
 }
 
 /**
- * Get the current football week key (week_0 through week_14) or "overall".
+ * Get the current football week key (week_0 through week_14).
  * 
  * Football season: 2026-08-26 (Wed Week 0 start) through 2026-12-09 (end of Week 14).
- * Returns "overall" if current time is outside season bounds.
+ * Before season start → clamp to week_0. After season end → clamp to week_14.
+ * Uses ET civil date math (handles DST correctly).
  * 
- * @returns {string} Week key (e.g., "week_3") or "overall"
+ * @returns {string} Week key (e.g., "week_3")
  */
 export function getCurrentFootballWeek() {
   const now = Date.now();
@@ -129,28 +130,41 @@ export function getCurrentFootballWeek() {
   // Football season starts Wed 2026-08-26 00:00 ET
   const seasonStartMs = utcMillisForNyWallClock(2026, 8, 26, 0, 0, 0);
   
-  // Season ends 15 weeks later (Week 14 ends Wed 2026-12-09 00:00 ET)
-  const seasonEndDate = new Date(seasonStartMs);
-  seasonEndDate.setTime(seasonStartMs + (15 * 7 * 24 * 60 * 60 * 1000));
-  const seasonEndMs = seasonEndDate.getTime();
-  
-  // Before season starts or after season ends → overall
-  if (now < seasonStartMs || now >= seasonEndMs) {
-    return 'overall';
+  // Before season starts → clamp to week_0
+  if (now < seasonStartMs) {
+    return 'week_0';
   }
   
-  // Find which week contains now
+  // Find which week contains now by computing week bounds for each week
+  // Use ET civil date increments (handles DST correctly)
   for (let i = 0; i < 15; i++) {
-    const weekStartMs = seasonStartMs + (i * 7 * 24 * 60 * 60 * 1000);
-    const weekEndMs = weekStartMs + (7 * 24 * 60 * 60 * 1000);
+    // Start date for week i: 2026-08-26 + i weeks (ET civil)
+    const weekStartDate = new Date(Date.UTC(2026, 7, 26)); // Aug 26 UTC (adjusted below)
+    weekStartDate.setUTCDate(weekStartDate.getUTCDate() + (i * 7));
+    
+    const weekStartYear = weekStartDate.getUTCFullYear();
+    const weekStartMonth = weekStartDate.getUTCMonth() + 1;
+    const weekStartDay = weekStartDate.getUTCDate();
+    
+    const weekStartMs = utcMillisForNyWallClock(weekStartYear, weekStartMonth, weekStartDay, 0, 0, 0);
+    
+    // End date for week i: start + 7 days (ET civil)
+    const weekEndDate = new Date(Date.UTC(2026, 7, 26));
+    weekEndDate.setUTCDate(weekEndDate.getUTCDate() + ((i + 1) * 7));
+    
+    const weekEndYear = weekEndDate.getUTCFullYear();
+    const weekEndMonth = weekEndDate.getUTCMonth() + 1;
+    const weekEndDay = weekEndDate.getUTCDate();
+    
+    const weekEndMs = utcMillisForNyWallClock(weekEndYear, weekEndMonth, weekEndDay, 0, 0, 0);
     
     if (now >= weekStartMs && now < weekEndMs) {
       return `week_${i}`;
     }
   }
   
-  // Fallback (should never reach here)
-  return 'overall';
+  // After season ends → clamp to week_14
+  return 'week_14';
 }
 
 /** Tip-offs before this instant (ET Mar 24 2026 00:00) = first half */
@@ -176,12 +190,12 @@ export function groupPicksByTournamentHalf(picks) {
 
 /**
  * Group picks by football week for Overall view.
+ * Uses ET civil date math (handles DST correctly).
  * 
  * @param {Array} picks - Array of pick objects with game_date
  * @returns {Object} Map of week keys to {key, label, picks} objects
  */
 export function groupPicksByWeek(picks) {
-  const seasonStartMs = utcMillisForNyWallClock(2026, 8, 26, 0, 0, 0);
   const weekLabels = [
     "CFB Week 0",
     "CFB Week 1",
@@ -203,8 +217,25 @@ export function groupPicksByWeek(picks) {
   const weeks = {};
   
   for (let i = 0; i < 15; i++) {
-    const weekStartMs = seasonStartMs + (i * 7 * 24 * 60 * 60 * 1000);
-    const weekEndMs = weekStartMs + (7 * 24 * 60 * 60 * 1000);
+    // Start date for week i: 2026-08-26 + i weeks (ET civil)
+    const weekStartDate = new Date(Date.UTC(2026, 7, 26)); // Aug 26
+    weekStartDate.setUTCDate(weekStartDate.getUTCDate() + (i * 7));
+    
+    const weekStartYear = weekStartDate.getUTCFullYear();
+    const weekStartMonth = weekStartDate.getUTCMonth() + 1;
+    const weekStartDay = weekStartDate.getUTCDate();
+    
+    const weekStartMs = utcMillisForNyWallClock(weekStartYear, weekStartMonth, weekStartDay, 0, 0, 0);
+    
+    // End date for week i: start + 7 days (ET civil)
+    const weekEndDate = new Date(Date.UTC(2026, 7, 26));
+    weekEndDate.setUTCDate(weekEndDate.getUTCDate() + ((i + 1) * 7));
+    
+    const weekEndYear = weekEndDate.getUTCFullYear();
+    const weekEndMonth = weekEndDate.getUTCMonth() + 1;
+    const weekEndDay = weekEndDate.getUTCDate();
+    
+    const weekEndMs = utcMillisForNyWallClock(weekEndYear, weekEndMonth, weekEndDay, 0, 0, 0);
     
     const weekPicks = picks.filter((p) => {
       const pickTime = new Date(p.game_date).getTime();
