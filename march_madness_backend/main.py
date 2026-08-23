@@ -184,6 +184,50 @@ async def get_current_admin_user(current_user: User = Depends(get_current_user))
     return current_user
 
 # ---------------------------------------------------------------------------
+# Validation helpers
+# ---------------------------------------------------------------------------
+
+def validate_picked_team(team: str) -> str:
+    """
+    Validate and normalize picked_team value.
+    Allows: 'home', 'away', 'home *', 'away *'
+    Returns normalized value without trailing marker or raises ValueError.
+    """
+    if not team or not team.strip():
+        raise ValueError("picked_team cannot be empty")
+    
+    normalized = team.strip()
+    
+    # Remove trailing ' *' if present (lock marker from CSV imports)
+    if normalized.endswith(" *"):
+        normalized = normalized[:-2].strip()
+    
+    if not normalized or normalized not in ("home", "away"):
+        raise ValueError(f"picked_team must be 'home' or 'away', got: {team}")
+    
+    return normalized
+
+
+def validate_winning_team(team: Optional[str]) -> Optional[str]:
+    """
+    Validate winning_team value.
+    Allows: 'home', 'away', 'PUSH', None/empty (cleared result)
+    Returns None for empty/None, validated string otherwise.
+    """
+    if not team or not team.strip():
+        return None
+    
+    normalized = team.strip().upper()
+    
+    if not normalized or normalized not in ("HOME", "AWAY", "PUSH"):
+        raise ValueError(f"winning_team must be 'home', 'away', or 'PUSH', got: {team}")
+    
+    # Store as lowercase except PUSH
+    if normalized == "PUSH":
+        return "PUSH"
+    return normalized.lower()
+
+# ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
 
@@ -676,6 +720,36 @@ def update_game_scores(db, game_id: str, winning_team: str) -> Tuple[list, Dict[
     return affected, user_deltas
 
 
+def _clear_game_scores(db, game_id: str) -> Tuple[list, Dict[str, int]]:
+    """
+    Zero all pick points for a game whose result was cleared.
+    Returns (affected picks, per-user negative point deltas for leaderboard).
+    """
+    picks_ref = db.collection("picks")
+    picks_query = picks_ref.where("game_id", "==", game_id).stream()
+    affected = []
+    user_deltas: Dict[str, int] = {}
+
+    for snap in picks_query:
+        pick = snap.to_dict()
+        pick_id = snap.id
+        old_pts = int(pick.get("points_awarded") or 0)
+        
+        # Zero out points
+        picks_ref.document(pick_id).update({"points_awarded": 0})
+        pick["points_awarded"] = 0
+        pick["id"] = pick_id
+        affected.append(pick)
+        
+        uid = pick.get("user_id")
+        if uid:
+            # Negative delta to reverse old points
+            user_deltas[uid] = user_deltas.get(uid, 0) - old_pts
+
+    logger.info(f"Cleared {len(affected)} picks for game {game_id} (result unset)")
+    return affected, user_deltas
+
+
 def apply_leaderboard_point_deltas(db, user_deltas: Dict[str, int]) -> None:
     """Update leaderboard total_points by delta (avoids re-reading all picks per user)."""
     lb = db.collection("leaderboard")
@@ -833,18 +907,31 @@ async def update_game(game_id: str, game: GameUpdate, current_user: User = Depen
     existing = snap.to_dict()
     old_winner = existing.get("winning_team")
 
+    # Validate winning_team
+    try:
+        winning_team_value = validate_winning_team(game.winning_team)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     update_data = {
         "home_team": game.home_team,
         "away_team": game.away_team,
         "spread": game.spread,
         "game_date": game.game_date,
-        "winning_team": game.winning_team,
+        "winning_team": winning_team_value,
     }
     doc_ref.update(update_data)
 
-    if game.winning_team != old_winner and game.winning_team:
-        affected_picks, deltas = update_game_scores(db, game_id, game.winning_team)
-        apply_leaderboard_point_deltas(db, deltas)
+    # Rescore if winner changed (including clearing)
+    if winning_team_value != old_winner:
+        if winning_team_value:
+            # New/changed winner → normal scoring
+            affected_picks, deltas = update_game_scores(db, game_id, winning_team_value)
+            apply_leaderboard_point_deltas(db, deltas)
+        else:
+            # Cleared winner → zero all picks, apply negative deltas
+            affected_picks, deltas = _clear_game_scores(db, game_id)
+            apply_leaderboard_point_deltas(db, deltas)
 
     updated = {**existing, **update_data, "id": game_id}
     invalidate_leaderboard_and_stats(db)
@@ -880,6 +967,12 @@ async def delete_game(game_id: str, current_user: User = Depends(get_current_adm
 async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_current_user)):
     if not current_user.make_picks:
         raise HTTPException(status_code=403, detail="You do not have permission to make picks")
+
+    # Validate picked_team early
+    try:
+        validated_team = validate_picked_team(pick.picked_team)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     db = get_db()
 
@@ -957,7 +1050,7 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
                 status_code=400,
                 detail="Cannot submit a new pick — picks lock 1 minute before scheduled tip-off.",
             )
-        team_changed = pick.picked_team != existing_pick.get("picked_team")
+        team_changed = validated_team != existing_pick.get("picked_team")
         lock_changed = pick.lock is not None and pick.lock != existing_pick.get("lock")
         if lock_changed:
             raise HTTPException(
@@ -973,8 +1066,8 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
 
     if existing_pick:
         lock_value = pick.lock if pick.lock is not None else existing_pick.get("lock", False)
-        existing_pick_snap.reference.update({"picked_team": pick.picked_team, "lock": lock_value})
-        updated = {**existing_pick, "picked_team": pick.picked_team, "lock": lock_value, "id": existing_pick_snap.id}
+        existing_pick_snap.reference.update({"picked_team": validated_team, "lock": lock_value})
+        updated = {**existing_pick, "picked_team": validated_team, "lock": lock_value, "id": existing_pick_snap.id}
         invalidate_stats_cache(db)
         return {"message": "Pick updated successfully", "pick": _serialize_doc(updated)}
     else:
@@ -982,7 +1075,7 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
         new_pick_data = {
             "user_id": current_user.uid,
             "game_id": pick.game_id,
-            "picked_team": pick.picked_team,
+            "picked_team": validated_team,
             "points_awarded": 0,
             "lock": lock_value,
             "created_at": server_timestamp(),
@@ -1016,17 +1109,27 @@ def _apply_game_result(db, game_id: str, winning_team: str, auto: bool = False) 
 @app.post("/update_score")
 async def update_score(result: GameResult, current_user: User = Depends(get_current_admin_user)):
     db = get_db()
+    
+    # Validate winning_team
+    try:
+        winning_team_value = validate_winning_team(result.winning_team)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    if not winning_team_value:
+        raise HTTPException(status_code=400, detail="winning_team is required for update_score endpoint")
+    
     game_ref = db.collection("games").document(result.game_id)
     game_snap = game_ref.get()
     if not game_snap.exists:
         raise HTTPException(status_code=404, detail="Game not found")
 
-    game_ref.update({"winning_team": result.winning_team})
-    _affected, deltas = update_game_scores(db, result.game_id, result.winning_team)
+    game_ref.update({"winning_team": winning_team_value})
+    _affected, deltas = update_game_scores(db, result.game_id, winning_team_value)
     apply_leaderboard_point_deltas(db, deltas)
     invalidate_leaderboard_and_stats(db)
 
-    return {"message": "Scores updated successfully", "winning_team": result.winning_team}
+    return {"message": "Scores updated successfully", "winning_team": winning_team_value}
 
 # ---------------------------------------------------------------------------
 # My picks (current user)
@@ -1384,7 +1487,13 @@ def get_game_picks(game_id: str):
 async def get_user_picks_status(current_user: User = Depends(get_current_admin_user)):
     db = get_db()
     current_time = get_current_utc_time()
-    current_day_start, current_day_end = get_lock_day_bounds(current_time)
+    
+    # Determine period bounds based on sport mode
+    mode = get_sport_mode()
+    if mode == SportMode.FOOTBALL:
+        current_period_start, current_period_end = get_week_bounds(current_time)
+    else:
+        current_period_start, current_period_end = get_lock_day_bounds(current_time)
 
     upcoming_games = []
     for doc in db.collection("games").where("game_date", ">", current_time).stream():
@@ -1463,7 +1572,7 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
             game = all_games_cache.get(p.get("game_id"))
             if game:
                 gd = _fs_timestamp_to_dt(game.get("game_date"))
-                if gd and current_day_start <= gd < current_day_end:
+                if gd and current_period_start <= gd < current_period_end:
                     has_lock = True
                     break
 
@@ -1474,7 +1583,7 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
             "total_games": total_required,
             "picks_made": total_picks_made,
             "is_complete": total_picks_made == total_required,
-            "has_current_day_lock": has_lock,
+            "has_current_period_lock": has_lock,
         })
 
     result.sort(key=lambda x: x["display_name"])
@@ -1723,7 +1832,8 @@ async def update_tiebreaker(tiebreaker_id: str, tiebreaker: TiebreakerUpdate, cu
     doc_ref.update(update_data)
 
     updated = {**snap.to_dict(), **update_data, "id": tiebreaker_id}
-    invalidate_leaderboard_cache(db)
+    # Invalidate all three caches: leaderboard (ranking), stats, and live
+    invalidate_leaderboard_and_stats(db)
     return _serialize_doc(updated)
 
 

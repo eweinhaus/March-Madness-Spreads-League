@@ -115,8 +115,8 @@ const AdminUserPicks = () => {
 
   const totalGamesRequired = userPicksStatus.length > 0 ? userPicksStatus[0].total_games : 0;
 
-  const usersWithCurrentDayLock = userPicksStatus.filter(user => user.has_current_day_lock).length;
-  const locksProgressPercentage = totalUsers > 0 ? ((usersWithCurrentDayLock / totalUsers) * 100).toFixed(1) : 0;
+  const usersWithCurrentPeriodLock = userPicksStatus.filter(user => user.has_current_period_lock).length;
+  const locksProgressPercentage = totalUsers > 0 ? ((usersWithCurrentPeriodLock / totalUsers) * 100).toFixed(1) : 0;
 
   return (
     <Container className="mt-4">
@@ -170,7 +170,7 @@ const AdminUserPicks = () => {
                   aria-valuemin="0"
                   aria-valuemax="100"
                 >
-                  {usersWithCurrentDayLock} / {totalUsers} users
+                  {usersWithCurrentPeriodLock} / {totalUsers} users
                 </div>
               </div>
               <div className="text-muted small">
@@ -212,8 +212,8 @@ const AdminUserPicks = () => {
                     return a.is_complete ? 1 : -1;
                   }
                   if (a.is_complete && b.is_complete) {
-                    if (a.has_current_day_lock !== b.has_current_day_lock) {
-                      return a.has_current_day_lock ? 1 : -1;
+                    if (a.has_current_period_lock !== b.has_current_period_lock) {
+                      return a.has_current_period_lock ? 1 : -1;
                     }
                   }
                   return a.display_name.localeCompare(b.display_name);
@@ -262,10 +262,10 @@ const AdminUserPicks = () => {
                   </td>
                   <td className="py-2">
                     <span
-                      className={`badge ${user.has_current_day_lock ? 'bg-success' : 'bg-danger'}`}
+                      className={`badge ${user.has_current_period_lock ? 'bg-success' : 'bg-danger'}`}
                       style={{ fontSize: '0.75rem', padding: '0.25em 0.5em' }}
                     >
-                      {user.has_current_day_lock ? 'Submitted' : 'Unsubmitted'}
+                      {user.has_current_period_lock ? 'Submitted' : 'Unsubmitted'}
                     </span>
                   </td>
                 </tr>
