@@ -187,45 +187,35 @@ async def get_current_admin_user(current_user: User = Depends(get_current_user))
 # Validation helpers
 # ---------------------------------------------------------------------------
 
-def validate_picked_team(team: str) -> str:
+def assert_valid_pick_team(game: dict, picked_team: str) -> None:
     """
-    Validate and normalize picked_team value.
-    Allows: 'home', 'away', 'home *', 'away *'
-    Returns normalized value without trailing marker or raises ValueError.
+    Validate that picked_team matches one of the game's teams.
+    Allows trailing ' *' for lock markers (stripped for comparison).
+    Raises HTTPException(400) if invalid.
     """
-    if not team or not team.strip():
-        raise ValueError("picked_team cannot be empty")
-    
-    normalized = team.strip()
-    
-    # Remove trailing ' *' if present (lock marker from CSV imports)
-    if normalized.endswith(" *"):
-        normalized = normalized[:-2].strip()
-    
-    if not normalized or normalized not in ("home", "away"):
-        raise ValueError(f"picked_team must be 'home' or 'away', got: {team}")
-    
-    return normalized
+    allowed = {game["home_team"], game["away_team"]}
+    # Strip trailing ' *' for comparison but don't modify the value
+    team_to_check = picked_team.rstrip(" *")
+    if team_to_check not in allowed and picked_team not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"picked_team must be the home or away team ('{game['home_team']}' or '{game['away_team']}')"
+        )
 
 
-def validate_winning_team(team: Optional[str]) -> Optional[str]:
+def assert_valid_winning_team(game: dict, winning_team: str) -> None:
     """
-    Validate winning_team value.
-    Allows: 'home', 'away', 'PUSH', None/empty (cleared result)
-    Returns None for empty/None, validated string otherwise.
+    Validate that winning_team is PUSH or matches one of the game's teams.
+    Raises HTTPException(400) if invalid.
     """
-    if not team or not team.strip():
-        return None
-    
-    normalized = team.strip().upper()
-    
-    if not normalized or normalized not in ("HOME", "AWAY", "PUSH"):
-        raise ValueError(f"winning_team must be 'home', 'away', or 'PUSH', got: {team}")
-    
-    # Store as lowercase except PUSH
-    if normalized == "PUSH":
-        return "PUSH"
-    return normalized.lower()
+    if winning_team == "PUSH":
+        return
+    allowed = {game["home_team"], game["away_team"]}
+    if winning_team not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"winning_team must be home team, away team, or PUSH ('{game['home_team']}', '{game['away_team']}', or 'PUSH')"
+        )
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -906,12 +896,17 @@ async def update_game(game_id: str, game: GameUpdate, current_user: User = Depen
 
     existing = snap.to_dict()
     old_winner = existing.get("winning_team")
+    
+    # Prepare the game dict for validation (with updated values)
+    game_for_validation = {
+        "home_team": game.home_team,
+        "away_team": game.away_team,
+    }
 
-    # Validate winning_team
-    try:
-        winning_team_value = validate_winning_team(game.winning_team)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # Validate winning_team if provided (None/empty is valid for clearing)
+    winning_team_value = game.winning_team if game.winning_team and game.winning_team.strip() else None
+    if winning_team_value:
+        assert_valid_winning_team(game_for_validation, winning_team_value)
 
     update_data = {
         "home_team": game.home_team,
@@ -968,18 +963,15 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
     if not current_user.make_picks:
         raise HTTPException(status_code=403, detail="You do not have permission to make picks")
 
-    # Validate picked_team early
-    try:
-        validated_team = validate_picked_team(pick.picked_team)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
     db = get_db()
 
     game_snap = db.collection("games").document(pick.game_id).get()
     if not game_snap.exists:
         raise HTTPException(status_code=404, detail="Game not found")
     game = game_snap.to_dict()
+    
+    # Validate picked_team against game teams
+    assert_valid_pick_team(game, pick.picked_team)
 
     existing_pick_snap = None
     existing_pick = None
@@ -1050,7 +1042,7 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
                 status_code=400,
                 detail="Cannot submit a new pick — picks lock 1 minute before scheduled tip-off.",
             )
-        team_changed = validated_team != existing_pick.get("picked_team")
+        team_changed = pick.picked_team != existing_pick.get("picked_team")
         lock_changed = pick.lock is not None and pick.lock != existing_pick.get("lock")
         if lock_changed:
             raise HTTPException(
@@ -1066,8 +1058,8 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
 
     if existing_pick:
         lock_value = pick.lock if pick.lock is not None else existing_pick.get("lock", False)
-        existing_pick_snap.reference.update({"picked_team": validated_team, "lock": lock_value})
-        updated = {**existing_pick, "picked_team": validated_team, "lock": lock_value, "id": existing_pick_snap.id}
+        existing_pick_snap.reference.update({"picked_team": pick.picked_team, "lock": lock_value})
+        updated = {**existing_pick, "picked_team": pick.picked_team, "lock": lock_value, "id": existing_pick_snap.id}
         invalidate_stats_cache(db)
         return {"message": "Pick updated successfully", "pick": _serialize_doc(updated)}
     else:
@@ -1075,7 +1067,7 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
         new_pick_data = {
             "user_id": current_user.uid,
             "game_id": pick.game_id,
-            "picked_team": validated_team,
+            "picked_team": pick.picked_team,
             "points_awarded": 0,
             "lock": lock_value,
             "created_at": server_timestamp(),
@@ -1110,26 +1102,25 @@ def _apply_game_result(db, game_id: str, winning_team: str, auto: bool = False) 
 async def update_score(result: GameResult, current_user: User = Depends(get_current_admin_user)):
     db = get_db()
     
-    # Validate winning_team
-    try:
-        winning_team_value = validate_winning_team(result.winning_team)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    
-    if not winning_team_value:
-        raise HTTPException(status_code=400, detail="winning_team is required for update_score endpoint")
-    
     game_ref = db.collection("games").document(result.game_id)
     game_snap = game_ref.get()
     if not game_snap.exists:
         raise HTTPException(status_code=404, detail="Game not found")
+    
+    game = game_snap.to_dict()
+    
+    # Validate winning_team against game teams
+    if not result.winning_team or not result.winning_team.strip():
+        raise HTTPException(status_code=400, detail="winning_team is required for update_score endpoint")
+    
+    assert_valid_winning_team(game, result.winning_team)
 
-    game_ref.update({"winning_team": winning_team_value})
-    _affected, deltas = update_game_scores(db, result.game_id, winning_team_value)
+    game_ref.update({"winning_team": result.winning_team})
+    _affected, deltas = update_game_scores(db, result.game_id, result.winning_team)
     apply_leaderboard_point_deltas(db, deltas)
     invalidate_leaderboard_and_stats(db)
 
-    return {"message": "Scores updated successfully", "winning_team": winning_team_value}
+    return {"message": "Scores updated successfully", "winning_team": result.winning_team}
 
 # ---------------------------------------------------------------------------
 # My picks (current user)

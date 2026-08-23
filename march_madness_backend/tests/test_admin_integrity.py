@@ -7,126 +7,156 @@ Tests validation helpers, clear-result rescoring, and admin period selection.
 import pytest
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+from unittest.mock import MagicMock
 
-from main import validate_picked_team, validate_winning_team, _clear_game_scores
+from fastapi import HTTPException
+from main import assert_valid_pick_team, assert_valid_winning_team, _clear_game_scores
 from scoring import get_week_bounds, get_lock_day_bounds
-from sport_config import SportMode, get_sport_mode
+from sport_config import SportMode
+
+
+# Sample game fixture
+MOCK_GAME = {
+    "home_team": "Kansas City Chiefs",
+    "away_team": "Buffalo Bills",
+    "spread": 3.5,
+    "game_date": datetime(2026, 9, 10, 1, 0, tzinfo=timezone.utc),
+}
 
 
 class TestValidatePickedTeam:
-    """Test picked_team validation (allows trailing ' *')."""
+    """Test picked_team validation (real team names with optional ' *' marker)."""
 
-    def test_valid_home(self):
-        assert validate_picked_team("home") == "home"
+    def test_valid_home_team(self):
+        """Picking the home team should succeed."""
+        # Should not raise
+        assert_valid_pick_team(MOCK_GAME, "Kansas City Chiefs")
 
-    def test_valid_away(self):
-        assert validate_picked_team("away") == "away"
+    def test_valid_away_team(self):
+        """Picking the away team should succeed."""
+        # Should not raise
+        assert_valid_pick_team(MOCK_GAME, "Buffalo Bills")
 
-    def test_home_with_lock_marker(self):
-        """Allow 'home *' (CSV import lock marker)."""
-        assert validate_picked_team("home *") == "home"
+    def test_home_team_with_lock_marker(self):
+        """Home team with trailing ' *' (lock marker) should be allowed."""
+        # Should not raise
+        assert_valid_pick_team(MOCK_GAME, "Kansas City Chiefs *")
 
-    def test_away_with_lock_marker(self):
-        """Allow 'away *' (CSV import lock marker)."""
-        assert validate_picked_team("away *") == "away"
+    def test_away_team_with_lock_marker(self):
+        """Away team with trailing ' *' (lock marker) should be allowed."""
+        # Should not raise
+        assert_valid_pick_team(MOCK_GAME, "Buffalo Bills *")
 
-    def test_uppercase_home_rejected(self):
-        """Uppercase 'HOME' should be rejected (case-sensitive)."""
-        with pytest.raises(ValueError, match="must be 'home' or 'away'"):
-            validate_picked_team("HOME")
+    def test_invalid_team_name(self):
+        """Picking a team not in the game should fail."""
+        with pytest.raises(HTTPException) as exc_info:
+            assert_valid_pick_team(MOCK_GAME, "Green Bay Packers")
+        assert exc_info.value.status_code == 400
+        assert "must be the home or away team" in exc_info.value.detail
 
-    def test_uppercase_away_rejected(self):
-        """Uppercase 'AWAY' should be rejected (case-sensitive)."""
-        with pytest.raises(ValueError, match="must be 'home' or 'away'"):
-            validate_picked_team("AWAY")
-
-    def test_invalid_team_neutral(self):
-        with pytest.raises(ValueError, match="must be 'home' or 'away'"):
-            validate_picked_team("neutral")
-
-    def test_invalid_team_visitor(self):
-        with pytest.raises(ValueError, match="must be 'home' or 'away'"):
-            validate_picked_team("visitor")
+    def test_partial_team_name(self):
+        """Partial team name should fail."""
+        with pytest.raises(HTTPException) as exc_info:
+            assert_valid_pick_team(MOCK_GAME, "Kansas City")
+        assert exc_info.value.status_code == 400
 
     def test_empty_string(self):
-        with pytest.raises(ValueError, match="cannot be empty"):
-            validate_picked_team("")
+        """Empty picked_team should fail."""
+        with pytest.raises(HTTPException) as exc_info:
+            assert_valid_pick_team(MOCK_GAME, "")
+        assert exc_info.value.status_code == 400
 
-    def test_whitespace_only(self):
-        with pytest.raises(ValueError, match="cannot be empty"):
-            validate_picked_team("   ")
+    def test_case_sensitive(self):
+        """Team names are case-sensitive."""
+        with pytest.raises(HTTPException) as exc_info:
+            assert_valid_pick_team(MOCK_GAME, "kansas city chiefs")
+        assert exc_info.value.status_code == 400
 
 
 class TestValidateWinningTeam:
-    """Test winning_team validation (home, away, PUSH, or None)."""
+    """Test winning_team validation (team names or PUSH)."""
 
-    def test_valid_home_lowercase(self):
-        assert validate_winning_team("home") == "home"
+    def test_valid_home_team_winner(self):
+        """Setting home team as winner should succeed."""
+        # Should not raise
+        assert_valid_winning_team(MOCK_GAME, "Kansas City Chiefs")
 
-    def test_valid_away_lowercase(self):
-        assert validate_winning_team("away") == "away"
+    def test_valid_away_team_winner(self):
+        """Setting away team as winner should succeed."""
+        # Should not raise
+        assert_valid_winning_team(MOCK_GAME, "Buffalo Bills")
 
-    def test_valid_push_uppercase(self):
-        assert validate_winning_team("PUSH") == "PUSH"
+    def test_valid_push(self):
+        """PUSH is a valid winning_team value."""
+        # Should not raise
+        assert_valid_winning_team(MOCK_GAME, "PUSH")
 
-    def test_valid_push_lowercase_normalized(self):
-        """'push' should be normalized to 'PUSH'."""
-        assert validate_winning_team("push") == "PUSH"
+    def test_invalid_team_as_winner(self):
+        """Setting a team not in the game as winner should fail."""
+        with pytest.raises(HTTPException) as exc_info:
+            assert_valid_winning_team(MOCK_GAME, "Green Bay Packers")
+        assert exc_info.value.status_code == 400
+        assert "must be home team, away team, or PUSH" in exc_info.value.detail
 
-    def test_valid_push_mixedcase_normalized(self):
-        """'Push' should be normalized to 'PUSH'."""
-        assert validate_winning_team("Push") == "PUSH"
+    def test_lowercase_push_not_allowed(self):
+        """'push' should fail (PUSH must be uppercase)."""
+        with pytest.raises(HTTPException) as exc_info:
+            assert_valid_winning_team(MOCK_GAME, "push")
+        assert exc_info.value.status_code == 400
 
-    def test_valid_home_uppercase_normalized(self):
-        """'HOME' should be normalized to 'home'."""
-        assert validate_winning_team("HOME") == "home"
+    def test_tie_not_allowed(self):
+        """'tie' is not a valid value."""
+        with pytest.raises(HTTPException) as exc_info:
+            assert_valid_winning_team(MOCK_GAME, "tie")
+        assert exc_info.value.status_code == 400
 
-    def test_valid_away_uppercase_normalized(self):
-        """'AWAY' should be normalized to 'away'."""
-        assert validate_winning_team("AWAY") == "away"
+    def test_draw_not_allowed(self):
+        """'draw' is not a valid value."""
+        with pytest.raises(HTTPException) as exc_info:
+            assert_valid_winning_team(MOCK_GAME, "draw")
+        assert exc_info.value.status_code == 400
 
-    def test_empty_string_returns_none(self):
-        """Empty string should return None (cleared result)."""
-        assert validate_winning_team("") is None
-
-    def test_none_returns_none(self):
-        """None input should return None."""
-        assert validate_winning_team(None) is None
-
-    def test_whitespace_only_returns_none(self):
-        """Whitespace-only should return None."""
-        assert validate_winning_team("   ") is None
-
-    def test_invalid_team_tie(self):
-        with pytest.raises(ValueError, match="must be 'home', 'away', or 'PUSH'"):
-            validate_winning_team("tie")
-
-    def test_invalid_team_draw(self):
-        with pytest.raises(ValueError, match="must be 'home', 'away', or 'PUSH'"):
-            validate_winning_team("draw")
-
-    def test_invalid_team_neutral(self):
-        with pytest.raises(ValueError, match="must be 'home', 'away', or 'PUSH'"):
-            validate_winning_team("neutral")
+    def test_empty_string(self):
+        """Empty string should fail."""
+        with pytest.raises(HTTPException) as exc_info:
+            assert_valid_winning_team(MOCK_GAME, "")
+        assert exc_info.value.status_code == 400
 
 
 class TestClearGameScores:
     """Test _clear_game_scores helper (zeros picks, negative deltas)."""
 
-    def test_clear_game_scores_zeros_picks(self, db_mock):
-        """Clearing a result should zero all pick points."""
-        # Mock setup: game with 3 picks awarded
+    def test_clear_game_scores_zeros_picks(self):
+        """Clearing a result should zero all pick points and create negative deltas."""
+        # Mock database
+        db_mock = MagicMock()
         game_id = "game123"
+        
+        # Mock picks data
         picks_data = [
-            {"id": "pick1", "user_id": "user1", "points_awarded": 2, "game_id": game_id},
-            {"id": "pick2", "user_id": "user2", "points_awarded": 1, "game_id": game_id},
-            {"id": "pick3", "user_id": "user3", "points_awarded": 0, "game_id": game_id},
+            {"user_id": "user1", "points_awarded": 2, "game_id": game_id},
+            {"user_id": "user2", "points_awarded": 1, "game_id": game_id},
+            {"user_id": "user3", "points_awarded": 0, "game_id": game_id},
         ]
         
-        # Mock Firestore queries
-        db_mock.collection("picks").where("game_id", "==", game_id).stream.return_value = [
-            MockSnapshot(p["id"], p) for p in picks_data
-        ]
+        # Create mock snapshots
+        mock_snaps = []
+        for i, p in enumerate(picks_data):
+            snap = MagicMock()
+            snap.id = f"pick{i+1}"
+            snap.to_dict.return_value = p
+            mock_snaps.append(snap)
+        
+        # Mock Firestore query chain
+        where_mock = MagicMock()
+        stream_mock = MagicMock(return_value=mock_snaps)
+        where_mock.stream = stream_mock
+        
+        collection_mock = MagicMock()
+        collection_mock.where.return_value = where_mock
+        collection_mock.document.return_value.update = MagicMock()
+        
+        db_mock.collection.return_value = collection_mock
         
         # Execute
         affected, deltas = _clear_game_scores(db_mock, game_id)
@@ -140,10 +170,19 @@ class TestClearGameScores:
         assert deltas["user2"] == -1
         assert deltas["user3"] == 0  # Already zero
 
-    def test_clear_game_scores_no_picks(self, db_mock):
+    def test_clear_game_scores_no_picks(self):
         """Clearing a game with no picks should return empty results."""
+        db_mock = MagicMock()
         game_id = "game456"
-        db_mock.collection("picks").where("game_id", "==", game_id).stream.return_value = []
+        
+        # Mock empty query result
+        where_mock = MagicMock()
+        where_mock.stream.return_value = []
+        
+        collection_mock = MagicMock()
+        collection_mock.where.return_value = where_mock
+        
+        db_mock.collection.return_value = collection_mock
         
         affected, deltas = _clear_game_scores(db_mock, game_id)
         
@@ -184,9 +223,6 @@ class TestAdminPeriodSelection:
         # Should be 3am-3am ET day bounds
         # At 8pm ET (midnight UTC), we're in the 3am-same-day window
         et_tz = ZoneInfo("America/New_York")
-        local = test_time.astimezone(et_tz)
-        expected_day = local.date()  # March 15
-        
         expected_start = datetime(2026, 3, 15, 3, 0, tzinfo=et_tz).astimezone(timezone.utc)
         expected_end = datetime(2026, 3, 16, 3, 0, tzinfo=et_tz).astimezone(timezone.utc)
         
@@ -207,33 +243,3 @@ class TestAdminPeriodSelection:
         
         # Monday 9pm should be within this week
         assert start <= monday_utc < end
-
-
-# Test fixtures
-
-class MockSnapshot:
-    """Mock Firestore document snapshot."""
-    def __init__(self, doc_id, data):
-        self.id = doc_id
-        self._data = data
-        self.reference = MockReference(doc_id)
-    
-    def to_dict(self):
-        return self._data
-
-
-class MockReference:
-    """Mock Firestore document reference."""
-    def __init__(self, doc_id):
-        self.id = doc_id
-        self.updates = []
-    
-    def update(self, data):
-        self.updates.append(data)
-
-
-@pytest.fixture
-def db_mock(mocker):
-    """Mock Firestore database."""
-    db = mocker.MagicMock()
-    return db
