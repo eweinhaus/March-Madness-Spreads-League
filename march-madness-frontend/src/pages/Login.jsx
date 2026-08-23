@@ -1,18 +1,63 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button, Alert, Container, Row, Col, Spinner } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
-import { auth, googleProvider, signInWithPopup } from '../firebase';
+import { 
+  auth, 
+  googleProvider, 
+  signInWithPopup, 
+  signInWithRedirect,
+  getRedirectResult 
+} from '../firebase';
 import api from '../api';
+
+// Map Firebase auth error codes to friendly messages
+const getErrorMessage = (errorCode) => {
+  const errorMessages = {
+    'auth/popup-closed-by-user': 'Sign-in cancelled.',
+    'auth/popup-blocked': 'Pop-up blocked. Redirecting to sign-in page...',
+    'auth/network-request-failed': 'Network error. Redirecting to sign-in page...',
+    'auth/cancelled-popup-request': 'Sign-in cancelled.',
+    'auth/user-disabled': 'This account has been disabled.',
+    'auth/operation-not-allowed': 'Google sign-in is not enabled.',
+  };
+  return errorMessages[errorCode] || 'Sign-in failed. Please try again.';
+};
 
 const Login = ({ setUser }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
+  // Check for redirect result on mount (user returning from Google)
+  useEffect(() => {
+    const checkRedirectResult = async () => {
+      setLoading(true);
+      try {
+        const result = await getRedirectResult(auth);
+        if (result?.user) {
+          // User successfully signed in via redirect
+          const response = await api.get('/users/me');
+          if (setUser) {
+            setUser(response.data);
+          }
+          navigate('/');
+        }
+      } catch (err) {
+        console.error('Redirect sign-in error:', err);
+        setError(getErrorMessage(err.code));
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    checkRedirectResult();
+  }, [navigate, setUser]);
+
   const handleGoogleSignIn = async () => {
     setError('');
     setLoading(true);
     try {
+      // Try popup first
       await signInWithPopup(auth, googleProvider);
 
       const response = await api.get('/users/me');
@@ -23,13 +68,24 @@ const Login = ({ setUser }) => {
       navigate('/');
     } catch (err) {
       console.error('Sign-in error:', err);
-      if (err.code === 'auth/popup-closed-by-user') {
-        setError('Sign-in cancelled.');
+      
+      // Fall back to redirect for popup/network issues
+      const shouldRedirect = [
+        'auth/popup-blocked',
+        'auth/network-request-failed',
+        'auth/popup-closed-by-user', // Optional: redirect if popup closes
+      ].includes(err.code);
+      
+      if (shouldRedirect) {
+        setError(getErrorMessage(err.code));
+        // Small delay so user sees the message
+        setTimeout(() => {
+          signInWithRedirect(auth, googleProvider);
+        }, 1500);
       } else {
-        setError(err.message || 'Sign-in failed. Please try again.');
+        setError(getErrorMessage(err.code));
+        setLoading(false);
       }
-    } finally {
-      setLoading(false);
     }
   };
 
