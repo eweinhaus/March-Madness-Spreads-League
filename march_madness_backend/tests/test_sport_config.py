@@ -12,6 +12,7 @@ from sport_config import (
     get_league_id,
     get_app_config,
     get_sport_display_config,
+    get_scoreboard_urls,
     SportMode,
 )
 
@@ -117,3 +118,23 @@ def test_get_sport_display_config_march_madness():
         assert config["sport_mode"] == "march_madness"
         assert config["pick_noun"] == "matchup"
         assert config["period_type"] == "round"
+
+
+def test_get_scoreboard_urls_football():
+    """Test scoreboard URLs for football mode."""
+    with mock.patch.dict(os.environ, {"SPORT_MODE": "football"}):
+        urls = get_scoreboard_urls()
+        
+        assert "nfl" in urls
+        assert "cfb" in urls
+        assert "cbssports.com" in urls["nfl"]
+        assert "cbssports.com" in urls["cfb"]
+
+
+def test_get_scoreboard_urls_march_madness():
+    """Test scoreboard URLs for march_madness mode."""
+    with mock.patch.dict(os.environ, {"SPORT_MODE": "march_madness"}):
+        urls = get_scoreboard_urls()
+        
+        assert "college-basketball" in urls
+        assert "cbssports.com" in urls["college-basketball"]
