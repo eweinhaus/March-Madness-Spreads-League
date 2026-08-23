@@ -8,7 +8,9 @@ Supports football and march_madness modes via SPORT_MODE env var.
 import os
 import logging
 from enum import Enum
-from typing import Dict, Any
+from typing import Dict, Any, List
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,49 @@ def get_sport_mode() -> SportMode:
             f"Valid options: {', '.join([m.value for m in SportMode])}"
         )
         return SportMode.FOOTBALL
+
+
+# Football season configuration
+FOOTBALL_SEASON_START_DATE = "2026-08-26"  # Wednesday, CFB Week 0
+
+
+def get_football_week_labels() -> List[Dict[str, Any]]:
+    """
+    Return 15 weeks of football season with labels.
+    
+    Week 0: CFB Week 0 (2026-08-26 - 2026-09-02)
+    Week 1: CFB Week 1, NFL Week 1 (2026-09-02 - 2026-09-09)
+    Week 2+: CFB Week i, NFL Week i-1
+    Week 14: CFB Week 14, NFL Week 13 (2026-12-02 - 2026-12-09)
+    
+    Returns:
+        List of week dictionaries with key, label, and start_date (ISO UTC)
+    """
+    # Parse season start as Wednesday 00:00 ET
+    start = datetime.fromisoformat(FOOTBALL_SEASON_START_DATE).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+        tzinfo=ZoneInfo("America/New_York")
+    )
+    
+    weeks = []
+    for i in range(15):
+        week_start_et = start + timedelta(weeks=i)
+        week_start_utc = week_start_et.astimezone(timezone.utc)
+        
+        if i == 0:
+            label = "CFB Week 0"
+        elif i == 1:
+            label = "CFB Week 1, NFL Week 1"
+        else:
+            label = f"CFB Week {i}, NFL Week {i-1}"
+        
+        weeks.append({
+            "key": f"week_{i}",
+            "label": label,
+            "start_date": week_start_utc.isoformat(),
+        })
+    
+    return weeks
 
 
 def get_league_id() -> str:

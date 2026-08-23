@@ -3,7 +3,7 @@ import { Container, Row, Col, Card, Button, Alert, Form, Modal } from "react-boo
 import { useNavigate } from "react-router-dom";
 import { FaLock, FaUnlock } from "react-icons/fa";
 import api from "../api";
-import { sameLockDay, getLockDayBounds } from "../utils/etLockDay";
+import { sameLockDay, getLockDayBounds, sameWeek, getWeekBounds } from "../utils/etLockDay";
 import SportSpinner from "../components/SportSpinner";
 
 const NY_TZ = "America/New_York";
@@ -11,21 +11,19 @@ const NY_TZ = "America/New_York";
 /** Must match backend PICK_LOCK_BEFORE_TIP (submit_pick, tiebreaker_picks). */
 const PICKS_LOCK_MS_BEFORE_TIPOFF = 60_000;
 
-/**
- * Lock-of-the-day UI (button, copy) and whether submit prompts for a lock per game day.
- * When false: users are not prompted or blocked for missing a lock; only games/questions warnings apply.
- * Temporary: hide lock controls without removing backend/state logic.
- */
-const SHOW_LOCK_OF_THE_DAY_UI = false;
-
-/** One getLockDayBounds() per unique game_date string (tip times often repeat). */
-function getLockDayCached(iso, cache) {
+/** Cache helper for period bounds (day or week depending on sport mode). */
+function getPeriodCached(iso, cache, sportMode) {
   let row = cache.get(iso);
   if (!row) {
-    const { dayStart } = getLockDayBounds(iso);
+    const isFootball = sportMode === "football";
+    const { dayStart, weekStart } = isFootball 
+      ? { weekStart: getWeekBounds(iso).weekStart, dayStart: null }
+      : { dayStart: getLockDayBounds(iso).dayStart, weekStart: null };
+    
+    const start = isFootball ? weekStart : dayStart;
     row = {
-      dayKey: dayStart.getTime(),
-      label: dayStart.toLocaleDateString("en-US", {
+      periodKey: start.getTime(),
+      label: start.toLocaleDateString("en-US", {
         timeZone: NY_TZ,
         weekday: "short",
         month: "short",
@@ -71,7 +69,13 @@ export default function Picks() {
     missingQuestions: [],
   });
   const [isCheckingWarnings, setIsCheckingWarnings] = useState(false);
+  const [appConfig, setAppConfig] = useState(null);
   const navigate = useNavigate();
+
+  // Determine if lock UI should be shown and labels
+  const showLockUI = appConfig?.sport_mode === "football";
+  const lockLabel = appConfig?.lock_label || "lock of the day";
+  const periodType = appConfig?.period_type || "day";
 
   const formatDateForDisplay = (dateString) => {
     const date = new Date(dateString);
@@ -90,6 +94,11 @@ export default function Picks() {
   };
 
   useEffect(() => {
+    // Fetch app config to determine sport mode and lock UI settings
+    api.get('/app-config')
+      .then(res => setAppConfig(res.data))
+      .catch(err => console.error('Failed to load app config:', err));
+    
     setIsLoading(true);
     api.get('/picks_data')
       .then((response) => {
@@ -163,47 +172,52 @@ export default function Picks() {
       if (!targetGame) { setError('Game not found'); return; }
 
       const allLocks = { ...existingLocks, ...locks };
-      let startedLockedGameInSameDay = null;
+      let startedLockedGameInSamePeriod = null;
+      
+      // Use week or day comparison based on sport mode
+      const isFootball = appConfig?.sport_mode === "football";
+      const samePeriod = isFootball ? sameWeek : sameLockDay;
 
       for (const [lockGid, isLocked] of Object.entries(allLocks)) {
         if (isLocked) {
           const lockGame = games.find(g => String(g.game_id) === lockGid);
           if (lockGame) {
-            if (sameLockDay(lockGame.game_date, targetGame.game_date) && picksFrozenForGame(lockGame.game_date)) {
-              startedLockedGameInSameDay = lockGame;
+            if (samePeriod(lockGame.game_date, targetGame.game_date) && picksFrozenForGame(lockGame.game_date)) {
+              startedLockedGameInSamePeriod = lockGame;
               break;
             }
           }
         }
       }
 
-      if (startedLockedGameInSameDay) {
-        setError(`Your locked game (${startedLockedGameInSameDay.away_team} @ ${startedLockedGameInSameDay.home_team}) has passed the pick cutoff (1 minute before tip) and cannot be changed.`);
+      if (startedLockedGameInSamePeriod) {
+        setError(`Your locked game (${startedLockedGameInSamePeriod.away_team} @ ${startedLockedGameInSamePeriod.home_team}) has passed the pick cutoff (1 minute before tip) and cannot be changed.`);
         return;
       }
 
       const newLocks = { ...locks };
 
-      const unlockSameLockDay = (lockSource) => {
+      const unlockSamePeriod = (lockSource) => {
         Object.keys(lockSource).forEach(id => {
           const game = games.find(g => String(g.game_id) === id);
-          if (game && sameLockDay(game.game_date, targetGame.game_date)) newLocks[id] = false;
+          if (game && samePeriod(game.game_date, targetGame.game_date)) newLocks[id] = false;
         });
       };
-      unlockSameLockDay(newLocks);
-      unlockSameLockDay(existingLocks);
+      unlockSamePeriod(newLocks);
+      unlockSamePeriod(existingLocks);
       newLocks[gid] = true;
       setLocks(newLocks);
       setError(null);
     }
   };
 
-  /** Single pass; cached lock-day bounds per unique tipoff string. */
+  /** Single pass; cached period bounds per unique tipoff string. */
   const computeSubmitWarnings = useCallback(
     (gameList, tbList) => {
       const missingGames = [];
-      const dayBuckets = new Map();
+      const periodBuckets = new Map();
       const boundsCache = new Map();
+      const isFootball = appConfig?.sport_mode === "football";
 
       for (const game of gameList) {
         const gid = String(game.game_id);
@@ -215,25 +229,25 @@ export default function Picks() {
           });
         }
 
-        if (SHOW_LOCK_OF_THE_DAY_UI) {
-          const { dayKey, label } = getLockDayCached(game.game_date, boundsCache);
-          let bucket = dayBuckets.get(dayKey);
+        if (showLockUI) {
+          const { periodKey, label } = getPeriodCached(game.game_date, boundsCache, appConfig?.sport_mode);
+          let bucket = periodBuckets.get(periodKey);
           if (!bucket) {
             bucket = { label, games: [] };
-            dayBuckets.set(dayKey, bucket);
+            periodBuckets.set(periodKey, bucket);
           }
           bucket.games.push(game);
         }
       }
 
       const missingLockDays = [];
-      if (SHOW_LOCK_OF_THE_DAY_UI) {
-        for (const { label, games } of dayBuckets.values()) {
-          const hasLockOnDay = games.some((g) => {
+      if (showLockUI) {
+        for (const { label, games } of periodBuckets.values()) {
+          const hasLockOnPeriod = games.some((g) => {
             const id = String(g.game_id);
             return locks[id] !== undefined ? locks[id] : Boolean(existingLocks[id]);
           });
-          if (!hasLockOnDay) missingLockDays.push({ label });
+          if (!hasLockOnPeriod) missingLockDays.push({ label });
         }
         missingLockDays.sort((a, b) => a.label.localeCompare(b.label));
       }
@@ -252,7 +266,7 @@ export default function Picks() {
 
       return { missingGames, missingLockDays, missingQuestions };
     },
-    [picks, existingPicks, locks, existingLocks, tiebreakerPicks, existingTiebreakerPicks]
+    [picks, existingPicks, locks, existingLocks, tiebreakerPicks, existingTiebreakerPicks, appConfig, showLockUI]
   );
 
   const runSubmitPicks = async () => {
@@ -426,9 +440,9 @@ export default function Picks() {
                 <Col>
                   <h3 className="text-center text-md-start">Games</h3>
                   <p className="text-muted text-center text-md-start mb-0">
-                    {SHOW_LOCK_OF_THE_DAY_UI ? (
+                    {showLockUI ? (
                       <>
-                        Click the lock icon on a game to set your lock of the day — if that pick wins, it scores double points. Note: The lock goes with the day the game is played, not with the day you make your picks.
+                        Click the lock icon on a game to set your {lockLabel} — if that pick wins, it scores double points. Note: The lock goes with the {periodType} the game is played, not with the {periodType} you make your picks.
                       </>
                     ) : (
                       <>Pick the team you think will cover the spread for each game.</>
@@ -442,19 +456,19 @@ export default function Picks() {
                   const existingPick = existingPicks[gid];
                   const currentPick = picks[gid];
                   const selectedTeam = currentPick || existingPick;
-                  const isLocked = SHOW_LOCK_OF_THE_DAY_UI && (locks[gid] !== undefined ? locks[gid] : (existingLocks[gid] || false));
+                  const isLocked = showLockUI && (locks[gid] !== undefined ? locks[gid] : (existingLocks[gid] || false));
 
                   return (
                     <Col key={`game-${game.game_id}`}>
                       <Card className={`h-100 shadow-sm ${isLocked ? 'border-warning border-3' : 'border-3'}`} style={isLocked ? {} : {borderColor: 'transparent'}}>
                         <Card.Body className="d-flex flex-column">
-                          <Card.Title className={`d-flex ${SHOW_LOCK_OF_THE_DAY_UI ? 'justify-content-between' : ''} align-items-center mb-3`}>
+                          <Card.Title className={`d-flex ${showLockUI ? 'justify-content-between' : ''} align-items-center mb-3`}>
                             <div className="d-flex align-items-center">
                               <span className="text-truncate me-1">{game.away_team}</span>
                               <small className="text-muted mx-1">@</small>
                               <span className="text-truncate ms-1">{game.home_team}</span>
                             </div>
-                            {SHOW_LOCK_OF_THE_DAY_UI && (
+                            {showLockUI && (
                               <Button variant="outline-secondary" size="sm" onClick={() => handleLockToggle(game.game_id)} className="p-2" title={isLocked ? "Unlock pick" : "Lock pick"}>
                                 {isLocked ? <FaLock className="text-warning" size={16} /> : <FaUnlock className="text-muted" size={16} />}
                               </Button>

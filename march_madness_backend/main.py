@@ -32,12 +32,13 @@ from firestore_client import (
 from scoring import (
     normalize_datetime,
     get_lock_day_bounds,
+    get_week_bounds,
     picks_locked_for_game,
     compute_covering_team,
     score_pick_points,
     PICK_LOCK_BEFORE_TIP,
 )
-from sport_config import get_app_config
+from sport_config import get_app_config, get_sport_mode, get_football_week_labels, SportMode
 
 load_dotenv()
 
@@ -293,12 +294,35 @@ def get_second_half_start_utc():
 
 
 def get_week_ranges():
-    """Labels for leaderboard / stats period filters."""
-    return {
-        "overall": {"start": None, "end": None, "label": "Overall"},
-        "first_half": {"start": None, "end": None, "label": "First Half (through Mar 23)"},
-        "second_half": {"start": None, "end": None, "label": "Second Half (Mar 24+)"},
-    }
+    """
+    Labels for leaderboard / stats period filters.
+    
+    Returns different ranges based on sport mode:
+    - March Madness: overall, first_half, second_half
+    - Football: overall + 15 weeks (week_0 through week_14)
+    """
+    mode = get_sport_mode()
+    
+    if mode == SportMode.MARCH_MADNESS:
+        return {
+            "overall": {"start": None, "end": None, "label": "Overall"},
+            "first_half": {"start": None, "end": None, "label": "First Half (through Mar 23)"},
+            "second_half": {"start": None, "end": None, "label": "Second Half (Mar 24+)"},
+        }
+    
+    # Football mode
+    ranges = {"overall": {"start": None, "end": None, "label": "Overall"}}
+    
+    for week in get_football_week_labels():
+        start_dt = datetime.fromisoformat(week["start_date"])
+        end_dt = start_dt + timedelta(weeks=1)
+        ranges[week["key"]] = {
+            "start": start_dt,
+            "end": end_dt,
+            "label": week["label"],
+        }
+    
+    return ranges
 
 
 def _parse_iso(s: str) -> datetime:
@@ -306,29 +330,68 @@ def _parse_iso(s: str) -> datetime:
 
 
 def _filter_by_week(items, date_key, filter_key):
-    """Filter by leaderboard period (game/tiebreaker datetime = tip-off or reveal)."""
-    if filter_key == "overall" or filter_key not in ("first_half", "second_half"):
+    """
+    Filter by leaderboard period (game/tiebreaker datetime = tip-off or reveal).
+    
+    Handles both March Madness (first_half/second_half) and Football (week_0..week_14).
+    """
+    mode = get_sport_mode()
+    
+    if mode == SportMode.MARCH_MADNESS:
+        # Tournament half filtering
+        if filter_key == "overall" or filter_key not in ("first_half", "second_half"):
+            return items
+        boundary = get_second_half_start_utc()
+        result = []
+        for item in items:
+            d = item.get(date_key)
+            if d is None:
+                continue
+            d = normalize_datetime(d) if isinstance(d, datetime) else _parse_iso(d)
+            if filter_key == "first_half":
+                if d < boundary:
+                    result.append(item)
+            elif filter_key == "second_half":
+                if d >= boundary:
+                    result.append(item)
+        return result
+    
+    # Football mode - week filtering
+    if filter_key == "overall":
         return items
-    boundary = get_second_half_start_utc()
+    
+    week_ranges = get_week_ranges()
+    if filter_key not in week_ranges:
+        return items
+    
+    week_range = week_ranges[filter_key]
+    start = week_range["start"]
+    end = week_range["end"]
+    
+    if start is None or end is None:
+        return items
+    
     result = []
     for item in items:
         d = item.get(date_key)
         if d is None:
             continue
         d = normalize_datetime(d) if isinstance(d, datetime) else _parse_iso(d)
-        if filter_key == "first_half":
-            if d < boundary:
-                result.append(item)
-        elif filter_key == "second_half":
-            if d >= boundary:
-                result.append(item)
+        if start <= d < end:
+            result.append(item)
     return result
 
 
 # Leaderboard: cache full computed tables in Firestore (1 read per request vs ~3k+).
 LEADERBOARD_CACHE_COLLECTION = "_cache"
 LEADERBOARD_CACHE_DOC_ID = "leaderboard_v1"
-_LEADERBOARD_FILTER_KEYS = ("overall", "first_half", "second_half")
+
+# Compute filter keys dynamically based on sport mode
+def _get_leaderboard_filter_keys():
+    """Return tuple of valid leaderboard filter keys for current sport mode."""
+    return tuple(get_week_ranges().keys())
+
+_LEADERBOARD_FILTER_KEYS = _get_leaderboard_filter_keys()
 
 
 STATS_CACHE_DOC_ID = "stats_v1"
@@ -800,20 +863,36 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
             existing_locks.append(ld)
 
         if pick.lock:
-            target_day_start, target_day_end = get_lock_day_bounds(game_date)
+            # Determine period bounds based on sport mode
+            mode = get_sport_mode()
+            if mode == SportMode.FOOTBALL:
+                target_start, target_end = get_week_bounds(game_date)
+                period_label = "week (Wed–Tue ET)"
+            else:
+                target_start, target_end = get_lock_day_bounds(game_date)
+                period_label = "day (3am ET–3am ET)"
+            
             for lock in existing_locks:
                 if lock["game_id"] != pick.game_id:
                     lock_game_date = lock.get("game_date")
                     if lock_game_date is None:
                         continue
-                    lock_day_start, lock_day_end = get_lock_day_bounds(lock_game_date)
-                    same_day = not (target_day_start >= lock_day_end or target_day_end <= lock_day_start)
-                    if same_day:
+                    
+                    # Get period bounds for existing lock
+                    if mode == SportMode.FOOTBALL:
+                        lock_start, lock_end = get_week_bounds(lock_game_date)
+                    else:
+                        lock_start, lock_end = get_lock_day_bounds(lock_game_date)
+                    
+                    # Check if same period (half-open intervals)
+                    same_period = not (target_start >= lock_end or target_end <= lock_start)
+                    if same_period:
                         if picks_locked_for_game(current_time, lock_game_date):
                             raise HTTPException(
                                 status_code=400,
-                                detail="Cannot lock this game because you already have a lock on a game whose picks have locked for the same day (3am ET–3am ET).",
+                                detail=f"Cannot lock this game because you already have a lock on a game whose picks have locked for the same {period_label}.",
                             )
+                        # Unlock the previous lock (picks not yet locked for that game)
                         db.collection("picks").document(lock["_id"]).update({"lock": False})
 
         elif not pick.lock and existing_pick and existing_pick.get("lock"):

@@ -28,6 +28,37 @@ def get_lock_day_bounds(dt_utc):
     return start_ny.astimezone(timezone.utc), end_ny.astimezone(timezone.utc)
 
 
+def get_week_bounds(dt_utc):
+    """
+    Football week window: Wednesday 00:00 ET through next Wednesday 00:00 ET (half-open).
+    
+    Uses America/New_York ZoneInfo to handle DST transitions correctly.
+    Returns UTC datetimes for [start, end) interval.
+    """
+    dt_utc = normalize_datetime(dt_utc)
+    z = ZoneInfo("America/New_York")
+    local = dt_utc.astimezone(z)
+    
+    # Find the most recent Wednesday 00:00 ET on or before local time
+    # weekday(): Monday=0, Tuesday=1, Wednesday=2, Thursday=3, ...
+    days_since_wed = (local.weekday() - 2) % 7
+    week_start_date = local.date() - timedelta(days=days_since_wed)
+    
+    # Create Wednesday 00:00:00 ET
+    start_ny = datetime(
+        week_start_date.year, 
+        week_start_date.month, 
+        week_start_date.day, 
+        0, 0, 0, 
+        tzinfo=z
+    )
+    
+    # Next Wednesday 00:00:00 ET (7 days later)
+    end_ny = start_ny + timedelta(weeks=1)
+    
+    return start_ny.astimezone(timezone.utc), end_ny.astimezone(timezone.utc)
+
+
 def picks_locked_for_game(current_time, scheduled_utc) -> bool:
     """True when picks may no longer be submitted or changed."""
     scheduled_utc = normalize_datetime(scheduled_utc)
