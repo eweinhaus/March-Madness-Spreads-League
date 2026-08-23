@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { FaLock, FaUnlock } from "react-icons/fa";
 import api from "../api";
 import { sameLockDay, getLockDayBounds } from "../utils/etLockDay";
+import SportSpinner from "../components/SportSpinner";
 
 const NY_TZ = "America/New_York";
 
@@ -16,30 +17,6 @@ const PICKS_LOCK_MS_BEFORE_TIPOFF = 60_000;
  * Temporary: hide lock controls without removing backend/state logic.
  */
 const SHOW_LOCK_OF_THE_DAY_UI = false;
-
-/** Inline so it works on Vercel (SPA rewrite serves HTML for /basketball.svg). */
-function BasketballSpinnerIcon({ size = 56 }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 32 32"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden
-      className="picks-check-spin"
-    >
-      <circle cx="16" cy="16" r="15" fill="#FF6B00" stroke="#000" strokeWidth="2" />
-      <path
-        d="M16 1C7.716 1 1 7.716 1 16s6.716 15 15 15 15-6.716 15-15S24.284 1 16 1z"
-        stroke="#000"
-        strokeWidth="2"
-      />
-      <path d="M16 1v30M1 16h30" stroke="#000" strokeWidth="2" />
-      <path d="M8 8l16 16M24 8L8 24" stroke="#000" strokeWidth="2" />
-    </svg>
-  );
-}
 
 /** One getLockDayBounds() per unique game_date string (tip times often repeat). */
 function getLockDayCached(iso, cache) {
@@ -636,7 +613,7 @@ export default function Picks() {
         >
           <div className="bg-white rounded-3 p-4 text-center shadow" style={{ minWidth: "280px" }}>
             <div className="mb-3 d-flex justify-content-center">
-              <BasketballSpinnerIcon size={56} />
+              <SportSpinner size={56} />
             </div>
             <h5 className="mb-2">Checking your picks…</h5>
             <p className="text-muted small mb-0">Hang on a moment.</p>
