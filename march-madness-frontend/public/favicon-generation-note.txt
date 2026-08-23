@@ -1,0 +1,7 @@
+To generate favicon.ico from football.svg:
+1. Use online tool: https://favicon.io/favicon-converter/
+2. Upload football.svg
+3. Download generated favicon.ico
+4. Place in this directory
+
+For now, browsers will use football.svg as the fallback icon.
