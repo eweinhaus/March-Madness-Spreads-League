@@ -45,7 +45,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-LEAGUE_ID = os.getenv("LEAGUE_ID", "march_madness_2025")
+LEAGUE_ID = os.getenv("LEAGUE_ID", "football_2026")
 
 # ---------------------------------------------------------------------------
 # Helpers

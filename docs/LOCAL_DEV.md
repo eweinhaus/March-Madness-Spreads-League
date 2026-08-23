@@ -20,7 +20,7 @@ Fill in `.env`:
 | Variable | Description |
 |----------|-------------|
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to downloaded service account JSON (local dev) |
-| `LEAGUE_ID` | League identifier (default `march_madness_2025`) |
+| `LEAGUE_ID` | League identifier (default `football_2026`) |
 | `FRONTEND_URL` | `http://localhost:5173` |
 
 Alternatively set `FIREBASE_SERVICE_ACCOUNT_JSON` to the entire JSON on one line (typical for Vercel).

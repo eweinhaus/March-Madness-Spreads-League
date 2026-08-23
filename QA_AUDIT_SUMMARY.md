@@ -46,7 +46,7 @@
 
 **Observation:** Configuration defaults are misaligned:
 - `SPORT_MODE` defaults to `"football"` (sport_config.py line 34)
-- `LEAGUE_ID` defaults to `"march_madness_2025"` (sport_config.py line 126, main.py line 48)
+- `LEAGUE_ID` defaults to `"football_2026"` (sport_config.py line 126, main.py line 48)
 
 **Impact:** Low - production sets both explicitly via Vercel env vars
 
@@ -58,7 +58,7 @@ LEAGUE_ID default: "football_2026"
 
 # Option 2: Keep MM as fallback for both
 SPORT_MODE default: "march_madness"  
-LEAGUE_ID default: "march_madness_2025"
+LEAGUE_ID default: "football_2026"
 ```
 
 Or add validation warning when SPORT_MODE and LEAGUE_ID don't match.
