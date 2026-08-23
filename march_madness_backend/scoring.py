@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+from typing import Tuple, Optional
 
 PICK_LOCK_BEFORE_TIP = timedelta(minutes=1)
 

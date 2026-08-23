@@ -53,7 +53,7 @@ def get_football_week_labels() -> List[Dict[str, Any]]:
     Return 15 weeks of football season with labels.
     
     Week 0: CFB Week 0 (2026-08-26 - 2026-09-02)
-    Week 1: CFB Week 1, NFL Week 1 (2026-09-02 - 2026-09-09)
+    Week 1: CFB Week 1 (2026-09-02 - 2026-09-09) - NO NFL
     Week 2+: CFB Week i, NFL Week i-1
     Week 14: CFB Week 14, NFL Week 13 (2026-12-02 - 2026-12-09)
     
@@ -74,8 +74,9 @@ def get_football_week_labels() -> List[Dict[str, Any]]:
         if i == 0:
             label = "CFB Week 0"
         elif i == 1:
-            label = "CFB Week 1, NFL Week 1"
+            label = "CFB Week 1"  # No NFL week 1 yet
         else:
+            # Week 2+: CFB Week i, NFL Week i-1
             label = f"CFB Week {i}, NFL Week {i-1}"
         
         weeks.append({

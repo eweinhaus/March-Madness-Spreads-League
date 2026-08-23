@@ -11,9 +11,18 @@ const AdminUserPicks = () => {
   const [selectedUserPicks, setSelectedUserPicks] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [copyEmailsFeedback, setCopyEmailsFeedback] = useState(null);
+  const [appConfig, setAppConfig] = useState(null);
   const navigate = useNavigate();
 
+  const lockLabel = appConfig?.lock_label || "lock of the day";
+  const periodType = appConfig?.period_type || "day";
+
   useEffect(() => {
+    // Fetch app config for lock label and period type
+    api.get('/app-config')
+      .then(res => setAppConfig(res.data))
+      .catch(err => console.error('Failed to load app config:', err));
+    
     const fetchUserPicksStatus = async () => {
       try {
         const response = await api.get('/admin/user_picks_status');
@@ -165,7 +174,7 @@ const AdminUserPicks = () => {
                 </div>
               </div>
               <div className="text-muted small">
-                Users who have a lock of the day for the current 3am ET–3am ET window
+                Users who have a {lockLabel} for the current {periodType}
               </div>
             </div>
           </div>

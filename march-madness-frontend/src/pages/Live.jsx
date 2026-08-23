@@ -23,10 +23,19 @@ export default function Live() {
   const [gamePicks, setGamePicks] = useState({});
   const [tiebreakerPicks, setTiebreakerPicks] = useState({});
   const [loadingPicks, setLoadingPicks] = useState(false);
+  const [appConfig, setAppConfig] = useState(null);
   const picksPerPage = 12;
   const navigate = useNavigate();
 
+  const lockLabel = appConfig?.lock_label || "lock of the day";
+  const periodType = appConfig?.period_type || "day";
+
   useEffect(() => {
+    // Fetch app config for lock label and period type
+    api.get('/app-config')
+      .then(res => setAppConfig(res.data))
+      .catch(err => console.error('Failed to load app config:', err));
+    
     fetchLiveData();
     fetchGameScores();
     
@@ -489,7 +498,7 @@ export default function Live() {
                               >
                                 {pick.display_name}
                                 {pick.lock && (
-                                  <FaLock className="text-dark" size={12} title="Lock of the day" />
+                                  <FaLock className="text-dark" size={12} title={lockLabel} />
                                 )}
                               </Badge>
                             ))}
@@ -522,7 +531,7 @@ export default function Live() {
                               >
                                 {pick.display_name}
                                 {pick.lock && (
-                                  <FaLock className="text-dark" size={12} title="Lock of the day" />
+                                  <FaLock className="text-dark" size={12} title={lockLabel} />
                                 )}
                               </Badge>
                             ))}
