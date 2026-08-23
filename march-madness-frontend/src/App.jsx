@@ -104,7 +104,7 @@ function AppContent() {
               <Nav.Link as={Link} to="/" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler')?.click()}>Home</Nav.Link>
               <Nav.Link as={Link} to="/picks" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler')?.click()}>Picks</Nav.Link>
               <Nav.Link as={Link} to="/leaderboard" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler')?.click()}>Leaderboard</Nav.Link>
-              {/* Stats temporarily hidden - reimplement later */}
+              <Nav.Link as={Link} to="/stats" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler')?.click()}>Stats</Nav.Link>
               <Nav.Link as={Link} to="/live" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler')?.click()}>Live</Nav.Link>
               {isAuthenticated && isAdmin && (
                 <Nav.Link as={Link} to="/admin/games" onClick={() => window.innerWidth < 992 && document.querySelector('.navbar-toggler')?.click()}><FaLock className="me-1" />Games</Nav.Link>
