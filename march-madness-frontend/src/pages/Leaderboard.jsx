@@ -4,6 +4,7 @@ import { FaLock } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import api from "../api";
 import { groupPicksByTournamentHalf, groupPicksByWeek, getCurrentFootballWeek } from "../utils/etLockDay";
+import { useSportConfig } from "../sportConfig";
 
 export default function Leaderboard() {
   const [leaderboard, setLeaderboard] = useState([]);
@@ -16,6 +17,10 @@ export default function Leaderboard() {
   const [weekOptions, setWeekOptions] = useState([]);
   const [appConfig, setAppConfig] = useState(null);
   const navigate = useNavigate();
+
+  // Get sport config from provider
+  const { config } = useSportConfig();
+  const lockLabel = config?.lock_label || "lock of the day";
 
   useEffect(() => {
     // Fetch app config to determine sport mode
@@ -296,7 +301,7 @@ export default function Leaderboard() {
                                                   })()
                                                 }
                                                 {pick.lock && (
-                                                  <FaLock className="text-dark" size={14} title="Lock of the day" />
+                                                  <FaLock className="text-dark" size={14} title={lockLabel} />
                                                 )}
                                                 {pick.winning_team === "PUSH" && (
                                                   <span className="badge bg-secondary" style={{ fontSize: '0.75rem', padding: '0.2em 0.4em' }}>PUSH</span>
@@ -431,7 +436,7 @@ export default function Leaderboard() {
                                       })()
                                     }
                                     {pick.lock && (
-                                      <FaLock className="text-dark" size={14} title="Lock of the day" />
+                                      <FaLock className="text-dark" size={14} title={lockLabel} />
                                     )}
                                   {pick.winning_team === "PUSH" && (
                                       <span className="badge bg-secondary" style={{ fontSize: '0.75rem', padding: '0.2em 0.4em' }}>PUSH</span>
