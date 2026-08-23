@@ -103,7 +103,10 @@ export default function Live() {
       .catch(err => {
         if (!handleAuthError(err)) {
           console.error(err);
-          setError('Failed to load game scores. Please try again.');
+          // Don't set error if there are no live games - gamescores failure is non-fatal
+          if (liveGames.length > 0) {
+            console.warn('Game scores unavailable but live games exist');
+          }
         }
       });
   };
@@ -115,7 +118,8 @@ export default function Live() {
       })
       .catch(err => {
         if (!handleAuthError(err)) {
-          console.error('Background game scores error:', err);
+          console.warn('Background game scores error:', err);
+          // Non-fatal - live games can still display without live scores
         }
       });
   };
@@ -322,9 +326,9 @@ export default function Live() {
               </small>
             )}
           </div>
-          {!loading && !error && liveGames.length === 0 && liveTiebreakers.length === 0 && (
+          {!loading && liveGames.length === 0 && liveTiebreakers.length === 0 && (
             <Alert variant="info">
-              No live contests at the moment.
+              No live contests yet
             </Alert>
           )}
           <div className="row">

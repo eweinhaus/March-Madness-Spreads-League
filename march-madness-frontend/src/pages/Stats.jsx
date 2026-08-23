@@ -7,6 +7,7 @@ import api from "../api";
 export default function Stats() {
   const [stats, setStats] = useState([]);
   const [error, setError] = useState(null);
+  const [loaded, setLoaded] = useState(false);
   const [selectedPlayer, setSelectedPlayer] = useState(null);
   const [playerDetails, setPlayerDetails] = useState(null);
   const [showModal, setShowModal] = useState(false);
@@ -22,6 +23,7 @@ export default function Stats() {
       .then(res => {
         setStats(res.data);
         setError(null);
+        setLoaded(true);
       })
       .catch(err => {
         if (err.response?.status === 401) {
@@ -30,6 +32,7 @@ export default function Stats() {
         }
         console.error('Failed to load stats:', err);
         setError('Failed to load player statistics. Please try again.');
+        setLoaded(true);
       });
   };
 
@@ -89,9 +92,13 @@ export default function Stats() {
         </Alert>
       )}
 
-      {stats.length === 0 && !error ? (
+      {!loaded && !error ? (
         <Alert variant="info">
           Loading player statistics...
+        </Alert>
+      ) : stats.length === 0 ? (
+        <Alert variant="info">
+          No stats yet
         </Alert>
       ) : (
         <Row>
