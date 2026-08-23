@@ -965,10 +965,9 @@ def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, ga
     """
     Atomically swap LOTW and update/create pick with lock=True.
     
-    All operations in one Firestore transaction:
-    1. Query existing locks
-    2. Unlock same-period lock if found
-    3. Set lock=True on target pick (create or update)
+    Firestore transaction rules: ALL READS FIRST, THEN ALL WRITES.
+    1. Read: Query existing locks + get their games + get target pick
+    2. Write: Unlock same-period lock(s) + set lock=True on target pick
     
     Transaction retries automatically on contention.
     
@@ -989,7 +988,9 @@ def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, ga
     """
     from google.cloud.firestore_v1.base_query import FieldFilter
     
-    # Query existing locks (inside transaction)
+    # ===== PHASE 1: ALL READS =====
+    
+    # Read 1: Query existing locks
     picks_ref = db.collection("picks")
     query = picks_ref.where(filter=FieldFilter("user_id", "==", user_id)).where(filter=FieldFilter("lock", "==", True))
     
@@ -997,10 +998,17 @@ def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, ga
     for snap in query.stream(transaction=transaction):
         ld = snap.to_dict()
         ld["_id"] = snap.id
+        # Read 2: Get game for each lock
         g_snap = transaction.get(db.collection("games").document(ld["game_id"]))
         if g_snap.exists:
             ld["game_date"] = _fs_timestamp_to_dt(g_snap.to_dict()["game_date"])
         existing_locks.append(ld)
+    
+    # Read 3: Get target pick BEFORE any writes
+    pick_ref = db.collection("picks").document(pick_id)
+    pick_snap = transaction.get(pick_ref)
+    
+    # ===== PHASE 2: VALIDATION (no reads or writes) =====
     
     # Determine target period
     if mode == SportMode.FOOTBALL:
@@ -1010,7 +1018,8 @@ def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, ga
         target_start, target_end = get_lock_day_bounds(game_date)
         period_label = "day (3am ET–3am ET)"
     
-    # Check for same-period lock and unlock if allowed
+    # Find same-period lock to unlock
+    lock_to_unlock = None
     for lock in existing_locks:
         if lock["game_id"] == game_id:
             continue
@@ -1031,13 +1040,16 @@ def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, ga
                     status_code=400,
                     detail=f"Cannot lock this game because you already have a lock on a game whose picks have locked for the same {period_label}.",
                 )
-            # Unlock the old lock (transactionally)
-            transaction.update(db.collection("picks").document(lock["_id"]), {"lock": False})
+            lock_to_unlock = lock
+            break  # Only one lock per period
     
-    # Set lock=True on the new pick (transactionally) - completes atomic swap
-    pick_ref = db.collection("picks").document(pick_id)
-    pick_snap = transaction.get(pick_ref)
+    # ===== PHASE 3: ALL WRITES =====
     
+    # Write 1: Unlock old same-period lock if found
+    if lock_to_unlock:
+        transaction.update(db.collection("picks").document(lock_to_unlock["_id"]), {"lock": False})
+    
+    # Write 2: Set lock=True on target pick (completes atomic swap)
     if pick_snap.exists:
         # Update existing pick: set picked_team and lock=True
         transaction.update(pick_ref, {
