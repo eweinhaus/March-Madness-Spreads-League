@@ -36,13 +36,18 @@ export default function Live() {
       .then(res => setAppConfig(res.data))
       .catch(err => console.error('Failed to load app config:', err));
     
-    fetchLiveData();
-    fetchGameScores();
+    // Fetch live data first, then fetch game scores based on whether games exist
+    fetchLiveData().then(result => {
+      const hasGames = result.games.length > 0;
+      fetchGameScores(hasGames);
+    });
     
     const interval = setInterval(() => {
       setBackgroundRefreshing(true);
-      fetchLiveDataBackground();
-      fetchGameScoresBackground();
+      fetchLiveDataBackground().then(result => {
+        const hasGames = result.games.length > 0;
+        fetchGameScoresBackground(hasGames);
+      });
     }, 30000);
     
     return () => clearInterval(interval);
@@ -62,15 +67,20 @@ export default function Live() {
     api.get('/live')
       .then((res) => {
         const data = res.data || {};
-        setLiveGames(Array.isArray(data.live_games) ? data.live_games : []);
-        setLiveTiebreakers(Array.isArray(data.live_tiebreakers) ? data.live_tiebreakers : []);
+        const games = Array.isArray(data.live_games) ? data.live_games : [];
+        const tiebreakers = Array.isArray(data.live_tiebreakers) ? data.live_tiebreakers : [];
+        setLiveGames(games);
+        setLiveTiebreakers(tiebreakers);
         setError(null);
+        // Fetch game scores after we know if there are live games
+        return { games, tiebreakers };
       })
       .catch(err => {
         if (!handleAuthError(err)) {
           console.error(err);
           setError('Failed to load live data. Please try again.');
         }
+        return { games: [], tiebreakers: [] };
       })
       .finally(() => {
         setLoading(false);
@@ -81,41 +91,54 @@ export default function Live() {
     api.get('/live')
       .then((res) => {
         const data = res.data || {};
-        setLiveGames(Array.isArray(data.live_games) ? data.live_games : []);
-        setLiveTiebreakers(Array.isArray(data.live_tiebreakers) ? data.live_tiebreakers : []);
+        const games = Array.isArray(data.live_games) ? data.live_games : [];
+        const tiebreakers = Array.isArray(data.live_tiebreakers) ? data.live_tiebreakers : [];
+        setLiveGames(games);
+        setLiveTiebreakers(tiebreakers);
         setError(null);
+        return { games, tiebreakers };
       })
       .catch(err => {
         if (!handleAuthError(err)) {
           console.error('Background refresh error:', err);
         }
+        return { games: [], tiebreakers: [] };
       })
       .finally(() => {
         setBackgroundRefreshing(false);
       });
   };
 
-  const fetchGameScores = () => {
+  const fetchGameScores = (hasLiveGames = false) => {
     api.get('/api/gamescores')
       .then(response => {
         setGameScores(response.data);
       })
       .catch(err => {
         if (!handleAuthError(err)) {
-          console.error(err);
-          setError('Failed to load game scores. Please try again.');
+          console.error('Game scores fetch error:', err);
+          // Only set error if there are live games or if it's not a "no games" 500
+          const isNoGames500 = err.response?.status === 500;
+          if (hasLiveGames || !isNoGames500) {
+            setError('Failed to load game scores. Please try again.');
+          }
         }
       });
   };
 
-  const fetchGameScoresBackground = () => {
+  const fetchGameScoresBackground = (hasLiveGames = false) => {
     api.get('/api/gamescores')
       .then(response => {
         setGameScores(response.data);
       })
       .catch(err => {
         if (!handleAuthError(err)) {
-          console.error('Background game scores error:', err);
+          console.warn('Background game scores error:', err);
+          // Only set error if there are live games or if it's not a "no games" 500
+          const isNoGames500 = err.response?.status === 500;
+          if (hasLiveGames && !isNoGames500) {
+            console.error('Game scores failed with live games present');
+          }
         }
       });
   };
@@ -322,9 +345,9 @@ export default function Live() {
               </small>
             )}
           </div>
-          {!loading && !error && liveGames.length === 0 && liveTiebreakers.length === 0 && (
+          {!loading && liveGames.length === 0 && liveTiebreakers.length === 0 && (
             <Alert variant="info">
-              No live contests at the moment.
+              No live contests yet
             </Alert>
           )}
           <div className="row">

@@ -8,6 +8,7 @@ import { groupPicksByTournamentHalf, groupPicksByWeek, getCurrentFootballWeek } 
 export default function Leaderboard() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [error, setError] = useState(null);
+  const [loaded, setLoaded] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
   const [selectedUserDisplayName, setSelectedUserDisplayName] = useState(null);
   const [userPicks, setUserPicks] = useState([]);
@@ -61,6 +62,7 @@ export default function Leaderboard() {
       .then(res => {
         setLeaderboard(res.data);
         setError(null);
+        setLoaded(true);
       })
       .catch(err => {
         if (err.response?.status === 401) {
@@ -69,6 +71,7 @@ export default function Leaderboard() {
         }
         console.error('Leaderboard fetch error:', err);
         setError('Failed to load leaderboard. Please try again.');
+        setLoaded(true);
       });
   };
 
@@ -122,15 +125,17 @@ export default function Leaderboard() {
         </Form.Select>
       </div>
       
-      {error && (
+      {!loaded ? (
+        <Alert variant="info">
+          Loading leaderboard...
+        </Alert>
+      ) : error ? (
         <Alert variant="danger" className="mb-3 mb-md-4">
           {error}
         </Alert>
-      )}
-      
-      {leaderboard.length === 0 && !error ? (
+      ) : leaderboard.length === 0 ? (
         <Alert variant="info">
-          Loading leaderboard...
+          No players yet
         </Alert>
       ) : (
         <ul className="list-group shadow-sm">

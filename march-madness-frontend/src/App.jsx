@@ -17,6 +17,7 @@ import AdminUserPicks from './pages/AdminUserPicks';
 import AdminTiebreakers from './pages/AdminTiebreakers';
 import Login from './pages/Login';
 import Live from './pages/Live';
+import NotFound from './pages/NotFound';
 
 function ProtectedRoute({ children, adminOnly = false }) {
   const [firebaseUser, setFirebaseUser] = useState(undefined);
@@ -156,6 +157,7 @@ function AppContent() {
               <AdminTiebreakers />
             </ProtectedRoute>
           } />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </main>
     </div>
