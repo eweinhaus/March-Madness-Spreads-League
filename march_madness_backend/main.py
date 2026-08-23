@@ -1014,7 +1014,7 @@ def _apply_game_result(db, game_id: str, winning_team: str, auto: bool = False) 
 
 
 @app.post("/update_score")
-def update_score(result: GameResult):
+async def update_score(result: GameResult, current_user: User = Depends(get_current_admin_user)):
     db = get_db()
     game_ref = db.collection("games").document(result.game_id)
     game_snap = game_ref.get()
