@@ -21,6 +21,7 @@ from typing import Optional, Union, List, Tuple, Any, Dict
 import requests
 from bs4 import BeautifulSoup
 import re
+import hmac
 
 from auth import User
 from firestore_client import (
@@ -2014,6 +2015,11 @@ async def delete_user(uid: str, current_user: User = Depends(get_current_admin_u
 # Stats
 # ---------------------------------------------------------------------------
 
+def pick_is_settled(game: dict) -> bool:
+    """Return True if game has a winner (including PUSH), False if unsettled."""
+    return bool((game or {}).get("winning_team"))
+
+
 def _compute_player_stats_list(db) -> list:
     users = {}
     for doc in db.collection("users").where("make_picks", "==", True).stream():
@@ -2045,17 +2051,26 @@ def _compute_player_stats_list(db) -> list:
         if uid not in user_stats:
             continue
         game = all_games.get(p.get("game_id"), {})
+        
+        # Only count settled picks (with winning_team set, including PUSH)
+        if not pick_is_settled(game):
+            continue
+        
         s = user_stats[uid]
         s["total_picks"] += 1
         pts = p.get("points_awarded", 0)
         s["total_points"] += pts
         winning_team = game.get("winning_team", "")
+        
+        # Classify result: correct, push, or incorrect
         if pts > 0:
             s["correct_picks"] += 1
         elif winning_team == "PUSH":
             s["push_games"] += 1
         else:
             s["incorrect_picks"] += 1
+        
+        # Lock tracking (only for settled games)
         if p.get("lock"):
             s["total_locks"] += 1
             if pts == 2:
@@ -2140,12 +2155,18 @@ def get_player_detailed_stats(uid: str):
         
         pts = p.get("points_awarded", 0)
         wt = p.get("winning_team", "")
-        if pts > 0:
+        
+        # Classify pick result: pending if unsettled, then correct/push/incorrect
+        game_dict = {"winning_team": wt}
+        if not pick_is_settled(game_dict):
+            pick_result = "pending"
+        elif pts > 0:
             pick_result = "correct"
         elif wt == "PUSH":
             pick_result = "push"
         else:
             pick_result = "incorrect"
+        
         recent_picks.append(_serialize_doc({
             "picked_team": p.get("picked_team"),
             "points_awarded": pts,
@@ -2158,11 +2179,17 @@ def get_player_detailed_stats(uid: str):
             "pick_result": pick_result,
         }))
 
-    # Streak calculation
+    # Streak calculation - only include settled picks
     streak_results = []
     for p in user_picks_raw[:20]:
+        game = all_games.get(p.get("game_id"), {})
+        
+        # Skip unsettled picks - they don't break or extend streaks
+        if not pick_is_settled(game):
+            continue
+        
         pts = p.get("points_awarded", 0)
-        wt = p.get("winning_team", "")
+        wt = game.get("winning_team", "")
         if pts > 0:
             streak_results.append("W")
         elif wt == "PUSH":
@@ -2745,14 +2772,14 @@ async def internal_auto_resolve_games(
             ),
         )
     
-    # Verify provided token matches secret
+    # Verify provided token matches secret (use constant-time comparison)
     token = None
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:].strip()
     elif x_cron_secret:
         token = x_cron_secret.strip()
     
-    if not token or token != secret:
+    if not token or not hmac.compare_digest(token, secret):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     # Authentication passed, return deprecation message
@@ -2762,14 +2789,6 @@ async def internal_auto_resolve_games(
         "resolved_count": 0,
         "updated_games": []
     }
-
-    db = get_db()
-    try:
-        result = run_auto_resolve_games(db)
-    except Exception as e:
-        logger.exception("auto-resolve failed")
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    return result
 
 # ---------------------------------------------------------------------------
 # Run (local dev)
