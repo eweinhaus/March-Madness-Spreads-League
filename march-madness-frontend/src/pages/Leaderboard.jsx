@@ -4,6 +4,7 @@ import { FaLock } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import api from "../api";
 import { groupPicksByTournamentHalf, groupPicksByWeek, getCurrentFootballWeek } from "../utils/etLockDay";
+import { useSportConfig } from "../sportConfig";
 
 export default function Leaderboard() {
   const [leaderboard, setLeaderboard] = useState([]);
@@ -15,26 +16,25 @@ export default function Leaderboard() {
   const [showModal, setShowModal] = useState(false);
   const [filter, setFilter] = useState('overall');
   const [weekOptions, setWeekOptions] = useState([]);
-  const [appConfig, setAppConfig] = useState(null);
   const navigate = useNavigate();
 
+  // Get sport config from provider
+  const { config, loading: configLoading } = useSportConfig();
+  const lockLabel = config?.lock_label || "lock of the day";
+
   useEffect(() => {
-    // Fetch app config to determine sport mode
-    api.get('/app-config')
-      .then(res => {
-        setAppConfig(res.data);
-        // Set default filter based on sport mode
-        if (res.data.sport_mode === 'football') {
-          const currentWeek = getCurrentFootballWeek();
-          setFilter(currentWeek);
-        } else {
-          setFilter('overall');
-        }
-      })
-      .catch(err => console.error('Failed to load app config:', err));
+    // Set default filter based on sport mode from provider
+    if (!configLoading && config) {
+      if (config.sport_mode === 'football') {
+        const currentWeek = getCurrentFootballWeek();
+        setFilter(currentWeek);
+      } else {
+        setFilter('overall');
+      }
+    }
     
     fetchWeekOptions();
-  }, []);
+  }, [config, configLoading]);
 
   useEffect(() => {
     if (filter) {
@@ -182,7 +182,7 @@ export default function Leaderboard() {
                 <>
                   {filter === 'overall' ? (
                     <Accordion defaultActiveKey="" className="mb-4">
-                      {appConfig?.sport_mode === 'football' 
+                      {config?.sport_mode === 'football' 
                         ? Object.values(groupPicksByWeek(userPicks.picks))
                             .filter((week) => week.picks.length > 0)
                             .map((weekData) => (
@@ -301,7 +301,7 @@ export default function Leaderboard() {
                                                   })()
                                                 }
                                                 {pick.lock && (
-                                                  <FaLock className="text-dark" size={14} title="Lock of the day" />
+                                                  <FaLock className="text-dark" size={14} title={lockLabel} />
                                                 )}
                                                 {pick.winning_team === "PUSH" && (
                                                   <span className="badge bg-secondary" style={{ fontSize: '0.75rem', padding: '0.2em 0.4em' }}>PUSH</span>
@@ -436,7 +436,7 @@ export default function Leaderboard() {
                                       })()
                                     }
                                     {pick.lock && (
-                                      <FaLock className="text-dark" size={14} title="Lock of the day" />
+                                      <FaLock className="text-dark" size={14} title={lockLabel} />
                                     )}
                                   {pick.winning_team === "PUSH" && (
                                       <span className="badge bg-secondary" style={{ fontSize: '0.75rem', padding: '0.2em 0.4em' }}>PUSH</span>

@@ -5,6 +5,7 @@ import { FaLock, FaUnlock } from "react-icons/fa";
 import api from "../api";
 import { sameLockDay, getLockDayBounds, sameWeek, getWeekBounds } from "../utils/etLockDay";
 import SportSpinner from "../components/SportSpinner";
+import { useSportConfig } from "../sportConfig";
 
 const NY_TZ = "America/New_York";
 
@@ -69,13 +70,15 @@ export default function Picks() {
     missingQuestions: [],
   });
   const [isCheckingWarnings, setIsCheckingWarnings] = useState(false);
-  const [appConfig, setAppConfig] = useState(null);
   const navigate = useNavigate();
+
+  // Get sport config from provider (no duplicate fetch)
+  const { config: appConfig, loading: configLoading } = useSportConfig();
 
   // Determine if lock UI should be shown and labels
   const showLockUI = appConfig?.sport_mode === "football";
-  const lockLabel = appConfig?.lock_label || "lock of the day";
-  const periodType = appConfig?.period_type || "day";
+  const lockLabel = appConfig?.lock_label || "lock of the week";
+  const periodType = appConfig?.period_type || "week";
 
   const formatDateForDisplay = (dateString) => {
     const date = new Date(dateString);
@@ -94,11 +97,6 @@ export default function Picks() {
   };
 
   useEffect(() => {
-    // Fetch app config to determine sport mode and lock UI settings
-    api.get('/app-config')
-      .then(res => setAppConfig(res.data))
-      .catch(err => console.error('Failed to load app config:', err));
-    
     setIsLoading(true);
     api.get('/picks_data')
       .then((response) => {
@@ -423,10 +421,10 @@ export default function Picks() {
         <Row className="mb-3 mb-md-4"><Col><Alert variant="danger">{error}</Alert></Col></Row>
       )}
 
-      {isLoading ? (
+      {(configLoading || isLoading) ? (
         <Row><Col className="text-center">
           <div className="d-flex justify-content-center align-items-center" style={{ minHeight: '200px' }}>
-            <div className="spinner-border text-primary" role="status"><span className="visually-hidden">Loading...</span></div>
+            <SportSpinner />
             <span className="ms-3">Loading picks data...</span>
           </div>
         </Col></Row>
@@ -480,7 +478,7 @@ export default function Picks() {
                             {existingPick && (
                               <div className="mt-2 text-success">
                                 <strong>Your pick: {existingPick}</strong>
-                                {isLocked && <span className="ms-2 text-warning"><FaLock /> Lock of the day</span>}
+                                {isLocked && <span className="ms-2 text-warning"><FaLock /> {lockLabel}</span>}
                               </div>
                             )}
                           </Card.Text>
@@ -583,7 +581,7 @@ export default function Picks() {
           )}
           {showLockUI && submitWarnings.missingLockDays.length > 0 && (
             <>
-              <h6 className="fw-bold">Game days without a lock of the day</h6>
+              <h6 className="fw-bold">{periodType === 'week' ? 'Weeks' : 'Days'} without a {lockLabel}</h6>
               <ul className="small mb-3 ps-3">
                 {submitWarnings.missingLockDays.map((d) => (
                   <li key={d.label}>{d.label}</li>
