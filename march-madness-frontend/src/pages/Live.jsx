@@ -64,7 +64,7 @@ export default function Live() {
   const fetchLiveData = () => {
     setLoading(true);
     setError(null);
-    api.get('/live')
+    return api.get('/live')
       .then((res) => {
         const data = res.data || {};
         const games = Array.isArray(data.live_games) ? data.live_games : [];
@@ -88,7 +88,7 @@ export default function Live() {
   };
 
   const fetchLiveDataBackground = () => {
-    api.get('/live')
+    return api.get('/live')
       .then((res) => {
         const data = res.data || {};
         const games = Array.isArray(data.live_games) ? data.live_games : [];
@@ -112,7 +112,7 @@ export default function Live() {
   const fetchGameScores = (hasLiveGames = false) => {
     api.get('/api/gamescores')
       .then(response => {
-        setGameScores(response.data);
+        setGameScores(Array.isArray(response.data) ? response.data : []);
       })
       .catch(err => {
         if (!handleAuthError(err)) {
@@ -129,7 +129,7 @@ export default function Live() {
   const fetchGameScoresBackground = (hasLiveGames = false) => {
     api.get('/api/gamescores')
       .then(response => {
-        setGameScores(response.data);
+        setGameScores(Array.isArray(response.data) ? response.data : []);
       })
       .catch(err => {
         if (!handleAuthError(err)) {
@@ -279,6 +279,10 @@ export default function Live() {
   }, [normalizeTeamName]);
 
   const getGameScore = useCallback((game) => {
+    if (!Array.isArray(gameScores)) {
+      return undefined;
+    }
+    
     return gameScores.find(score => {
       if ((score.AwayTeam === game.away_team && score.HomeTeam === game.home_team) ||
           (score.AwayTeam === game.home_team && score.HomeTeam === game.away_team)) {
