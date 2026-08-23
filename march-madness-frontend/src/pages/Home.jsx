@@ -1,7 +1,10 @@
 import { Link } from "react-router-dom";
 import { Container, Row, Col, Button } from "react-bootstrap";
+import { useSportConfig } from "../sportConfig";
 
 export default function Home() {
+  const { config } = useSportConfig();
+  
   return (
     <div>
       <div className="bg-primary text-white py-4 py-md-5 mb-4 mb-md-5">
@@ -10,8 +13,8 @@ export default function Home() {
             <Col md={8} className="text-center text-md-start">
               <h1 className="display-4 fw-bold mb-3 mb-md-4">Welcome to Spreads!</h1>
               <p className="lead mb-3 mb-md-4">
-                Make your picks against the spread for sports games 
-                and compete with others to see who can predict the most teams that cover.
+                Make your picks against the spread for {config.display_name}{' '}
+                {config.pick_noun}s and compete with others to see who can predict the most teams that cover.
               </p>
               <div className="d-flex flex-column flex-sm-row gap-2 gap-sm-3 justify-content-center justify-content-md-start">
                 <Link to="/picks" className="btn btn-light btn-lg w-100 w-sm-auto">Make Your Picks</Link>
@@ -30,7 +33,7 @@ export default function Home() {
           <Col sm={12} md={4}>
             <div className="p-3 bg-light rounded h-100">
               <h3 className="mb-3">How to Play</h3>
-              <p>Pick teams to cover the spread for each game. Get one point for each correct pick.</p>
+              <p>Pick teams to cover the spread for each {config.pick_noun}. Get one point for each correct pick.</p>
             </div>
           </Col>
           <Col sm={12} md={4}>

@@ -3,7 +3,7 @@ import { Alert, Modal, Button, Table, Form, Accordion } from "react-bootstrap";
 import { FaLock } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import api from "../api";
-import { groupPicksByTournamentHalf } from "../utils/etLockDay";
+import { groupPicksByTournamentHalf, groupPicksByWeek, getCurrentFootballWeek } from "../utils/etLockDay";
 
 export default function Leaderboard() {
   const [leaderboard, setLeaderboard] = useState([]);
@@ -14,14 +14,31 @@ export default function Leaderboard() {
   const [showModal, setShowModal] = useState(false);
   const [filter, setFilter] = useState('overall');
   const [weekOptions, setWeekOptions] = useState([]);
+  const [appConfig, setAppConfig] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
+    // Fetch app config to determine sport mode
+    api.get('/app-config')
+      .then(res => {
+        setAppConfig(res.data);
+        // Set default filter based on sport mode
+        if (res.data.sport_mode === 'football') {
+          const currentWeek = getCurrentFootballWeek();
+          setFilter(currentWeek);
+        } else {
+          setFilter('overall');
+        }
+      })
+      .catch(err => console.error('Failed to load app config:', err));
+    
     fetchWeekOptions();
   }, []);
 
   useEffect(() => {
-    fetchLeaderboard();
+    if (filter) {
+      fetchLeaderboard();
+    }
   }, [filter]);
 
   const fetchWeekOptions = () => {
@@ -133,10 +150,10 @@ export default function Leaderboard() {
                 </span>
                 <span className="badge bg-warning text-dark rounded-pill d-flex align-items-center gap-1" style={{ fontSize: '0.75rem' }}>
                   {player.correct_locks} <FaLock className="text-dark" size={10} />
-                  </span>
+                </span>
                 {filter !== 'overall' && player.first_tiebreaker_diff !== 999999 && (
                   <span className="badge bg-info rounded-pill" style={{ fontSize: '0.75rem' }}>
-                    TB1: {player.first_tiebreaker_diff}
+                    TB: {player.first_tiebreaker_diff.toFixed(1)}
                   </span>
                 )}
               </div>
@@ -160,7 +177,62 @@ export default function Leaderboard() {
                 <>
                   {filter === 'overall' ? (
                     <Accordion defaultActiveKey="" className="mb-4">
-                      {Object.values(groupPicksByTournamentHalf(userPicks.picks))
+                      {appConfig?.sport_mode === 'football' 
+                        ? Object.values(groupPicksByWeek(userPicks.picks))
+                            .filter((week) => week.picks.length > 0)
+                            .map((weekData) => (
+                              <Accordion.Item key={weekData.key} eventKey={weekData.key}>
+                                <Accordion.Header>
+                                  {weekData.label} ({weekData.picks.length} pick{weekData.picks.length !== 1 ? 's' : ''})
+                                </Accordion.Header>
+                                <Accordion.Body className="p-2">
+                                  <div className="table-responsive">
+                                    <Table striped bordered hover responsive className="mb-0" size="sm">
+                                      <thead>
+                                        <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
+                                          <th className="py-2">Game</th>
+                                          <th className="py-2">Pick</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="small">
+                                        {weekData.picks
+                                          .sort((a, b) => new Date(b.game_date) - new Date(a.game_date))
+                                          .map((pick) => {
+                                            let pickCellClass = "";
+                                            if (pick.winning_team && pick.winning_team !== "PUSH") {
+                                              const normalizeTeamName = (name) => name?.replace(/[\s*]+$/, '');
+                                              const isCorrectPick = normalizeTeamName(pick.winning_team) === normalizeTeamName(pick.picked_team);
+                                              pickCellClass = isCorrectPick ? "table-success" : "table-danger";
+                                            } else if (pick.winning_team === "PUSH") {
+                                              pickCellClass = "table-warning";
+                                            }
+
+                                            return (
+                                              <tr key={pick.game_id} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
+                                                <td className="text-nowrap py-2">
+                                                  {pick.spread < 0
+                                                    ? `${pick.away_team} @ ${pick.home_team} +${Math.abs(pick.spread)}`
+                                                    : `${pick.away_team} @ ${pick.home_team} -${pick.spread}`}
+                                                </td>
+                                                <td className={`py-2 ${pickCellClass}`} style={{
+                                                  ...(pick.lock && {
+                                                    fontWeight: 'bold',
+                                                    textDecoration: 'underline',
+                                                  })
+                                                }}>
+                                                  {pick.picked_team}
+                                                  {pick.lock && <> <FaLock size={10} /></>}
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
+                                      </tbody>
+                                    </Table>
+                                  </div>
+                                </Accordion.Body>
+                              </Accordion.Item>
+                            ))
+                        : Object.values(groupPicksByTournamentHalf(userPicks.picks))
                         .filter((half) => half.picks.length > 0)
                         .map((halfData) => (
                           <Accordion.Item key={halfData.key} eventKey={halfData.key}>

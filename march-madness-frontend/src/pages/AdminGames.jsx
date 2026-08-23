@@ -233,6 +233,10 @@ const AdminGames = () => {
     <Container className="py-4">
       <h2 className="mb-4">Manage Games</h2>
       
+      <Alert variant="info" className="mb-4">
+        <strong>Note:</strong> Auto-resolve is disabled. Set game results manually using the dropdown below each game.
+      </Alert>
+      
       {error && <Alert variant="danger">{error}</Alert>}
       {success && <Alert variant="success">{success}</Alert>}
 

@@ -32,11 +32,13 @@ from firestore_client import (
 from scoring import (
     normalize_datetime,
     get_lock_day_bounds,
+    get_week_bounds,
     picks_locked_for_game,
     compute_covering_team,
     score_pick_points,
     PICK_LOCK_BEFORE_TIP,
 )
+from sport_config import get_app_config, get_sport_mode, get_football_week_labels, SportMode
 
 load_dotenv()
 
@@ -292,12 +294,35 @@ def get_second_half_start_utc():
 
 
 def get_week_ranges():
-    """Labels for leaderboard / stats period filters."""
-    return {
-        "overall": {"start": None, "end": None, "label": "Overall"},
-        "first_half": {"start": None, "end": None, "label": "First Half (through Mar 23)"},
-        "second_half": {"start": None, "end": None, "label": "Second Half (Mar 24+)"},
-    }
+    """
+    Labels for leaderboard / stats period filters.
+    
+    Returns different ranges based on sport mode:
+    - March Madness: overall, first_half, second_half
+    - Football: overall + 15 weeks (week_0 through week_14)
+    """
+    mode = get_sport_mode()
+    
+    if mode == SportMode.MARCH_MADNESS:
+        return {
+            "overall": {"start": None, "end": None, "label": "Overall"},
+            "first_half": {"start": None, "end": None, "label": "First Half (through Mar 23)"},
+            "second_half": {"start": None, "end": None, "label": "Second Half (Mar 24+)"},
+        }
+    
+    # Football mode
+    ranges = {"overall": {"start": None, "end": None, "label": "Overall"}}
+    
+    for week in get_football_week_labels():
+        start_dt = datetime.fromisoformat(week["start_date"])
+        end_dt = start_dt + timedelta(weeks=1)
+        ranges[week["key"]] = {
+            "start": start_dt,
+            "end": end_dt,
+            "label": week["label"],
+        }
+    
+    return ranges
 
 
 def _parse_iso(s: str) -> datetime:
@@ -305,29 +330,68 @@ def _parse_iso(s: str) -> datetime:
 
 
 def _filter_by_week(items, date_key, filter_key):
-    """Filter by leaderboard period (game/tiebreaker datetime = tip-off or reveal)."""
-    if filter_key == "overall" or filter_key not in ("first_half", "second_half"):
+    """
+    Filter by leaderboard period (game/tiebreaker datetime = tip-off or reveal).
+    
+    Handles both March Madness (first_half/second_half) and Football (week_0..week_14).
+    """
+    mode = get_sport_mode()
+    
+    if mode == SportMode.MARCH_MADNESS:
+        # Tournament half filtering
+        if filter_key == "overall" or filter_key not in ("first_half", "second_half"):
+            return items
+        boundary = get_second_half_start_utc()
+        result = []
+        for item in items:
+            d = item.get(date_key)
+            if d is None:
+                continue
+            d = normalize_datetime(d) if isinstance(d, datetime) else _parse_iso(d)
+            if filter_key == "first_half":
+                if d < boundary:
+                    result.append(item)
+            elif filter_key == "second_half":
+                if d >= boundary:
+                    result.append(item)
+        return result
+    
+    # Football mode - week filtering
+    if filter_key == "overall":
         return items
-    boundary = get_second_half_start_utc()
+    
+    week_ranges = get_week_ranges()
+    if filter_key not in week_ranges:
+        return items
+    
+    week_range = week_ranges[filter_key]
+    start = week_range["start"]
+    end = week_range["end"]
+    
+    if start is None or end is None:
+        return items
+    
     result = []
     for item in items:
         d = item.get(date_key)
         if d is None:
             continue
         d = normalize_datetime(d) if isinstance(d, datetime) else _parse_iso(d)
-        if filter_key == "first_half":
-            if d < boundary:
-                result.append(item)
-        elif filter_key == "second_half":
-            if d >= boundary:
-                result.append(item)
+        if start <= d < end:
+            result.append(item)
     return result
 
 
 # Leaderboard: cache full computed tables in Firestore (1 read per request vs ~3k+).
 LEADERBOARD_CACHE_COLLECTION = "_cache"
 LEADERBOARD_CACHE_DOC_ID = "leaderboard_v1"
-_LEADERBOARD_FILTER_KEYS = ("overall", "first_half", "second_half")
+
+# Compute filter keys dynamically based on sport mode
+def _get_leaderboard_filter_keys():
+    """Return tuple of valid leaderboard filter keys for current sport mode."""
+    return tuple(get_week_ranges().keys())
+
+_LEADERBOARD_FILTER_KEYS = _get_leaderboard_filter_keys()
 
 
 STATS_CACHE_DOC_ID = "stats_v1"
@@ -406,9 +470,22 @@ def _leaderboard_list_for_filter(
     all_tb_picks: list,
     filter_key: str,
 ) -> list:
+    """
+    Compute leaderboard for a given filter period.
+    
+    Football mode: total_points (game picks only) DESC, first_tiebreaker_diff ASC,
+                   correct_locks DESC, display_name ASC. One numerical TB per period
+                   (earliest start_time); TB awards 0 points (ranking-only).
+    
+    March Madness mode: Uses 3 TBs, includes TB points in total_points, separate
+                        overall vs period sort logic.
+    """
     filtered_picks = _filter_by_week(all_picks, "game_date", filter_key)
     filtered_tb_picks = _filter_by_week(all_tb_picks, "start_time", filter_key)
+    
+    mode = get_sport_mode()
 
+    # Compute game points and correct locks (same for both modes)
     user_game_points = {}
     user_correct_locks = {}
     for p in filtered_picks:
@@ -419,13 +496,7 @@ def _leaderboard_list_for_filter(
         if p.get("lock") and p.get("points_awarded") == 2:
             user_correct_locks[uid] = user_correct_locks.get(uid, 0) + 1
 
-    user_tb_points = {}
-    for tp in filtered_tb_picks:
-        uid = tp.get("user_id")
-        if uid not in users:
-            continue
-        user_tb_points[uid] = user_tb_points.get(uid, 0) + (tp.get("points_awarded") or 0)
-
+    # Compute tiebreaker accuracy
     user_tb_accuracy = {}
     for tp in filtered_tb_picks:
         uid = tp.get("user_id")
@@ -444,38 +515,79 @@ def _leaderboard_list_for_filter(
             user_tb_accuracy[uid] = []
         user_tb_accuracy[uid].append((tb.get("start_time"), diff))
 
+    # Sort tiebreakers by start_time (earliest first)
     for uid in user_tb_accuracy:
         user_tb_accuracy[uid].sort(key=lambda x: x[0] or datetime.min.replace(tzinfo=timezone.utc))
 
+    # Build leaderboard based on sport mode
     leaderboard = []
-    for uid, u in users.items():
-        total_points = user_game_points.get(uid, 0) + user_tb_points.get(uid, 0)
-        correct_locks = user_correct_locks.get(uid, 0)
-        accuracy_list = user_tb_accuracy.get(uid, [])
-        first_diff = accuracy_list[0][1] if len(accuracy_list) > 0 else 999999
-        second_diff = accuracy_list[1][1] if len(accuracy_list) > 1 else 999999
-        third_diff = accuracy_list[2][1] if len(accuracy_list) > 2 else 999999
+    
+    if mode == SportMode.FOOTBALL:
+        # Football: total_points = game picks only (no TB points)
+        # Ranking: total_points DESC, first_tiebreaker_diff ASC, correct_locks DESC, display_name ASC
+        for uid, u in users.items():
+            total_points = user_game_points.get(uid, 0)  # Game picks only
+            correct_locks = user_correct_locks.get(uid, 0)
+            accuracy_list = user_tb_accuracy.get(uid, [])
+            first_diff = accuracy_list[0][1] if len(accuracy_list) > 0 else 999999
 
-        leaderboard.append({
-            "display_name": u.get("display_name", u.get("email", "")),
-            "uid": uid,
-            "total_points": total_points,
-            "correct_locks": correct_locks,
-            "first_tiebreaker_diff": first_diff,
-            "second_tiebreaker_diff": second_diff,
-            "third_tiebreaker_diff": third_diff,
-        })
+            leaderboard.append({
+                "display_name": u.get("display_name", u.get("email", "")),
+                "uid": uid,
+                "total_points": total_points,
+                "correct_locks": correct_locks,
+                "first_tiebreaker_diff": first_diff,
+                "second_tiebreaker_diff": 999999,  # Not used in football
+                "third_tiebreaker_diff": 999999,   # Not used in football
+            })
 
-    if filter_key == "overall":
-        leaderboard.sort(key=lambda x: (-x["total_points"], -x["correct_locks"]))
-    else:
+        # Same sort for all filters (including overall)
         leaderboard.sort(key=lambda x: (
-            -x["total_points"],
-            -x["correct_locks"],
-            x["first_tiebreaker_diff"],
-            x["second_tiebreaker_diff"],
-            x["third_tiebreaker_diff"],
+            -x["total_points"],              # Game points DESC
+            x["first_tiebreaker_diff"],      # Closest TB guess ASC
+            -x["correct_locks"],             # Correct locks DESC
+            x["display_name"].lower(),       # Name ASC (case-insensitive)
         ))
+    
+    else:  # March Madness mode
+        # Compute TB points (only in MM mode)
+        user_tb_points = {}
+        for tp in filtered_tb_picks:
+            uid = tp.get("user_id")
+            if uid not in users:
+                continue
+            user_tb_points[uid] = user_tb_points.get(uid, 0) + (tp.get("points_awarded") or 0)
+
+        for uid, u in users.items():
+            total_points = user_game_points.get(uid, 0) + user_tb_points.get(uid, 0)
+            correct_locks = user_correct_locks.get(uid, 0)
+            accuracy_list = user_tb_accuracy.get(uid, [])
+            first_diff = accuracy_list[0][1] if len(accuracy_list) > 0 else 999999
+            second_diff = accuracy_list[1][1] if len(accuracy_list) > 1 else 999999
+            third_diff = accuracy_list[2][1] if len(accuracy_list) > 2 else 999999
+
+            leaderboard.append({
+                "display_name": u.get("display_name", u.get("email", "")),
+                "uid": uid,
+                "total_points": total_points,
+                "correct_locks": correct_locks,
+                "first_tiebreaker_diff": first_diff,
+                "second_tiebreaker_diff": second_diff,
+                "third_tiebreaker_diff": third_diff,
+            })
+
+        # March Madness: different sort for overall vs period
+        if filter_key == "overall":
+            leaderboard.sort(key=lambda x: (-x["total_points"], -x["correct_locks"]))
+        else:
+            leaderboard.sort(key=lambda x: (
+                -x["total_points"],
+                -x["correct_locks"],
+                x["first_tiebreaker_diff"],
+                x["second_tiebreaker_diff"],
+                x["third_tiebreaker_diff"],
+            ))
+    
     return leaderboard
 
 
@@ -634,6 +746,27 @@ def health():
 def root():
     return {"message": "March Madness Spreads API v2 – Firestore"}
 
+
+@app.get("/app-config")
+def get_app_config_endpoint():
+    """
+    Return app configuration for the frontend.
+    
+    No authentication required – this endpoint is called on initial app load
+    to determine sport mode, league ID, display strings, and conditional UI rendering.
+    
+    Returns:
+        - product_name: "Spreads"
+        - league_id: from LEAGUE_ID env var
+        - sport_mode: "football" or "march_madness"
+        - display_name: season-specific display name
+        - season_label: season label for UI
+        - pick_noun: "game" or "matchup"
+        - period_type: "week" or "round"
+        - lock_label: "lock of the week" or "lock of the day"
+    """
+    return get_app_config()
+
 # ---------------------------------------------------------------------------
 # Auth / current user
 # ---------------------------------------------------------------------------
@@ -778,20 +911,36 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
             existing_locks.append(ld)
 
         if pick.lock:
-            target_day_start, target_day_end = get_lock_day_bounds(game_date)
+            # Determine period bounds based on sport mode
+            mode = get_sport_mode()
+            if mode == SportMode.FOOTBALL:
+                target_start, target_end = get_week_bounds(game_date)
+                period_label = "week (Wed–Tue ET)"
+            else:
+                target_start, target_end = get_lock_day_bounds(game_date)
+                period_label = "day (3am ET–3am ET)"
+            
             for lock in existing_locks:
                 if lock["game_id"] != pick.game_id:
                     lock_game_date = lock.get("game_date")
                     if lock_game_date is None:
                         continue
-                    lock_day_start, lock_day_end = get_lock_day_bounds(lock_game_date)
-                    same_day = not (target_day_start >= lock_day_end or target_day_end <= lock_day_start)
-                    if same_day:
+                    
+                    # Get period bounds for existing lock
+                    if mode == SportMode.FOOTBALL:
+                        lock_start, lock_end = get_week_bounds(lock_game_date)
+                    else:
+                        lock_start, lock_end = get_lock_day_bounds(lock_game_date)
+                    
+                    # Check if same period (half-open intervals)
+                    same_period = not (target_start >= lock_end or target_end <= lock_start)
+                    if same_period:
                         if picks_locked_for_game(current_time, lock_game_date):
                             raise HTTPException(
                                 status_code=400,
-                                detail="Cannot lock this game because you already have a lock on a game whose picks have locked for the same day (3am ET–3am ET).",
+                                detail=f"Cannot lock this game because you already have a lock on a game whose picks have locked for the same {period_label}.",
                             )
+                        # Unlock the previous lock (picks not yet locked for that game)
                         db.collection("picks").document(lock["_id"]).update({"lock": False})
 
         elif not pick.lock and existing_pick and existing_pick.get("lock"):
@@ -1993,46 +2142,98 @@ def get_player_detailed_stats(uid: str):
                     "against_count": against,
                 })
 
-    # Best/worst half (first vs second half by tip-off ET)
-    boundary = get_second_half_start_utc()
+    # Best/worst period stats (week for football, half for march_madness)
+    mode = get_sport_mode()
     z = ZoneInfo("America/New_York")
-    period_meta = {
-        "first_half": {
-            "label": "First Half (through Mar 23)",
-            "week_start": datetime(2026, 3, 17, 0, 0, 0, tzinfo=z).astimezone(timezone.utc),
-            "week_end": boundary - timedelta(seconds=1),
-        },
-        "second_half": {
-            "label": "Second Half (Mar 24+)",
-            "week_start": boundary,
-            "week_end": datetime(2026, 4, 8, 23, 59, 59, tzinfo=z).astimezone(timezone.utc),
-        },
-    }
-    week_stats = {}
-    for p in user_picks_raw:
-        gd = p.get("game_date")
-        if not gd:
-            continue
-        gd = normalize_datetime(gd) if isinstance(gd, datetime) else _parse_iso(str(gd))
-        wk = "first_half" if gd < boundary else "second_half"
-        if wk not in week_stats:
-            m = period_meta[wk]
-            week_stats[wk] = {
-                "label": m["label"],
-                "week_start": m["week_start"],
-                "week_end": m["week_end"],
-                "total_points": 0,
-                "total_picks": 0,
-                "correct_picks": 0,
-                "locks_used": 0,
+    
+    if mode == SportMode.FOOTBALL:
+        # Football: 15 weeks (week_0 through week_14)
+        period_meta = {}
+        week_labels = get_football_week_labels()
+        for week_info in week_labels:
+            start_dt = datetime.fromisoformat(week_info["start_date"])
+            end_dt = start_dt + timedelta(weeks=1)
+            period_meta[week_info["key"]] = {
+                "label": week_info["label"],
+                "week_start": start_dt,
+                "week_end": end_dt,
             }
-        s = week_stats[wk]
-        s["total_picks"] += 1
-        s["total_points"] += p.get("points_awarded", 0)
-        if (p.get("points_awarded") or 0) > 0:
-            s["correct_picks"] += 1
-        if p.get("lock"):
-            s["locks_used"] += 1
+        
+        week_stats = {}
+        for p in user_picks_raw:
+            gd = p.get("game_date")
+            if not gd:
+                continue
+            gd = normalize_datetime(gd) if isinstance(gd, datetime) else _parse_iso(str(gd))
+            
+            # Find which week this pick belongs to
+            wk = None
+            for week_key, meta in period_meta.items():
+                if meta["week_start"] <= gd < meta["week_end"]:
+                    wk = week_key
+                    break
+            
+            if not wk:
+                continue  # Pick outside season bounds
+            
+            if wk not in week_stats:
+                m = period_meta[wk]
+                week_stats[wk] = {
+                    "label": m["label"],
+                    "week_start": m["week_start"],
+                    "week_end": m["week_end"],
+                    "total_points": 0,
+                    "total_picks": 0,
+                    "correct_picks": 0,
+                    "locks_used": 0,
+                }
+            s = week_stats[wk]
+            s["total_picks"] += 1
+            s["total_points"] += p.get("points_awarded", 0)
+            if (p.get("points_awarded") or 0) > 0:
+                s["correct_picks"] += 1
+            if p.get("lock"):
+                s["locks_used"] += 1
+    
+    else:  # March Madness mode
+        boundary = get_second_half_start_utc()
+        period_meta = {
+            "first_half": {
+                "label": "First Half (through Mar 23)",
+                "week_start": datetime(2026, 3, 17, 0, 0, 0, tzinfo=z).astimezone(timezone.utc),
+                "week_end": boundary - timedelta(seconds=1),
+            },
+            "second_half": {
+                "label": "Second Half (Mar 24+)",
+                "week_start": boundary,
+                "week_end": datetime(2026, 4, 8, 23, 59, 59, tzinfo=z).astimezone(timezone.utc),
+            },
+        }
+        week_stats = {}
+        for p in user_picks_raw:
+            gd = p.get("game_date")
+            if not gd:
+                continue
+            gd = normalize_datetime(gd) if isinstance(gd, datetime) else _parse_iso(str(gd))
+            wk = "first_half" if gd < boundary else "second_half"
+            if wk not in week_stats:
+                m = period_meta[wk]
+                week_stats[wk] = {
+                    "label": m["label"],
+                    "week_start": m["week_start"],
+                    "week_end": m["week_end"],
+                    "total_points": 0,
+                    "total_picks": 0,
+                    "correct_picks": 0,
+                    "locks_used": 0,
+                }
+            s = week_stats[wk]
+            s["total_picks"] += 1
+            s["total_points"] += p.get("points_awarded", 0)
+            if (p.get("points_awarded") or 0) > 0:
+                s["correct_picks"] += 1
+            if p.get("lock"):
+                s["locks_used"] += 1
 
     def _fmt_period_bounds(s):
         ws = s["week_start"]
@@ -2095,6 +2296,7 @@ def get_player_detailed_stats(uid: str):
 # Game scores (CBS scraper – no DB dependency) + auto-resolve
 # ---------------------------------------------------------------------------
 
+# Legacy constant for backwards compatibility
 CBS_SCOREBOARD_URL = "https://www.cbssports.com/college-basketball/scoreboard/?layout=compact"
 
 
@@ -2138,11 +2340,22 @@ def team_names_match_scoreboard(a: str, b: str) -> bool:
     return na in nb or nb in na
 
 
-def fetch_cbs_games_data() -> List[dict]:
-    """Scrape CBS compact scoreboard. Same shape as /api/gamescores response."""
+def fetch_cbs_games_data(url: str = None) -> List[dict]:
+    """
+    Scrape CBS compact scoreboard from given URL.
+    
+    Args:
+        url: CBS scoreboard URL. Defaults to college-basketball for backwards compatibility.
+    
+    Returns:
+        List of game dicts with AwayTeam, HomeTeam, AwayScore, HomeScore, Time, normalized names.
+    """
+    if url is None:
+        url = CBS_SCOREBOARD_URL
+    
     games_data: List[dict] = []
     try:
-        resp = requests.get(CBS_SCOREBOARD_URL, timeout=15)
+        resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         for game in soup.find_all("div", class_="single-score-card"):
@@ -2175,8 +2388,49 @@ def fetch_cbs_games_data() -> List[dict]:
                 continue
         return games_data
     except Exception as e:
-        logger.warning("fetch_cbs_games_data failed: %s", e)
+        logger.warning("fetch_cbs_games_data failed for %s: %s", url, e)
         return games_data
+
+
+def fetch_live_scores_merged() -> List[dict]:
+    """
+    Fetch and merge live scores for the current sport mode.
+    
+    Football mode: Scrapes both NFL and CFB CBS scoreboards, merges results.
+    March Madness mode: Scrapes college-basketball scoreboard.
+    
+    Returns:
+        Merged list of game score dicts.
+    """
+    mode = get_sport_mode()
+    all_games = []
+    
+    if mode == SportMode.FOOTBALL:
+        scoreboard_urls = get_scoreboard_urls()
+        
+        # Fetch NFL scores
+        try:
+            nfl_games = fetch_cbs_games_data(scoreboard_urls.get("nfl"))
+            all_games.extend(nfl_games)
+            logger.info("Fetched %d NFL games from CBS", len(nfl_games))
+        except Exception as e:
+            logger.warning("Failed to fetch NFL scores: %s", e)
+        
+        # Fetch CFB scores
+        try:
+            cfb_games = fetch_cbs_games_data(scoreboard_urls.get("cfb"))
+            all_games.extend(cfb_games)
+            logger.info("Fetched %d CFB games from CBS", len(cfb_games))
+        except Exception as e:
+            logger.warning("Failed to fetch CFB scores: %s", e)
+    
+    elif mode == SportMode.MARCH_MADNESS:
+        scoreboard_urls = get_scoreboard_urls()
+        basketball_url = scoreboard_urls.get("college-basketball", CBS_SCOREBOARD_URL)
+        all_games = fetch_cbs_games_data(basketball_url)
+        logger.info("Fetched %d college-basketball games from CBS", len(all_games))
+    
+    return all_games
 
 
 def cbs_status_is_final(time_str: str) -> bool:
@@ -2307,7 +2561,13 @@ def run_auto_resolve_games(db) -> dict:
 
 @app.get("/api/gamescores")
 async def get_game_scores(request: Request):
-    return fetch_cbs_games_data()
+    """
+    Fetch live game scores from CBS scoreboards.
+    
+    Football mode: Returns merged NFL + CFB scores.
+    March Madness mode: Returns college-basketball scores.
+    """
+    return fetch_live_scores_merged()
 
 
 @app.post("/internal/auto-resolve-games")
@@ -2316,28 +2576,48 @@ async def internal_auto_resolve_games(
     x_cron_secret: Optional[str] = Header(None, alias="X-Cron-Secret"),
 ):
     """
-    Secured by CRON_SECRET. Call from GitHub Actions or another scheduler every few minutes.
-    Accepts Authorization: Bearer <secret> or X-Cron-Secret: <secret>.
+    DEPRECATED: Auto-resolve pipeline is no longer active. See PRD-01.
+    
+    This endpoint is preserved for backwards compatibility and still requires
+    CRON_SECRET authentication, but returns a deprecation message instead of
+    performing auto-resolve.
+    
+    Admins now manually enter final scores via the Admin Games UI.
+    
+    Original behavior: Secured by CRON_SECRET, called from GitHub Actions scheduler
+    to scrape CBS scores and auto-resolve game results.
     """
+    # Still require authentication before returning deprecation message
     secret = (os.getenv("CRON_SECRET") or "").strip()
-    # Empty: disabled. Too short: refuse (avoids accidental weak / empty-string env quirks).
     _min_cron = 16
+    
+    # If CRON_SECRET not configured, endpoint is disabled
     if not secret or len(secret) < _min_cron:
         raise HTTPException(
             status_code=503,
             detail=(
                 "CRON_SECRET must be set to a random string of at least "
-                f"{_min_cron} characters (Vercel env + GitHub Actions secret). "
-                "Auto-resolve is disabled until configured."
+                f"{_min_cron} characters. Auto-resolve endpoint is disabled."
             ),
         )
+    
+    # Verify provided token matches secret
     token = None
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:].strip()
     elif x_cron_secret:
         token = x_cron_secret.strip()
+    
     if not token or token != secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    # Authentication passed, return deprecation message
+    return {
+        "status": "deprecated",
+        "message": "Auto-resolve is deprecated. Admins manually enter game results.",
+        "resolved_count": 0,
+        "updated_games": []
+    }
 
     db = get_db()
     try:

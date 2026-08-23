@@ -41,6 +41,17 @@ Spread Pools is a full-stack spread-picking league app. Users authenticate with 
 - **Cron endpoint**: `/internal/auto-resolve-games` requires `Authorization: Bearer <CRON_SECRET>` (minimum 16 characters).
 - **Secrets**: never committed; see `march_madness_backend/.env.example` and `CREDENTIALS.md`.
 
+## Sport configuration
+
+The app supports multiple sports via the `SPORT_MODE` environment variable:
+
+- **Available modes**: `football` (default) | `march_madness`
+- **Backend**: `sport_config.py` provides `get_sport_mode()` and `get_sport_display_config()`
+- **Frontend integration**: `GET /app-config` (unauthenticated) returns current sport mode and display strings
+- **UI adaptation**: Frontend uses sport config to show/hide sport-specific UI (weeks vs rounds, terminology, icons)
+
+Set `SPORT_MODE=football` and `LEAGUE_ID=football_2026` in Vercel for the 2026 football season.
+
 ## Scoring rules
 
 Spread convention (in `scoring.py`):
