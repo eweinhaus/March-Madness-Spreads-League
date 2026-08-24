@@ -147,18 +147,18 @@ def _standard_users():
 
 @pytest.mark.parametrize(
     "u,expected",
-    [
-        ({"make_picks": True}, True),
-        ({}, True),
-        ({"make_picks": True, "hidden": False}, True),
-        ({"make_picks": True, "hidden": True}, False),
-        ({"hidden": True}, False),
-        ({"make_picks": False}, False),
-        ({"make_picks": False, "hidden": False}, False),
-        ({"make_picks": False, "hidden": True}, False),
-        (None, False),
-        ({}, True),
-    ],
+        [
+            ({"make_picks": True}, True),
+            ({"uid": "u_player"}, True),
+            ({"make_picks": True, "hidden": False}, True),
+            ({"make_picks": True, "hidden": True}, False),
+            ({"hidden": True}, False),
+            ({"make_picks": False}, False),
+            ({"make_picks": False, "hidden": False}, False),
+            ({"make_picks": False, "hidden": True}, False),
+            (None, False),
+            ({}, False),
+        ],
 )
 def test_user_is_listed_table(u, expected):
     assert user_is_listed(u) is expected
