@@ -55,13 +55,18 @@ Uncomment emulator host vars in `.env.example`, then:
 firebase emulators:start
 ```
 
-## 5. Make a user admin
+## 5. Make a user admin (or hide them from lists)
 
-After signing in once (creates the Firestore user doc):
+After signing in once (creates the Firestore user doc). Lookup is `--uid` or `--name` (case-insensitive `display_name`); not email.
 
 ```bash
-python scripts/make_admin.py <firebase-uid-or-email>
+python scripts/make_admin.py --uid <firebase-uid> --admin
+python scripts/make_admin.py --name "Display Name" --admin --hidden
+python scripts/make_admin.py --uid <firebase-uid> --no-hidden
+python scripts/make_admin.py <firebase-uid>
 ```
+
+The last form is the legacy UID-only invocation (sets `admin=True`). At least one of `--admin`/`--no-admin` or `--hidden`/`--no-hidden` is required unless using the legacy form. The script invalidates leaderboard, stats, and live caches after a successful update.
 
 ## 6. Auto-resolve cron (production)
 
