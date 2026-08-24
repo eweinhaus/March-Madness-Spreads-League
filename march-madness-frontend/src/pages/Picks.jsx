@@ -264,7 +264,6 @@ export default function Picks() {
       const missingGames = [];
       const periodBuckets = new Map();
       const boundsCache = new Map();
-      const isFootball = appConfig?.sport_mode === "football";
 
       for (const game of gameList) {
         const gid = String(game.game_id);
