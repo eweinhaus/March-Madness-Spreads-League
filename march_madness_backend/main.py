@@ -88,8 +88,10 @@ def _serialize_doc(doc_dict: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 # Disable interactive docs in production for security
+# Vercel sets VERCEL_ENV=production, allow ENVIRONMENT=production too
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-is_production = ENVIRONMENT == "production"
+VERCEL_ENV = os.getenv("VERCEL_ENV", "")
+is_production = ENVIRONMENT == "production" or VERCEL_ENV == "production"
 
 app = FastAPI(
     title="Spread Pools API",
@@ -362,12 +364,20 @@ def get_week_ranges():
     z = ZoneInfo("America/New_York")
     
     for week in get_football_week_labels():
-        # Parse start_date as UTC, convert to ET
+        # Parse start_date as UTC
         start_dt_utc = datetime.fromisoformat(week["start_date"])
-        start_dt_et = start_dt_utc.astimezone(z)
         
-        # Add 7 days in ET civil time (not UTC hours)
-        end_dt_et = start_dt_et + timedelta(weeks=1)
+        # Get ET calendar date, add 7 days, reconstruct as midnight ET
+        start_dt_et = start_dt_utc.astimezone(z)
+        start_date = start_dt_et.date()
+        end_date = start_date + timedelta(days=7)
+        
+        # Construct end as midnight ET on end_date
+        end_dt_et = datetime(
+            end_date.year, end_date.month, end_date.day,
+            0, 0, 0,
+            tzinfo=z
+        )
         end_dt_utc = end_dt_et.astimezone(timezone.utc)
         
         ranges[week["key"]] = {
@@ -2476,9 +2486,20 @@ def get_player_detailed_stats(uid: str):
         week_labels = get_football_week_labels()
         for week_info in week_labels:
             start_dt_utc = datetime.fromisoformat(week_info["start_date"])
+            
+            # Get ET calendar date, add 7 days, reconstruct as midnight ET
             start_dt_et = start_dt_utc.astimezone(z)
-            end_dt_et = start_dt_et + timedelta(weeks=1)
+            start_date = start_dt_et.date()
+            end_date = start_date + timedelta(days=7)
+            
+            # Construct end as midnight ET on end_date
+            end_dt_et = datetime(
+                end_date.year, end_date.month, end_date.day,
+                0, 0, 0,
+                tzinfo=z
+            )
             end_dt_utc = end_dt_et.astimezone(timezone.utc)
+            
             period_meta[week_info["key"]] = {
                 "label": week_info["label"],
                 "week_start": start_dt_utc,

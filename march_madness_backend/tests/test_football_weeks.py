@@ -154,3 +154,41 @@ def test_dst_transition_week_no_gap():
     # Week 9 duration in UTC should be 169 hours (168 + 1 for fall back)
     duration_hours = (week9_end - week9_start).total_seconds() / 3600
     assert duration_hours == 169, f"Week 9 UTC duration should be 169 hours, got {duration_hours}"
+
+
+def test_get_week_ranges_dst_no_gap():
+    """
+    Test get_week_ranges() has no gap at DST transition.
+    Week 9 and week 10 from get_week_ranges() should meet exactly.
+    """
+    from main import get_week_ranges
+    from unittest.mock import patch
+    from sport_config import SportMode
+    
+    # Mock football mode
+    with patch('main.get_sport_mode', return_value=SportMode.FOOTBALL):
+        ranges = get_week_ranges()
+        
+        # Get week 9 and week 10 ranges
+        week9 = ranges.get("week_9")
+        week10 = ranges.get("week_10")
+        
+        assert week9 is not None, "week_9 should exist in ranges"
+        assert week10 is not None, "week_10 should exist in ranges"
+        
+        # Verify week 9 ends exactly when week 10 starts
+        assert week9["end"] == week10["start"], (
+            f"get_week_ranges() DST gap: week 9 ends {week9['end'].isoformat()}, "
+            f"week 10 starts {week10['start'].isoformat()}"
+        )
+        
+        # Verify exact UTC times match DST behavior
+        expected_week9_end = datetime(2026, 11, 4, 5, 0, tzinfo=timezone.utc)
+        expected_week10_start = datetime(2026, 11, 4, 5, 0, tzinfo=timezone.utc)
+        
+        assert week9["end"] == expected_week9_end, (
+            f"Week 9 end should be Nov 4 05:00 UTC (EST), got {week9['end'].isoformat()}"
+        )
+        assert week10["start"] == expected_week10_start, (
+            f"Week 10 start should be Nov 4 05:00 UTC (EST), got {week10['start'].isoformat()}"
+        )
