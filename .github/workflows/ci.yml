@@ -19,3 +19,15 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt pytest
       - run: pytest tests/ -q
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: march-madness-frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --test src/utils/*.test.js

@@ -4,6 +4,7 @@ import { FaLock } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import api from "../api";
 import { groupPicksByTournamentHalf, groupPicksByWeek, getCurrentFootballWeek } from "../utils/etLockDay";
+import { formatMatchupWithHomeLine, formatSpreadSideSuffix } from "../utils/spreadDisplay";
 import { useSportConfig } from "../sportConfig";
 
 export default function Leaderboard() {
@@ -222,9 +223,7 @@ export default function Leaderboard() {
                                             return (
                                               <tr key={pick.game_id} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
                                                 <td className="text-nowrap py-2">
-                                                  {pick.spread < 0
-                                                    ? `${pick.away_team} @ ${pick.home_team} +${Math.abs(pick.spread)}`
-                                                    : `${pick.away_team} @ ${pick.home_team} -${pick.spread}`}
+                                                  {formatMatchupWithHomeLine(pick.spread, pick.home_team, pick.away_team)}
                                                 </td>
                                                 <td className={`py-2 ${pickCellClass}`} style={{
                                                   ...(pick.lock && {
@@ -276,9 +275,7 @@ export default function Leaderboard() {
                                         return (
                                           <tr key={pick.game_id} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
                                             <td className="text-nowrap py-2">
-                                              {pick.spread < 0
-                                                ? `${pick.away_team} @ ${pick.home_team} +${Math.abs(pick.spread)}`
-                                                : `${pick.away_team} @ ${pick.home_team} -${pick.spread}`}
+                                              {formatMatchupWithHomeLine(pick.spread, pick.home_team, pick.away_team)}
                                             </td>
                                             <td className={`py-2 ${pickCellClass}`} style={{
                                               ...(pick.lock && {
@@ -302,9 +299,7 @@ export default function Leaderboard() {
                                                     const normalizeTeamName = (name) => name?.replace(/[\s*]+$/, '');
                                                     const isHomeTeam = normalizeTeamName(pick.picked_team) === normalizeTeamName(pick.home_team);
 
-                                                    return isHomeTeam
-                                                      ? `${pick.picked_team} ${pick.spread < 0 ? `+${Math.abs(pick.spread)}` : `-${pick.spread}`}`
-                                                      : `${pick.picked_team} ${pick.spread < 0 ? `-${Math.abs(pick.spread)}` : `+${pick.spread}`}`
+                                                    return `${pick.picked_team}${formatSpreadSideSuffix(pick.spread, isHomeTeam ? "home" : "away")}`
                                                   })()
                                                 }
                                                 {pick.lock && (
@@ -411,9 +406,7 @@ export default function Leaderboard() {
                             return (
                               <tr key={pick.game_id} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
                                 <td className="text-nowrap py-2">
-                                  {pick.spread < 0
-                                    ? `${pick.away_team} @ ${pick.home_team} +${Math.abs(pick.spread)}`
-                                    : `${pick.away_team} @ ${pick.home_team} -${pick.spread}`}
+                                  {formatMatchupWithHomeLine(pick.spread, pick.home_team, pick.away_team)}
                                 </td>
                                 <td className={`py-2 ${pickCellClass}`} style={{
                                   ...(pick.lock && {
@@ -437,9 +430,7 @@ export default function Leaderboard() {
                                         const normalizeTeamName = (name) => name?.replace(/[\s*]+$/, '');
                                         const isHomeTeam = normalizeTeamName(pick.picked_team) === normalizeTeamName(pick.home_team);
 
-                                        return isHomeTeam
-                                          ? `${pick.picked_team} ${pick.spread < 0 ? `+${Math.abs(pick.spread)}` : `-${pick.spread}`}`
-                                          : `${pick.picked_team} ${pick.spread < 0 ? `-${Math.abs(pick.spread)}` : `+${pick.spread}`}`
+                                        return `${pick.picked_team}${formatSpreadSideSuffix(pick.spread, isHomeTeam ? "home" : "away")}`
                                       })()
                                     }
                                     {pick.lock && (

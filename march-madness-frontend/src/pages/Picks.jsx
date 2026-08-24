@@ -4,6 +4,16 @@ import { useNavigate } from "react-router-dom";
 import { FaLock, FaUnlock } from "react-icons/fa";
 import api from "../api";
 import { sameLockDay, getLockDayBounds, sameWeek, getWeekBounds } from "../utils/etLockDay";
+import {
+  formatSpreadFavorite,
+  formatSpreadSideSuffix,
+} from "../utils/spreadDisplay";
+import {
+  buildSubmitFeedback,
+  collectFailedLabels,
+  createLabeledTask,
+  formatFailedLabels,
+} from "../utils/submitFeedback";
 import SportSpinner from "../components/SportSpinner";
 import { useSportConfig } from "../sportConfig";
 
@@ -57,7 +67,9 @@ export default function Picks() {
   const [existingPicks, setExistingPicks] = useState({});
   const [locks, setLocks] = useState({});
   const [existingLocks, setExistingLocks] = useState({});
-  const [error, setError] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [submitFeedback, setSubmitFeedback] = useState(null);
+  const [lockErrors, setLockErrors] = useState({});
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [tiebreakers, setTiebreakers] = useState([]);
@@ -127,9 +139,9 @@ export default function Picks() {
       .catch(err => {
         if (!handleAuthError(err)) {
           if (err.response && err.response.status === 403) {
-            setError('You do not have permission to make picks. Please contact an administrator.');
+            setLoadError('You do not have permission to make picks. Please contact an administrator.');
           } else {
-            setError('Failed to load games, picks, and tiebreakers');
+            setLoadError('Failed to load games, picks, and tiebreakers');
           }
         }
         setIsLoading(false);
@@ -139,6 +151,12 @@ export default function Picks() {
   const handlePick = useCallback((gameId, team) => {
     const gid = String(gameId);
     setPicks(prev => ({ ...prev, [gid]: team }));
+    setLockErrors(prev => {
+      if (!prev[gid]) return prev;
+      const next = { ...prev };
+      delete next[gid];
+      return next;
+    });
   }, []);
 
   const handleTiebreakerPick = useCallback((tiebreakerId, answer, isNumeric = true) => {
@@ -165,48 +183,79 @@ export default function Picks() {
 
     if (isCurrentlyLocked) {
       setLocks(prev => ({ ...prev, [gid]: false }));
-    } else {
-      const targetGame = games.find(g => String(g.game_id) === gid);
-      if (!targetGame) { setError('Game not found'); return; }
+      setLockErrors(prev => {
+        if (!prev[gid]) return prev;
+        const next = { ...prev };
+        delete next[gid];
+        return next;
+      });
+      return;
+    }
 
-      const allLocks = { ...existingLocks, ...locks };
-      let startedLockedGameInSamePeriod = null;
-      
-      // Use week or day comparison based on sport mode
-      const isFootball = appConfig?.sport_mode === "football";
-      const samePeriod = isFootball ? sameWeek : sameLockDay;
+    if (!(picks[gid] || existingPicks[gid])) {
+      setLockErrors(prev => ({
+        ...prev,
+        [gid]: `Select a team before setting your ${lockLabel}.`,
+      }));
+      return;
+    }
 
-      for (const [lockGid, isLocked] of Object.entries(allLocks)) {
-        if (isLocked) {
-          const lockGame = games.find(g => String(g.game_id) === lockGid);
-          if (lockGame) {
-            if (samePeriod(lockGame.game_date, targetGame.game_date) && picksFrozenForGame(lockGame.game_date)) {
-              startedLockedGameInSamePeriod = lockGame;
-              break;
-            }
+    const targetGame = games.find(g => String(g.game_id) === gid);
+    if (!targetGame) {
+      setSubmitFeedback({
+        variant: "danger",
+        message: "Game not found",
+        failedLabels: [],
+      });
+      return;
+    }
+
+    const allLocks = { ...existingLocks, ...locks };
+    let startedLockedGameInSamePeriod = null;
+
+    // Use week or day comparison based on sport mode (server week bounds stay authoritative).
+    const isFootball = appConfig?.sport_mode === "football";
+    const samePeriod = isFootball ? sameWeek : sameLockDay;
+
+    for (const [lockGid, isLocked] of Object.entries(allLocks)) {
+      if (isLocked) {
+        const lockGame = games.find(g => String(g.game_id) === lockGid);
+        if (lockGame) {
+          if (samePeriod(lockGame.game_date, targetGame.game_date) && picksFrozenForGame(lockGame.game_date)) {
+            startedLockedGameInSamePeriod = lockGame;
+            break;
           }
         }
       }
-
-      if (startedLockedGameInSamePeriod) {
-        setError(`Your locked game (${startedLockedGameInSamePeriod.away_team} @ ${startedLockedGameInSamePeriod.home_team}) has passed the pick cutoff (1 minute before tip) and cannot be changed.`);
-        return;
-      }
-
-      const newLocks = { ...locks };
-
-      const unlockSamePeriod = (lockSource) => {
-        Object.keys(lockSource).forEach(id => {
-          const game = games.find(g => String(g.game_id) === id);
-          if (game && samePeriod(game.game_date, targetGame.game_date)) newLocks[id] = false;
-        });
-      };
-      unlockSamePeriod(newLocks);
-      unlockSamePeriod(existingLocks);
-      newLocks[gid] = true;
-      setLocks(newLocks);
-      setError(null);
     }
+
+    if (startedLockedGameInSamePeriod) {
+      setSubmitFeedback({
+        variant: "danger",
+        message: `Your locked game (${startedLockedGameInSamePeriod.away_team} @ ${startedLockedGameInSamePeriod.home_team}) has passed the pick cutoff (1 minute before tip) and cannot be changed.`,
+        failedLabels: [],
+      });
+      return;
+    }
+
+    const newLocks = { ...locks };
+
+    const unlockSamePeriod = (lockSource) => {
+      Object.keys(lockSource).forEach(id => {
+        const game = games.find(g => String(g.game_id) === id);
+        if (game && samePeriod(game.game_date, targetGame.game_date)) newLocks[id] = false;
+      });
+    };
+    unlockSamePeriod(newLocks);
+    unlockSamePeriod(existingLocks);
+    newLocks[gid] = true;
+    setLocks(newLocks);
+    setLockErrors(prev => {
+      if (!prev[gid]) return prev;
+      const next = { ...prev };
+      delete next[gid];
+      return next;
+    });
   };
 
   /** Single pass; cached period bounds per unique tipoff string. */
@@ -269,39 +318,56 @@ export default function Picks() {
 
   const runSubmitPicks = async () => {
     setIsSubmitting(true);
-    setError(null);
+    setSubmitFeedback(null);
 
     try {
       const gamesToSubmit = new Set([...Object.keys(picks), ...Object.keys(locks)]);
 
       const gamePickResults = await Promise.allSettled(
         Array.from(gamesToSubmit).map((gid) => {
-          const pickedTeam = picks[gid] || existingPicks[gid];
-          if (!pickedTeam) throw new Error(`No pick found for game ${gid}`);
+          const game = games.find((g) => String(g.game_id) === gid);
+          const label = game ? `${game.away_team} @ ${game.home_team}` : `Game ${gid}`;
+          return createLabeledTask(label, async () => {
+            const pickedTeam = picks[gid] || existingPicks[gid];
+            if (!pickedTeam) throw new Error(`No pick found for game ${gid}`);
 
-          const hasLockChange = locks[gid] !== undefined;
-          const isLocked = hasLockChange ? locks[gid] : (existingLocks[gid] || false);
+            const hasLockChange = locks[gid] !== undefined;
+            const isLocked = hasLockChange ? locks[gid] : (existingLocks[gid] || false);
 
-          const data = { game_id: gid, picked_team: pickedTeam };
-          if (hasLockChange) data.lock = isLocked;
+            const data = { game_id: gid, picked_team: pickedTeam };
+            if (hasLockChange) data.lock = isLocked;
 
-          return api.post("/submit_pick", data).then(res => ({ gid, res, data }));
+            const res = await api.post("/submit_pick", data);
+            return { gid, res, data };
+          });
         })
       );
 
       const tiebreakerPickResults = await Promise.allSettled(
-        Object.entries(tiebreakerPicks).map(([tid, answer]) =>
-          api.post("/tiebreaker_picks", { tiebreaker_id: tid, answer }).then(res => ({ tid, res, answer }))
-        )
+        Object.entries(tiebreakerPicks).map(([tid, answer]) => {
+          const tb = tiebreakers.find((t) => String(t.tiebreaker_id) === tid);
+          const label = tb?.question || `Question ${tid}`;
+          return createLabeledTask(label, async () => {
+            const res = await api.post("/tiebreaker_picks", { tiebreaker_id: tid, answer });
+            return { tid, res, answer };
+          });
+        })
       );
 
-      // Count successes/failures
       const gameFulfilled = gamePickResults.filter(r => r.status === "fulfilled");
       const gameRejected = gamePickResults.filter(r => r.status === "rejected");
       const tbFulfilled = tiebreakerPickResults.filter(r => r.status === "fulfilled");
       const tbRejected = tiebreakerPickResults.filter(r => r.status === "rejected");
 
-      // Merge successful picks into state
+      const authRejected = [...gameRejected, ...tbRejected].find(
+        (r) => r.reason?.response?.status === 401
+      );
+      if (authRejected && handleAuthError(authRejected.reason)) {
+        setIsSubmitting(false);
+        return;
+      }
+
+      // Merge successes; leave failed items dirty.
       const newExistingPicks = { ...existingPicks };
       const newExistingLocks = { ...existingLocks };
       const newExistingTiebreakerPicks = { ...existingTiebreakerPicks };
@@ -323,17 +389,16 @@ export default function Picks() {
       setExistingLocks(newExistingLocks);
       setExistingTiebreakerPicks(newExistingTiebreakerPicks);
 
-      // Clear pending state for successful items
       const newPicks = { ...picks };
       const newLocks = { ...locks };
       const newTiebreakerPicks = { ...tiebreakerPicks };
-      
+
       gameFulfilled.forEach(result => {
         const { gid } = result.value;
         delete newPicks[gid];
         delete newLocks[gid];
       });
-      
+
       tbFulfilled.forEach(result => {
         const { tid } = result.value;
         delete newTiebreakerPicks[tid];
@@ -343,52 +408,50 @@ export default function Picks() {
       setLocks(newLocks);
       setTiebreakerPicks(newTiebreakerPicks);
 
-      setIsSubmitting(false);
+      const failedLabels = [
+        ...collectFailedLabels(gamePickResults),
+        ...collectFailedLabels(tiebreakerPickResults),
+      ];
+      const feedback = buildSubmitFeedback({
+        savedGames: gameFulfilled.length,
+        failedGames: gameRejected.length,
+        savedTBs: tbFulfilled.length,
+        failedTBs: tbRejected.length,
+        failedLabels,
+      });
 
-      // Build feedback message
-      const totalGames = gamePickResults.length;
-      const totalTBs = tiebreakerPickResults.length;
-      const savedGames = gameFulfilled.length;
-      const failedGames = gameRejected.length;
-      const savedTBs = tbFulfilled.length;
-      const failedTBs = tbRejected.length;
-
-      let msg = "";
-      if (totalGames > 0) {
-        if (failedGames === 0) {
-          msg = `Saved ${savedGames} pick${savedGames !== 1 ? 's' : ''}`;
-        } else if (savedGames === 0) {
-          msg = `Failed to save ${failedGames} pick${failedGames !== 1 ? 's' : ''}`;
-        } else {
-          msg = `Saved ${savedGames} pick${savedGames !== 1 ? 's' : ''}, ${failedGames} failed`;
-        }
-      }
-
-      if (totalTBs > 0) {
-        if (msg) msg += "; ";
-        if (failedTBs === 0) {
-          msg += `Saved ${savedTBs} tiebreaker${savedTBs !== 1 ? 's' : ''}`;
-        } else if (savedTBs === 0) {
-          msg += `Failed to save ${failedTBs} tiebreaker${failedTBs !== 1 ? 's' : ''}`;
-        } else {
-          msg += `Saved ${savedTBs} tiebreaker${savedTBs !== 1 ? 's' : ''}, ${failedTBs} failed`;
-        }
-      }
-
-      if (msg) alert(msg);
-      
-      // Show first error if any failures
-      if (gameRejected.length > 0 || tbRejected.length > 0) {
+      if (feedback.message || failedLabels.length > 0) {
         const firstError = gameRejected[0]?.reason || tbRejected[0]?.reason;
-        const errorMsg = firstError?.response?.data?.detail || firstError?.message || "Unknown error";
-        setError(`Some picks failed: ${errorMsg}`);
-      } else {
-        setError(null);
+        const detail = firstError?.response?.data?.detail;
+        if (
+          typeof detail === "string" &&
+          (
+            detail.includes("Cannot change lock") ||
+            detail.includes("Your Locked game") ||
+            detail.includes("Cannot unlock") ||
+            detail.includes("Your lock cannot be changed")
+          )
+        ) {
+          setLocks({});
+          setSubmitFeedback({
+            variant: "danger",
+            message: detail,
+            failedLabels,
+          });
+        } else {
+          setSubmitFeedback(feedback);
+        }
       }
+
+      setIsSubmitting(false);
     } catch (err) {
       if (!handleAuthError(err)) {
         if (err.response && err.response.status === 403) {
-          setError("You do not have permission to make picks. Please contact an administrator.");
+          setSubmitFeedback({
+            variant: "danger",
+            message: "You do not have permission to make picks. Please contact an administrator.",
+            failedLabels: [],
+          });
         } else if (err.response?.data?.detail) {
           const detail = err.response.data.detail;
           if (
@@ -397,15 +460,19 @@ export default function Picks() {
             detail.includes("Cannot unlock") ||
             detail.includes("Your lock cannot be changed")
           ) {
-            setError(detail);
             setLocks({});
+            setSubmitFeedback({ variant: "danger", message: detail, failedLabels: [] });
           } else {
-            setError(`Error: ${detail}`);
+            setSubmitFeedback({ variant: "danger", message: `Error: ${detail}`, failedLabels: [] });
           }
         } else if (err.message) {
-          setError(`Error: ${err.message}`);
+          setSubmitFeedback({ variant: "danger", message: `Error: ${err.message}`, failedLabels: [] });
         } else {
-          setError("Failed to submit picks. Please try again.");
+          setSubmitFeedback({
+            variant: "danger",
+            message: "Failed to submit picks. Please try again.",
+            failedLabels: [],
+          });
         }
       }
       setIsSubmitting(false);
@@ -484,8 +551,27 @@ export default function Picks() {
         </Col>
       </Row>
 
-      {error && (
-        <Row className="mb-3 mb-md-4"><Col><Alert variant="danger">{error}</Alert></Col></Row>
+      {loadError && (
+        <Row className="mb-3 mb-md-4"><Col><Alert variant="danger">{loadError}</Alert></Col></Row>
+      )}
+
+      {submitFeedback && (
+        <Row className="mb-3 mb-md-4">
+          <Col>
+            <Alert
+              variant={submitFeedback.variant}
+              dismissible
+              onClose={() => setSubmitFeedback(null)}
+            >
+              <div>{submitFeedback.message}</div>
+              {submitFeedback.failedLabels?.length > 0 && (
+                <div className="mt-1 small">
+                  Failed: {formatFailedLabels(submitFeedback.failedLabels)}
+                </div>
+              )}
+            </Alert>
+          </Col>
+        </Row>
       )}
 
       {(configLoading || isLoading) ? (
@@ -495,7 +581,7 @@ export default function Picks() {
             <span className="ms-3">Loading picks data...</span>
           </div>
         </Col></Row>
-      ) : error ? null : (availableGames.length === 0 && availableTiebreakers.length === 0) ? (
+      ) : loadError ? null : (availableGames.length === 0 && availableTiebreakers.length === 0) ? (
         <Row><Col><Alert variant="info">No available contests to pick at this time</Alert></Col></Row>
       ) : (
         <>
@@ -542,11 +628,7 @@ export default function Picks() {
                           <Card.Text className="mb-3">
                             <div className="mb-1">
                               <strong>Spread:</strong>{' '}
-                              {game.spread === 0 
-                                ? "Pick'em" 
-                                : game.spread > 0 
-                                  ? `${game.home_team} -${game.spread}` 
-                                  : `${game.away_team} -${Math.abs(game.spread)}`}
+                              {formatSpreadFavorite(game.spread, game.home_team, game.away_team)}
                             </div>
                             <div className="mb-1"><strong>Game time:</strong> {formatDateForDisplay(game.game_date)}</div>
                             {existingPick && (
@@ -555,15 +637,20 @@ export default function Picks() {
                                 {isLocked && <span className="ms-2 text-warning"><FaLock /> {lockLabel}</span>}
                               </div>
                             )}
+                            {lockErrors[gid] && (
+                              <Alert variant="danger" className="py-1 px-2 mb-0 mt-2 small">
+                                {lockErrors[gid]}
+                              </Alert>
+                            )}
                           </Card.Text>
                           <div className="d-grid gap-2 mt-auto">
                             <Button variant={selectedTeam === game.away_team ? "success" : "outline-primary"} onClick={() => handlePick(game.game_id, game.away_team)} className="py-2">
                               {game.away_team}
-                              {game.spread !== 0 && (game.spread > 0 ? ` +${game.spread}` : ` -${Math.abs(game.spread)}`)}
+                              {formatSpreadSideSuffix(game.spread, "away")}
                             </Button>
                             <Button variant={selectedTeam === game.home_team ? "success" : "outline-primary"} onClick={() => handlePick(game.game_id, game.home_team)} className="py-2">
                               {game.home_team}
-                              {game.spread !== 0 && (game.spread > 0 ? ` -${game.spread}` : ` +${Math.abs(game.spread)}`)}
+                              {formatSpreadSideSuffix(game.spread, "home")}
                             </Button>
                           </div>
                         </Card.Body>
