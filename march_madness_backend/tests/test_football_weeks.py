@@ -113,3 +113,82 @@ def test_all_week_labels_correct():
     
     # Week 14 specifically
     assert weeks[14]["label"] == "CFB Week 14, NFL Week 13"
+
+
+def test_dst_transition_week_no_gap():
+    """
+    Week 9 spans the 2026 fall DST transition (Nov 1, 2026 02:00 ET).
+    Week bounds should meet exactly with no gap or overlap.
+    
+    Week 9: Wed Oct 28 00:00 ET → Wed Nov 4 00:00 ET
+    Week 10: Wed Nov 4 00:00 ET → Wed Nov 11 00:00 ET
+    
+    In UTC:
+    - Week 9 start: Oct 28 04:00 UTC (EDT, UTC-4)
+    - Week 9 end: Nov 4 05:00 UTC (EST, UTC-5) ← 169 hours later
+    - Week 10 start: Nov 4 05:00 UTC (must equal week 9 end)
+    """
+    # Get week bounds for a time in week 9 (before DST transition)
+    fri_oct_30 = datetime(2026, 10, 30, 20, 0, tzinfo=timezone.utc)  # Friday before DST
+    week9_start, week9_end = get_week_bounds(fri_oct_30)
+    
+    # Get week bounds for a time in week 10 (after DST transition)
+    thu_nov_5 = datetime(2026, 11, 5, 20, 0, tzinfo=timezone.utc)  # Thursday after DST
+    week10_start, week10_end = get_week_bounds(thu_nov_5)
+    
+    # Verify week 9 ends exactly when week 10 starts (no gap, no overlap)
+    assert week9_end == week10_start, (
+        f"DST transition gap detected: week 9 ends {week9_end.isoformat()}, "
+        f"week 10 starts {week10_start.isoformat()}"
+    )
+    
+    # Verify the UTC times are correct for DST transition
+    # Week 9 start: Wed Oct 28 00:00 ET = 04:00 UTC (EDT)
+    expected_week9_start = datetime(2026, 10, 28, 4, 0, tzinfo=timezone.utc)
+    assert week9_start == expected_week9_start
+    
+    # Week 9 end / Week 10 start: Wed Nov 4 00:00 ET = 05:00 UTC (EST)
+    expected_week10_start = datetime(2026, 11, 4, 5, 0, tzinfo=timezone.utc)
+    assert week10_start == expected_week10_start
+    
+    # Week 9 duration in UTC should be 169 hours (168 + 1 for fall back)
+    duration_hours = (week9_end - week9_start).total_seconds() / 3600
+    assert duration_hours == 169, f"Week 9 UTC duration should be 169 hours, got {duration_hours}"
+
+
+def test_get_week_ranges_dst_no_gap():
+    """
+    Test get_week_ranges() has no gap at DST transition.
+    Week 9 and week 10 from get_week_ranges() should meet exactly.
+    """
+    from main import get_week_ranges
+    from unittest.mock import patch
+    from sport_config import SportMode
+    
+    # Mock football mode
+    with patch('main.get_sport_mode', return_value=SportMode.FOOTBALL):
+        ranges = get_week_ranges()
+        
+        # Get week 9 and week 10 ranges
+        week9 = ranges.get("week_9")
+        week10 = ranges.get("week_10")
+        
+        assert week9 is not None, "week_9 should exist in ranges"
+        assert week10 is not None, "week_10 should exist in ranges"
+        
+        # Verify week 9 ends exactly when week 10 starts
+        assert week9["end"] == week10["start"], (
+            f"get_week_ranges() DST gap: week 9 ends {week9['end'].isoformat()}, "
+            f"week 10 starts {week10['start'].isoformat()}"
+        )
+        
+        # Verify exact UTC times match DST behavior
+        expected_week9_end = datetime(2026, 11, 4, 5, 0, tzinfo=timezone.utc)
+        expected_week10_start = datetime(2026, 11, 4, 5, 0, tzinfo=timezone.utc)
+        
+        assert week9["end"] == expected_week9_end, (
+            f"Week 9 end should be Nov 4 05:00 UTC (EST), got {week9['end'].isoformat()}"
+        )
+        assert week10["start"] == expected_week10_start, (
+            f"Week 10 start should be Nov 4 05:00 UTC (EST), got {week10['start'].isoformat()}"
+        )
