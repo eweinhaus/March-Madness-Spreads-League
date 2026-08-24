@@ -3,6 +3,7 @@ import { Modal, Table, Badge, Tabs, Tab, Form, Button } from 'react-bootstrap';
 import { FaLock } from 'react-icons/fa';
 import { format } from 'date-fns';
 import api from '../api';
+import { formatMatchupWithHomeLine } from '../utils/spreadDisplay';
 
 const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
   if (!userPicks) return null;
@@ -95,9 +96,7 @@ const UserPicksModal = ({ show, onHide, userPicks, isAdmin = false }) => {
                   <tr key={game.game_id} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
                     <td className="py-2">{formatDate(game.game_date)}</td>
                     <td className="py-2 text-nowrap">
-                      {game.spread < 0 
-                        ? `${game.away_team} @ ${game.home_team} +${Math.abs(game.spread)}` 
-                        : `${game.away_team} @ ${game.home_team} -${game.spread}`}
+                      {formatMatchupWithHomeLine(game.spread, game.home_team, game.away_team)}
                     </td>
                     <td className="py-2">
                       <div className="d-flex align-items-center">

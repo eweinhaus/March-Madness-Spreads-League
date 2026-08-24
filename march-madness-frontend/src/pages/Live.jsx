@@ -3,6 +3,7 @@ import { Alert, Card, ListGroup, Badge, Container, Spinner, Modal, Button, Row, 
 import { FaLock } from "react-icons/fa";
 import { useNavigate } from "react-router-dom";
 import api from "../api";
+import { formatSpreadFavorite, formatSpreadSideSuffix } from "../utils/spreadDisplay";
 
 export default function Live() {
   const [liveGames, setLiveGames] = useState([]);
@@ -370,9 +371,7 @@ export default function Live() {
                       })()}
                     </Badge>
                     <Badge bg="primary" className="py-2 px-3" style={{ fontSize: '1rem' }}>
-                      {game.spread > 0 
-                        ? `${game.home_team} -${game.spread}` 
-                        : `${game.away_team} -${-game.spread}`}
+                      {formatSpreadFavorite(game.spread, game.home_team, game.away_team)}
                     </Badge>
                   </Card.Header>
                   <Card.Body className="text-center">
@@ -503,7 +502,7 @@ export default function Live() {
                           onClick={() => setShowAwayPicks(!showAwayPicks)} 
                           className="d-flex justify-content-between align-items-center py-3"
                         >
-                          <strong className="text-secondary">{selectedGame.away_team} {selectedGame.spread}</strong>
+                          <strong className="text-secondary">{selectedGame.away_team}{formatSpreadSideSuffix(selectedGame.spread, "away")}</strong>
                           <Badge bg="secondary" className="py-2 px-3">
                             {awayPicks} picked ({awayPercentage}%)
                           </Badge>
@@ -536,7 +535,7 @@ export default function Live() {
                           onClick={() => setShowHomePicks(!showHomePicks)} 
                           className="d-flex justify-content-between align-items-center py-3"
                         >
-                          <strong className="text-secondary">{selectedGame.home_team} {-1 * selectedGame.spread}</strong>
+                          <strong className="text-secondary">{selectedGame.home_team}{formatSpreadSideSuffix(selectedGame.spread, "home")}</strong>
                           <Badge bg="secondary" className="py-2 px-3">
                             {homePicks} picked ({homePercentage}%)
                           </Badge>

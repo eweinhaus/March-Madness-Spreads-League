@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Container, Form, Button, Table, Alert, Modal } from 'react-bootstrap';
 import api from '../api';
+import { formatMatchupWithHomeLine } from '../utils/spreadDisplay';
 
 const AdminGames = () => {
   const [games, setGames] = useState([]);
@@ -313,9 +314,7 @@ const AdminGames = () => {
               <tr key={game.id} style={{ fontSize: '0.85rem', lineHeight: '1.2' }}>
                 <td className="py-2">{formatDateForDisplay(game.game_date)}</td>
                 <td className="py-2 text-nowrap">
-                  {game.spread < 0 
-                    ? `${game.away_team} @ ${game.home_team} +${Math.abs(game.spread)}` 
-                    : `${game.away_team} @ ${game.home_team} -${game.spread}`}
+                  {formatMatchupWithHomeLine(game.spread, game.home_team, game.away_team)}
                 </td>
                 <td className="py-2">
                   {game.winning_team ? (
