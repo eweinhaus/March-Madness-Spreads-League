@@ -1024,7 +1024,8 @@ def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, ga
         points_awarded: Points (default 0 for new picks)
         
     Raises:
-        HTTPException: If cannot unlock started game lock in same period
+        HTTPException: If the target game is tip-locked, or if a same-period
+            lock cannot be unlocked because that game is tip-locked.
     """
     from google.cloud.firestore_v1.base_query import FieldFilter
     
@@ -1050,6 +1051,13 @@ def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, ga
     
     # ===== PHASE 2: VALIDATION (no reads or writes) =====
     
+    # Check if target game is tip-locked (PRD-08)
+    if picks_locked_for_game(current_time, game_date):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot lock this game — picks lock 1 minute before scheduled tip-off.",
+        )
+    
     # Determine target period
     if mode == SportMode.FOOTBALL:
         target_start, target_end = get_week_bounds(game_date)
@@ -1058,8 +1066,8 @@ def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, ga
         target_start, target_end = get_lock_day_bounds(game_date)
         period_label = "day (3am ET–3am ET)"
     
-    # Find same-period lock to unlock
-    lock_to_unlock = None
+    # Collect ALL same-period locks to unlock (PRD-08)
+    locks_to_unlock = []
     for lock in existing_locks:
         if lock["game_id"] == game_id:
             continue
@@ -1080,14 +1088,13 @@ def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, ga
                     status_code=400,
                     detail=f"Cannot lock this game because you already have a lock on a game whose picks have locked for the same {period_label}.",
                 )
-            lock_to_unlock = lock
-            break  # Only one lock per period
+            locks_to_unlock.append(lock)
     
     # ===== PHASE 3: ALL WRITES =====
     
-    # Write 1: Unlock old same-period lock if found
-    if lock_to_unlock:
-        transaction.update(db.collection("picks").document(lock_to_unlock["_id"]), {"lock": False})
+    # Write 1: Unlock ALL same-period locks (PRD-08)
+    for lock in locks_to_unlock:
+        transaction.update(db.collection("picks").document(lock["_id"]), {"lock": False})
     
     # Write 2: Set lock=True on target pick (completes atomic swap)
     if pick_snap.exists:
@@ -1176,6 +1183,20 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
                     detail="Cannot unlock — picks lock 1 minute before scheduled tip-off.",
                 )
 
+    # Transaction already wrote; never 400 on tip-lock after a successful lock swap.
+    if lock_swap_used:
+        invalidate_stats_cache(db)
+        result_pick = {
+            "user_id": current_user.uid,
+            "game_id": pick.game_id,
+            "picked_team": pick.picked_team,
+            "points_awarded": existing_pick.get("points_awarded", 0) if existing_pick else 0,
+            "lock": True,
+            "id": pick_id,
+            "created_at": existing_pick.get("created_at") if existing_pick else get_current_utc_time()
+        }
+        return {"message": "Pick submitted successfully", "pick": _serialize_doc(result_pick)}
+
     if picks_locked:
         is_new_pick = existing_pick is None
         if is_new_pick:
@@ -1196,20 +1217,6 @@ async def submit_pick(pick: PickSubmission, current_user: User = Depends(get_cur
                 detail="Your pick cannot be changed — picks lock 1 minute before scheduled tip-off.",
             )
         return {"message": "No changes after picks locked.", "pick": _serialize_doc({**existing_pick, "id": pick_id})}
-
-    # If lock swap was used, the transaction already created/updated the pick
-    if lock_swap_used:
-        invalidate_stats_cache(db)
-        result_pick = {
-            "user_id": current_user.uid,
-            "game_id": pick.game_id,
-            "picked_team": pick.picked_team,
-            "points_awarded": existing_pick.get("points_awarded", 0) if existing_pick else 0,
-            "lock": True,
-            "id": pick_id,
-            "created_at": existing_pick.get("created_at") if existing_pick else get_current_utc_time()
-        }
-        return {"message": "Pick submitted successfully", "pick": _serialize_doc(result_pick)}
 
     if existing_pick:
         lock_value = pick.lock if pick.lock is not None else existing_pick.get("lock", False)
