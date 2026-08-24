@@ -165,6 +165,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
             league_id=user_data.get("league_id", LEAGUE_ID),
             make_picks=user_data.get("make_picks", True),
             admin=user_data.get("admin", False),
+            hidden=user_data.get("hidden", False),
         )
 
     new_user = {
@@ -194,6 +195,52 @@ async def get_current_admin_user(current_user: User = Depends(get_current_user))
     if not current_user.admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
     return current_user
+
+
+def user_is_listed(u: dict) -> bool:
+    """True if this user belongs on leaderboard, stats, live pick lists, and admin user lists."""
+    if not u:
+        return False
+    if not u.get("make_picks", True):
+        return False
+    if u.get("hidden"):
+        return False
+    return True
+
+
+def _listed_user_ids(db) -> set:
+    """UIDs of make_picks users that are not hidden. Missing hidden still lists."""
+    uids = set()
+    for d in db.collection("users").where("make_picks", "==", True).stream():
+        u = d.to_dict() or {}
+        if not user_is_listed(u):
+            continue
+        uid = u.get("uid") or d.id
+        if uid:
+            uids.add(uid)
+    return uids
+
+
+def _require_listed_user(db, uid: str) -> dict:
+    """Load a user for public/admin by-uid GET views. 404 if missing, spectator, or hidden."""
+    user_snap = db.collection("users").document(uid).get()
+    if not user_snap.exists:
+        raise HTTPException(status_code=404, detail="User not found")
+    u = user_snap.to_dict() or {}
+    if not user_is_listed(u):
+        raise HTTPException(status_code=404, detail="User not found")
+    return u
+
+
+def _consensus_counts_for_listed_users(picks, listed_uids: set) -> dict:
+    """(game_id, picked_team) -> count, excluding users who are not listed."""
+    counts = {}
+    for p in picks:
+        if p.get("user_id") not in listed_uids:
+            continue
+        key = (p.get("game_id"), p.get("picked_team"))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 # ---------------------------------------------------------------------------
 # Validation helpers
@@ -659,11 +706,17 @@ def _leaderboard_list_for_filter(
 def _compute_and_store_leaderboard_cache(db) -> Dict[str, list]:
     users = {}
     for doc in db.collection("users").where("make_picks", "==", True).stream():
-        u = doc.to_dict()
+        u = doc.to_dict() or {}
+        if not user_is_listed(u):
+            continue
         created = _fs_timestamp_to_dt(u.get("created_at"))
         if created and created < _parse_iso("2025-06-01T00:00:00Z"):
             continue
-        users[u["uid"]] = u
+        uid = u.get("uid") or doc.id
+        if not uid:
+            continue
+        u["uid"] = uid
+        users[uid] = u
 
     all_games = {}
     for doc in db.collection("games").stream():
@@ -1441,9 +1494,7 @@ def get_user_picks(uid: str):
     db = get_db()
     current_time = get_current_utc_time()
 
-    user_snap = db.collection("users").document(uid).get()
-    if not user_snap.exists:
-        raise HTTPException(status_code=404, detail="User not found")
+    _require_listed_user(db, uid)
 
     all_games = {}
     for doc in db.collection("games").stream():
@@ -1494,17 +1545,13 @@ def _compute_live_data(db) -> Tuple[List[Any], List[Any]]:
 
     game_ids = [g["id"] for g in games_out]
 
-    make_picks_uids = {
-        (d.to_dict() or {}).get("uid") or d.id
-        for d in db.collection("users").where("make_picks", "==", True).stream()
-        if (d.to_dict() or {}).get("uid") or d.id
-    }
+    listed_uids = _listed_user_ids(db)
 
     picks_by_game: Dict[str, list] = {gid: [] for gid in game_ids}
     for gid in game_ids:
         for snap in db.collection("picks").where("game_id", "==", gid).stream():
             p = snap.to_dict()
-            if p.get("user_id") in make_picks_uids:
+            if p.get("user_id") in listed_uids:
                 picks_by_game[gid].append(p)
 
     live_games_result = []
@@ -1542,7 +1589,7 @@ def _compute_live_data(db) -> Tuple[List[Any], List[Any]]:
                 "tiebreaker_id", "in", list(chunk)
             ).stream():
                 tp = snap.to_dict()
-                if tp.get("user_id") in make_picks_uids:
+                if tp.get("user_id") in listed_uids:
                     tid = tp.get("tiebreaker_id")
                     if tid in picks_count:
                         picks_count[tid] = picks_count.get(tid, 0) + 1
@@ -1622,7 +1669,7 @@ def get_game_picks(game_id: str):
         if not u_snap.exists:
             continue
         u = u_snap.to_dict()
-        if not u.get("make_picks"):
+        if not user_is_listed(u):
             continue
         result.append({
             "display_name": u.get("display_name", u.get("email", "")),
@@ -1667,6 +1714,8 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
     users = {}
     for doc in db.collection("users").where("make_picks", "==", True).stream():
         u = doc.to_dict() or {}
+        if not user_is_listed(u):
+            continue
         uid = u.get("uid") or doc.id
         if not uid:
             continue
@@ -1750,12 +1799,7 @@ async def get_user_picks_status(current_user: User = Depends(get_current_admin_u
 @app.get("/admin/user_all_picks/{uid}")
 async def get_user_all_picks(uid: str, current_user: User = Depends(get_current_admin_user)):
     db = get_db()
-    user_snap = db.collection("users").document(uid).get()
-    if not user_snap.exists:
-        raise HTTPException(status_code=404, detail="User not found")
-    u = user_snap.to_dict()
-    if not u.get("make_picks"):
-        raise HTTPException(status_code=404, detail="User not found")
+    u = _require_listed_user(db, uid)
 
     all_games = {}
     for doc in db.collection("games").order_by("game_date").stream():
@@ -1824,12 +1868,7 @@ async def get_user_all_past_picks(uid: str, filter: str = "overall"):
     db = get_db()
     current_time = get_current_utc_time()
 
-    user_snap = db.collection("users").document(uid).get()
-    if not user_snap.exists:
-        raise HTTPException(status_code=404, detail="User not found")
-    u = user_snap.to_dict()
-    if not u.get("make_picks"):
-        raise HTTPException(status_code=404, detail="User not found")
+    u = _require_listed_user(db, uid)
 
     all_games = {}
     for doc in db.collection("games").stream():
@@ -2043,7 +2082,7 @@ def get_tiebreaker_picks_detail(tiebreaker_id: str):
         if not u_snap.exists:
             continue
         u = u_snap.to_dict()
-        if not u.get("make_picks"):
+        if not user_is_listed(u):
             continue
         result.append({
             "display_name": u.get("display_name", u.get("email", "")),
@@ -2185,11 +2224,17 @@ def pick_is_settled(game: dict) -> bool:
 def _compute_player_stats_list(db) -> list:
     users = {}
     for doc in db.collection("users").where("make_picks", "==", True).stream():
-        u = doc.to_dict()
+        u = doc.to_dict() or {}
+        if not user_is_listed(u):
+            continue
         created = _fs_timestamp_to_dt(u.get("created_at"))
         if created and created < _parse_iso("2025-06-01T00:00:00Z"):
             continue
-        users[u["uid"]] = u
+        uid = u.get("uid") or doc.id
+        if not uid:
+            continue
+        u["uid"] = uid
+        users[uid] = u
 
     all_games = {}
     for doc in db.collection("games").stream():
@@ -2283,9 +2328,7 @@ def get_player_detailed_stats(uid: str):
     db = get_db()
     current_time = get_current_utc_time()
 
-    user_snap = db.collection("users").document(uid).get()
-    if not user_snap.exists:
-        raise HTTPException(status_code=404, detail="User not found")
+    _require_listed_user(db, uid)
 
     all_games = {}
     for doc in db.collection("games").stream():
@@ -2427,13 +2470,13 @@ def get_player_detailed_stats(uid: str):
         }
 
     # Best game: correct pick where fewest others picked the same
-    all_picks_for_consensus = {}
+    listed_uids = _listed_user_ids(db)
+    all_picks_for_consensus_raw = []
     for snap in db.collection("picks").stream():
-        p = snap.to_dict()
-        gid = p.get("game_id")
-        team = p.get("picked_team")
-        key = (gid, team)
-        all_picks_for_consensus[key] = all_picks_for_consensus.get(key, 0) + 1
+        all_picks_for_consensus_raw.append(snap.to_dict() or {})
+    all_picks_for_consensus = _consensus_counts_for_listed_users(
+        all_picks_for_consensus_raw, listed_uids
+    )
 
     best_game = None
     best_consensus = float("inf")

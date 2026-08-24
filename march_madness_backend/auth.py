@@ -12,3 +12,4 @@ class User(BaseModel):
     league_id: str
     make_picks: bool = True
     admin: bool = False
+    hidden: bool = False
