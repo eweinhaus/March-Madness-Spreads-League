@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from typing import Tuple, Optional
+from typing import Callable, List, Sequence, Tuple
 
 PICK_LOCK_BEFORE_TIP = timedelta(minutes=1)
 
@@ -58,6 +58,46 @@ def get_week_bounds(dt_utc):
     end_ny = start_ny + timedelta(weeks=1)
     
     return start_ny.astimezone(timezone.utc), end_ny.astimezone(timezone.utc)
+
+
+def current_pick_period_bounds(
+    now: datetime,
+    upcoming_game_dates: Sequence,
+    bounds_fn: Callable,
+) -> List[Tuple[datetime, datetime]]:
+    """
+    Periods that count as the current pick window for lock-of-week/day status.
+
+    If any upcoming games exist (game_date > now), use the unique week / lock-day
+    bounds of those games (so a Tuesday lock on next week's slate counts).
+    Otherwise fall back to bounds_fn(now).
+    """
+    now = normalize_datetime(now)
+    periods: List[Tuple[datetime, datetime]] = []
+    seen = set()
+    for gd in upcoming_game_dates:
+        gd = normalize_datetime(gd)
+        if gd is None or now is None or gd <= now:
+            continue
+        start, end = bounds_fn(gd)
+        key = (start, end)
+        if key not in seen:
+            seen.add(key)
+            periods.append((start, end))
+    if periods:
+        return periods
+    return [bounds_fn(now)]
+
+
+def datetime_in_periods(dt, periods: Sequence[Tuple[datetime, datetime]]) -> bool:
+    """True if dt falls in any half-open [start, end) period."""
+    dt = normalize_datetime(dt)
+    if dt is None:
+        return False
+    for start, end in periods:
+        if start <= dt < end:
+            return True
+    return False
 
 
 def picks_locked_for_game(current_time, scheduled_utc) -> bool:
