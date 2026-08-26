@@ -3,6 +3,8 @@ from zoneinfo import ZoneInfo
 
 from scoring import (
     compute_covering_team,
+    current_pick_period_bounds,
+    datetime_in_periods,
     get_lock_day_bounds,
     get_week_bounds,
     picks_locked_for_game,
@@ -157,4 +159,34 @@ def test_week_bounds_season_end():
     # Should be in week starting Wed 2026-12-02
     start_et = start.astimezone(ZoneInfo("America/New_York"))
     assert start_et.date() == datetime(2026, 12, 2).date()
+
+
+def test_current_pick_period_tuesday_uses_upcoming_week_not_now():
+    """Tue 2026-08-25 20:00 UTC is still last week; upcoming Thu game is next week."""
+    now = datetime(2026, 8, 25, 20, 0, tzinfo=timezone.utc)
+    upcoming = [datetime(2026, 8, 28, 23, 0, tzinfo=timezone.utc)]
+    periods = current_pick_period_bounds(now, upcoming, get_week_bounds)
+    now_week = get_week_bounds(now)
+    upcoming_week = get_week_bounds(upcoming[0])
+    assert periods == [upcoming_week]
+    assert periods[0] != now_week
+    assert datetime_in_periods(upcoming[0], periods) is True
+    assert datetime_in_periods(datetime(2026, 8, 22, 20, 0, tzinfo=timezone.utc), periods) is False
+
+
+def test_current_pick_period_falls_back_to_now_when_no_upcoming():
+    now = datetime(2026, 8, 25, 20, 0, tzinfo=timezone.utc)
+    periods = current_pick_period_bounds(now, [], get_week_bounds)
+    assert periods == [get_week_bounds(now)]
+    assert datetime_in_periods(datetime(2026, 8, 22, 20, 0, tzinfo=timezone.utc), periods) is True
+
+
+def test_current_pick_period_mm_uses_upcoming_lock_day():
+    """Now is still the previous lock-day (before 3 AM ET); upcoming game is next lock-day."""
+    now = datetime(2026, 3, 19, 6, 0, tzinfo=timezone.utc)  # 2 AM ET Mar 19
+    tomorrow = datetime(2026, 3, 20, 0, 0, tzinfo=timezone.utc)  # 8 PM ET Mar 19
+    periods = current_pick_period_bounds(now, [tomorrow], get_lock_day_bounds)
+    assert periods == [get_lock_day_bounds(tomorrow)]
+    assert periods[0] != get_lock_day_bounds(now)
+    assert datetime_in_periods(tomorrow, periods) is True
 
