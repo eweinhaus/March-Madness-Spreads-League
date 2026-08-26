@@ -11,7 +11,10 @@ from unittest.mock import patch
 from auth import User
 from main import (
     _collapse_picks_by_game_id,
+    _compute_live_data,
+    get_game_picks,
     get_picks_data,
+    get_tiebreaker_picks_detail,
     get_user_all_picks,
     get_user_picks_status,
 )
@@ -289,3 +292,90 @@ def test_picks_data_and_user_all_picks_expose_lock_when_legacy_unlocked_duplicat
     assert len(all_picks["game_picks"]) == 1
     assert all_picks["game_picks"][0]["lock"] is True
     assert all_picks["game_picks"][0]["picked_team"] == "Home"
+
+
+OTHER_UID = "u_other"
+
+
+def _live_duplicate_db():
+    """Started live game: player has legacy unlocked + deterministic locked; other user has one pick."""
+    gid = GAME_ID
+    return FakeDB({
+        "users": [
+            FakeSnap(PLAYER_UID, _user(PLAYER_UID, "Player One")),
+            FakeSnap(OTHER_UID, _user(OTHER_UID, "Player Two")),
+        ],
+        "games": [_game(gid, THIS_WEEK_PAST)],
+        "picks": [
+            _pick(f"{PLAYER_UID}_{gid}", PLAYER_UID, gid, lock=True, picked_team="Home"),
+            _pick("legacy_random_id", PLAYER_UID, gid, lock=False, picked_team="Away"),
+            _pick(f"{OTHER_UID}_{gid}", OTHER_UID, gid, lock=False, picked_team="Away"),
+        ],
+        "tiebreakers": [],
+        "tiebreaker_picks": [],
+    })
+
+
+def test_live_counts_once_and_uses_locked_doc_when_duplicate_picks():
+    db = _live_duplicate_db()
+    with patch("main.get_current_utc_time", return_value=TUESDAY_NOW):
+        live_games, _tbs = _compute_live_data(db)
+    assert len(live_games) == 1
+    row = live_games[0]
+    assert row["total_picks"] == 2
+    assert row["home_picks"] == 1
+    assert row["away_picks"] == 1
+
+
+def test_live_game_picks_names_use_locked_doc():
+    db = _live_duplicate_db()
+    with patch("main.get_db", return_value=db), patch(
+        "main.get_current_utc_time", return_value=TUESDAY_NOW
+    ):
+        names = get_game_picks(GAME_ID)
+    by_uid = {row["uid"]: row for row in names}
+    assert set(by_uid) == {PLAYER_UID, OTHER_UID}
+    assert by_uid[PLAYER_UID]["lock"] is True
+    assert by_uid[PLAYER_UID]["picked_team"] == "Home"
+    assert by_uid[OTHER_UID]["lock"] is False
+    assert by_uid[OTHER_UID]["picked_team"] == "Away"
+
+
+def test_live_tiebreaker_counts_and_names_collapse_duplicate_user_docs():
+    tb_id = "tb1"
+    started = datetime(2026, 8, 25, 18, 0, tzinfo=timezone.utc)
+    db = FakeDB({
+        "users": [FakeSnap(PLAYER_UID, _user(PLAYER_UID, "Player One"))],
+        "games": [],
+        "picks": [],
+        "tiebreakers": [FakeSnap(tb_id, {
+            "question": "Total points?",
+            "start_time": started,
+            "is_active": True,
+            "answer": "",
+        })],
+        "tiebreaker_picks": [
+            FakeSnap(f"{PLAYER_UID}_{tb_id}", {
+                "user_id": PLAYER_UID,
+                "tiebreaker_id": tb_id,
+                "answer": "42",
+            }),
+            FakeSnap("legacy_tb_id", {
+                "user_id": PLAYER_UID,
+                "tiebreaker_id": tb_id,
+                "answer": "7",
+            }),
+        ],
+    })
+    with patch("main.get_current_utc_time", return_value=TUESDAY_NOW):
+        _games, live_tbs = _compute_live_data(db)
+    assert len(live_tbs) == 1
+    assert live_tbs[0]["total_picks"] == 1
+
+    with patch("main.get_db", return_value=db), patch(
+        "main.get_current_utc_time", return_value=TUESDAY_NOW
+    ):
+        names = get_tiebreaker_picks_detail(tb_id)
+    assert len(names) == 1
+    assert names[0]["uid"] == PLAYER_UID
+    assert names[0]["answer"] == "42"

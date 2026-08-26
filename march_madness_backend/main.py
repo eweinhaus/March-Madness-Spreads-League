@@ -246,38 +246,54 @@ def _consensus_counts_for_listed_users(picks, listed_uids: set) -> dict:
 
 
 def _pick_collapse_rank(pick: dict, snap_id: str) -> tuple:
-    """Higher is better: lock=true first, then deterministic {uid}_{game_id} id."""
+    """Higher is better: lock=true first, then deterministic {uid}_{game_id} (or TB) id."""
     uid = pick.get("user_id") or ""
     game_id = pick.get("game_id") or ""
+    tb_id = pick.get("tiebreaker_id") or ""
     is_lock = 1 if pick.get("lock") else 0
-    is_deterministic = 1 if snap_id and snap_id == f"{uid}_{game_id}" else 0
+    is_deterministic = 0
+    if snap_id and uid:
+        if game_id and snap_id == f"{uid}_{game_id}":
+            is_deterministic = 1
+        elif tb_id and snap_id == f"{uid}_{tb_id}":
+            is_deterministic = 1
     return (is_lock, is_deterministic)
 
 
-def _collapse_picks_by_game_id(snaps) -> dict:
+def _collapse_docs_by_key(snaps, key_field: str) -> dict:
     """
-    Map game_id -> pick when a user may have duplicate docs for one game.
+    Collapse pick/tiebreaker-pick snapshots keyed by key_field.
 
-    Preference: lock=true, then deterministic {uid}_{game_id} id, then last.
-    Legacy random-id unlocked docs must not hide a locked deterministic pick.
+    Preference: lock=true, then deterministic {uid}_{game_id} / {uid}_{tiebreaker_id},
+    then last. Legacy random-id unlocked docs must not hide a locked deterministic pick.
     """
-    user_picks = {}
+    out = {}
     ranks = {}
     for snap in snaps:
         p = snap.to_dict() if hasattr(snap, "to_dict") else snap
         if not p:
             continue
-        game_id = p.get("game_id")
-        if not game_id:
+        key = p.get(key_field)
+        if not key:
             continue
         snap_id = getattr(snap, "id", None) or p.get("id") or ""
         merged = {**p, "id": snap_id}
         rank = _pick_collapse_rank(merged, snap_id)
-        prev_rank = ranks.get(game_id)
+        prev_rank = ranks.get(key)
         if prev_rank is None or rank >= prev_rank:
-            user_picks[game_id] = merged
-            ranks[game_id] = rank
-    return user_picks
+            out[key] = merged
+            ranks[key] = rank
+    return out
+
+
+def _collapse_picks_by_game_id(snaps) -> dict:
+    """Map game_id -> pick when a user may have duplicate docs for one game."""
+    return _collapse_docs_by_key(snaps, "game_id")
+
+
+def _collapse_picks_by_user_id(snaps) -> dict:
+    """Map user_id -> pick when a game may have duplicate docs for one user."""
+    return _collapse_docs_by_key(snaps, "user_id")
 
 # ---------------------------------------------------------------------------
 # Validation helpers
@@ -1629,10 +1645,11 @@ def _compute_live_data(db) -> Tuple[List[Any], List[Any]]:
 
     picks_by_game: Dict[str, list] = {gid: [] for gid in game_ids}
     for gid in game_ids:
-        for snap in db.collection("picks").where("game_id", "==", gid).stream():
-            p = snap.to_dict()
-            if p.get("user_id") in listed_uids:
-                picks_by_game[gid].append(p)
+        snaps = db.collection("picks").where("game_id", "==", gid).stream()
+        collapsed = _collapse_picks_by_user_id(snaps)
+        picks_by_game[gid] = [
+            p for p in collapsed.values() if p.get("user_id") in listed_uids
+        ]
 
     live_games_result = []
     for g in sorted(games_out, key=lambda x: _fs_timestamp_to_dt(x.get("game_date")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True):
@@ -1661,18 +1678,23 @@ def _compute_live_data(db) -> Tuple[List[Any], List[Any]]:
             tbs.append(t)
 
     tb_ids = [t["id"] for t in tbs]
-    picks_count = {tid: 0 for tid in tb_ids}
+    tb_snaps_by_id: Dict[str, list] = {tid: [] for tid in tb_ids}
     if tb_ids:
         for i in range(0, len(tb_ids), _FIRESTORE_IN_QUERY_MAX):
             chunk = tb_ids[i : i + _FIRESTORE_IN_QUERY_MAX]
             for snap in db.collection("tiebreaker_picks").where(
                 "tiebreaker_id", "in", list(chunk)
             ).stream():
-                tp = snap.to_dict()
-                if tp.get("user_id") in listed_uids:
-                    tid = tp.get("tiebreaker_id")
-                    if tid in picks_count:
-                        picks_count[tid] = picks_count.get(tid, 0) + 1
+                tp = snap.to_dict() if hasattr(snap, "to_dict") else snap
+                tid = (tp or {}).get("tiebreaker_id")
+                if tid in tb_snaps_by_id:
+                    tb_snaps_by_id[tid].append(snap)
+    picks_count = {}
+    for tid, snaps in tb_snaps_by_id.items():
+        collapsed = _collapse_docs_by_key(snaps, "user_id")
+        picks_count[tid] = sum(
+            1 for p in collapsed.values() if p.get("user_id") in listed_uids
+        )
 
     live_tiebreakers_result = []
     for t in sorted(tbs, key=lambda x: _fs_timestamp_to_dt(x.get("start_time")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True):
@@ -1742,10 +1764,16 @@ def get_game_picks(game_id: str):
     if game_date and game_date > current_time:
         raise HTTPException(status_code=403, detail="Picks not available until game starts")
     
+    collapsed = _collapse_picks_by_user_id(
+        db.collection("picks").where("game_id", "==", game_id).stream()
+    )
+
     result = []
-    for snap in db.collection("picks").where("game_id", "==", game_id).stream():
-        p = snap.to_dict()
-        u_snap = db.collection("users").document(p["user_id"]).get()
+    for p in collapsed.values():
+        uid = p.get("user_id")
+        if not uid:
+            continue
+        u_snap = db.collection("users").document(uid).get()
         if not u_snap.exists:
             continue
         u = u_snap.to_dict()
@@ -1753,7 +1781,7 @@ def get_game_picks(game_id: str):
             continue
         result.append({
             "display_name": u.get("display_name", u.get("email", "")),
-            "uid": p["user_id"],
+            "uid": uid,
             "picked_team": p.get("picked_team"),
             "lock": p.get("lock", False),
         })
@@ -2154,10 +2182,17 @@ def get_tiebreaker_picks_detail(tiebreaker_id: str):
     if start_time and start_time > current_time:
         raise HTTPException(status_code=403, detail="Picks not available until tiebreaker starts")
     
+    collapsed = _collapse_docs_by_key(
+        db.collection("tiebreaker_picks").where("tiebreaker_id", "==", tiebreaker_id).stream(),
+        "user_id",
+    )
+
     result = []
-    for snap in db.collection("tiebreaker_picks").where("tiebreaker_id", "==", tiebreaker_id).stream():
-        tp = snap.to_dict()
-        u_snap = db.collection("users").document(tp["user_id"]).get()
+    for tp in collapsed.values():
+        uid = tp.get("user_id")
+        if not uid:
+            continue
+        u_snap = db.collection("users").document(uid).get()
         if not u_snap.exists:
             continue
         u = u_snap.to_dict()
@@ -2165,7 +2200,7 @@ def get_tiebreaker_picks_detail(tiebreaker_id: str):
             continue
         result.append({
             "display_name": u.get("display_name", u.get("email", "")),
-            "uid": tp["user_id"],
+            "uid": uid,
             "answer": tp.get("answer"),
         })
     result.sort(key=lambda x: x["display_name"])
