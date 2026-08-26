@@ -1053,6 +1053,52 @@ async def delete_game(game_id: str, current_user: User = Depends(get_current_adm
 # Picks
 # ---------------------------------------------------------------------------
 
+class _MissingTxnSnapshot:
+    """Stand-in when Transaction.get yields None for a missing document."""
+
+    exists = False
+    id = None
+
+    def to_dict(self):
+        return None
+
+
+def _document_snapshot_from_txn_get(result):
+    """Coerce Transaction.get() output to a single document snapshot.
+
+    google-cloud-firestore (pulled by firebase-admin>=6.4.0) implements
+    Transaction.get(DocumentReference) as ``client.get_all([ref],
+    transaction=self)``. That is a generator/stream of snapshots, and a
+    missing document may yield None.
+
+    Calling ``.exists`` on the generator raises AttributeError, which
+    submit_pick's lock-on path caught as HTTP 500 "Failed to update lock
+    status". Unlock never enters this function (plain reference.update),
+    which matches the production report.
+
+    Older clients and unit-test mocks may return a snapshot directly.
+    DocumentReference.get(transaction=) also returns a snapshot and is used
+    elsewhere in this module; this helper stays on Transaction.get so
+    existing transactional mocks keep working.
+    """
+    if result is not None and hasattr(result, "exists"):
+        return result
+    if result is None:
+        return _MissingTxnSnapshot()
+    try:
+        snap = next(iter(result), None)
+    except TypeError:
+        return result
+    if snap is None:
+        return _MissingTxnSnapshot()
+    return snap
+
+
+def _txn_get_snapshot(transaction, ref):
+    """Read one document inside a Firestore transaction as a snapshot."""
+    return _document_snapshot_from_txn_get(transaction.get(ref))
+
+
 @google.cloud.firestore.transactional
 def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, game_id: str, game_date, picked_team: str, mode: SportMode, current_time, points_awarded: int = 0):
     """
@@ -1092,15 +1138,15 @@ def _atomic_lock_swap_and_update(transaction, db, user_id: str, pick_id: str, ga
     for snap in query.stream(transaction=transaction):
         ld = snap.to_dict()
         ld["_id"] = snap.id
-        # Read 2: Get game for each lock
-        g_snap = transaction.get(db.collection("games").document(ld["game_id"]))
+        # Read 2: Get game for each lock (snapshot, not Transaction.get stream)
+        g_snap = _txn_get_snapshot(transaction, db.collection("games").document(ld["game_id"]))
         if g_snap.exists:
             ld["game_date"] = _fs_timestamp_to_dt(g_snap.to_dict()["game_date"])
         existing_locks.append(ld)
     
     # Read 3: Get target pick BEFORE any writes
     pick_ref = db.collection("picks").document(pick_id)
-    pick_snap = transaction.get(pick_ref)
+    pick_snap = _txn_get_snapshot(transaction, pick_ref)
     
     # ===== PHASE 2: VALIDATION (no reads or writes) =====
     
