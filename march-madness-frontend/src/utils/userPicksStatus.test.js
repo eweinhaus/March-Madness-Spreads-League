@@ -65,7 +65,7 @@ describe("formatUserPicksStatus", () => {
     );
   });
 
-  it("warns for incomplete with a lock set (Blair-shaped row)", () => {
+  it("warns for incomplete with a lock set", () => {
     assert.deepEqual(
       formatUserPicksStatus({
         picks_made: 0,
