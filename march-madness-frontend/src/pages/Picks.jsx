@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { Container, Row, Col, Card, Button, Alert, Form, Modal } from "react-bootstrap";
 import { useNavigate } from "react-router-dom";
 import { FaLock, FaUnlock } from "react-icons/fa";
@@ -14,8 +14,11 @@ import {
   createLabeledTask,
   formatFailedLabels,
 } from "../utils/submitFeedback";
+import { isLockOnlyIncomplete, lockOnlyWarningCopy } from "../utils/incompleteSubmit";
 import SportSpinner from "../components/SportSpinner";
 import { useSportConfig } from "../sportConfig";
+
+const SAVE_ANYWAY_ARM_MS = 4000;
 
 const NY_TZ = "America/New_York";
 
@@ -82,10 +85,14 @@ export default function Picks() {
     missingQuestions: [],
   });
   const [isCheckingWarnings, setIsCheckingWarnings] = useState(false);
+  const [saveAnywayArmed, setSaveAnywayArmed] = useState(false);
+  const saveAnywayArmedUntilRef = useRef(0);
+  const saveAnywayTimerRef = useRef(null);
   const navigate = useNavigate();
 
   // Get sport config from provider (no duplicate fetch)
   const { config: appConfig, loading: configLoading } = useSportConfig();
+  const picksLoading = configLoading || isLoading;
 
   // Determine if lock UI should be shown and labels
   const showLockUI = appConfig?.sport_mode === "football";
@@ -536,9 +543,54 @@ export default function Picks() {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [hasUnsavedChanges]);
 
+  const resetSaveAnywayArmed = useCallback(() => {
+    setSaveAnywayArmed(false);
+    saveAnywayArmedUntilRef.current = 0;
+    if (saveAnywayTimerRef.current) {
+      clearTimeout(saveAnywayTimerRef.current);
+      saveAnywayTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => resetSaveAnywayArmed(), [resetSaveAnywayArmed]);
+
+  const closeSubmitWarning = () => {
+    resetSaveAnywayArmed();
+    setShowSubmitWarning(false);
+  };
+
   const confirmSubmitDespiteWarnings = () => {
+    resetSaveAnywayArmed();
     setShowSubmitWarning(false);
     runSubmitPicks();
+  };
+
+  const lockOnlyIncomplete = isLockOnlyIncomplete({
+    showLockUI,
+    warnings: submitWarnings,
+    availableGames,
+    locks,
+    existingLocks,
+  });
+
+  const onSaveAnywayClick = () => {
+    if (!lockOnlyIncomplete) {
+      confirmSubmitDespiteWarnings();
+      return;
+    }
+    const now = Date.now();
+    if (now < saveAnywayArmedUntilRef.current) {
+      confirmSubmitDespiteWarnings();
+      return;
+    }
+    saveAnywayArmedUntilRef.current = now + SAVE_ANYWAY_ARM_MS;
+    setSaveAnywayArmed(true);
+    if (saveAnywayTimerRef.current) clearTimeout(saveAnywayTimerRef.current);
+    saveAnywayTimerRef.current = setTimeout(() => {
+      setSaveAnywayArmed(false);
+      saveAnywayArmedUntilRef.current = 0;
+      saveAnywayTimerRef.current = null;
+    }, SAVE_ANYWAY_ARM_MS);
   };
 
   return (
@@ -573,7 +625,7 @@ export default function Picks() {
         </Row>
       )}
 
-      {(configLoading || isLoading) ? (
+      {picksLoading ? (
         <Row><Col className="text-center">
           <div className="d-flex justify-content-center align-items-center" style={{ minHeight: '200px' }}>
             <SportSpinner />
@@ -708,25 +760,52 @@ export default function Picks() {
             </>
           )}
 
-          {(Object.keys(picks).length > 0 || Object.keys(tiebreakerPicks).length > 0 || Object.keys(locks).length > 0) && (
-            <Row className="mt-4"><Col className="d-flex justify-content-center">
-              <Button variant="success" size="lg" onClick={onSubmitClick} disabled={isSubmitting || isCheckingWarnings} className="px-4 py-2">Save Picks</Button>
-            </Col></Row>
+          {!picksLoading && hasUnsavedChanges && (
+            <Row className="mt-4">
+              <Col className="d-flex flex-column align-items-center">
+                <Button
+                  variant="success"
+                  size="lg"
+                  onClick={onSubmitClick}
+                  disabled={isSubmitting || isCheckingWarnings || picksLoading}
+                  title={picksLoading ? "Loading games…" : undefined}
+                  className="px-4 py-2"
+                >
+                  Save Picks
+                </Button>
+                {picksLoading && (
+                  <div className="text-muted small mt-2">Loading games…</div>
+                )}
+              </Col>
+            </Row>
           )}
         </>
       )}
 
-      <Modal show={showSubmitWarning} onHide={() => setShowSubmitWarning(false)} centered>
+      <Modal show={showSubmitWarning} onHide={closeSubmitWarning} centered>
         <Modal.Header closeButton>
-          <Modal.Title>Before you submit</Modal.Title>
+          <Modal.Title>
+            {lockOnlyIncomplete ? "Save incomplete slate?" : "Before you submit"}
+          </Modal.Title>
         </Modal.Header>
         <Modal.Body>
-          {(submitWarnings.missingGames.length > 0 ||
-            (showLockUI && submitWarnings.missingLockDays.length > 0) ||
-            submitWarnings.missingQuestions.length > 0) && (
-            <p className="text-muted small mb-3">
-              You still have incomplete entries. You can go back to finish them, or save anyway — only games and answers you&apos;ve changed will be saved.
-            </p>
+          {lockOnlyIncomplete ? (
+            <Alert variant="warning" className="mb-3">
+              {lockOnlyWarningCopy({
+                lockLabel,
+                pickedCount: availableGames.length - submitWarnings.missingGames.length,
+                openCount: availableGames.length,
+                missingCount: submitWarnings.missingGames.length,
+              })}
+            </Alert>
+          ) : (
+            (submitWarnings.missingGames.length > 0 ||
+              (showLockUI && submitWarnings.missingLockDays.length > 0) ||
+              submitWarnings.missingQuestions.length > 0) && (
+              <p className="text-muted small mb-3">
+                You still have incomplete entries. You can go back to finish them, or save anyway — only games and answers you&apos;ve changed will be saved.
+              </p>
+            )
           )}
           {submitWarnings.missingGames.length > 0 && (
             <>
@@ -766,11 +845,18 @@ export default function Picks() {
           )}
         </Modal.Body>
         <Modal.Footer className="d-flex flex-wrap gap-2 justify-content-between">
-          <Button variant="outline-secondary" onClick={() => setShowSubmitWarning(false)}>
+          <Button variant="success" onClick={closeSubmitWarning}>
             Go back
           </Button>
-          <Button variant="success" onClick={confirmSubmitDespiteWarnings}>
-            Save anyway
+          <Button variant="outline-secondary" onClick={onSaveAnywayClick}>
+            {lockOnlyIncomplete && saveAnywayArmed ? (
+              <>
+                <span className="d-sm-none">Tap again to save incomplete</span>
+                <span className="d-none d-sm-inline">Click again to save incomplete</span>
+              </>
+            ) : (
+              "Save anyway"
+            )}
           </Button>
         </Modal.Footer>
       </Modal>
