@@ -3,6 +3,7 @@ import { Container, Table, Alert, Card, Button } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
 import UserPicksModal from '../components/UserPicksModal';
+import { formatUserPicksStatus } from '../utils/userPicksStatus';
 
 const AdminUserPicks = () => {
   const [userPicksStatus, setUserPicksStatus] = useState([]);
@@ -154,7 +155,7 @@ const AdminUserPicks = () => {
             {/* Locks Progress Bar */}
             <div className="mb-3">
               <div className="d-flex justify-content-between align-items-center mb-2">
-                <span className="h6 mb-0 fw-bold">Locks Completed</span>
+                <span className="h6 mb-0 fw-bold">Locks set</span>
                 <span className="h6 mb-0 text-warning">{locksProgressPercentage}%</span>
               </div>
               <div className="progress mb-2" style={{ height: '25px' }}>
@@ -201,8 +202,7 @@ const AdminUserPicks = () => {
               <tr className="text-nowrap" style={{ fontSize: '0.9rem', lineHeight: '1.3' }}>
                 <th className="py-2">Name</th>
                 <th className="py-2">Progress</th>
-                <th className="py-2">Pick Status</th>
-                <th className="py-2">Lock Status</th>
+                <th className="py-2">Status</th>
               </tr>
             </thead>
             <tbody className="small">
@@ -218,7 +218,11 @@ const AdminUserPicks = () => {
                   }
                   return a.display_name.localeCompare(b.display_name);
                 })
-                .map((user) => (
+                .map((user) => {
+                const status = formatUserPicksStatus(user, {
+                  expectsLock: appConfig?.sport_mode !== 'march_madness',
+                });
+                return (
                 <tr 
                   key={user.uid}
                   onClick={() => handleUserClick(user.uid)}
@@ -254,22 +258,15 @@ const AdminUserPicks = () => {
                   </td>
                   <td className="py-2">
                     <span
-                      className={`badge ${user.total_games === 0 ? 'bg-secondary' : user.is_complete ? 'bg-success' : 'bg-warning'}`}
+                      className={`badge bg-${status.variant}`}
                       style={{ fontSize: '0.75rem', padding: '0.25em 0.5em' }}
                     >
-                      {user.total_games === 0 ? 'No games remaining' : user.is_complete ? 'All Picks Submitted' : 'Missing Picks'}
-                    </span>
-                  </td>
-                  <td className="py-2">
-                    <span
-                      className={`badge ${user.has_current_period_lock ? 'bg-success' : 'bg-danger'}`}
-                      style={{ fontSize: '0.75rem', padding: '0.25em 0.5em' }}
-                    >
-                      {user.has_current_period_lock ? 'Submitted' : 'Unsubmitted'}
+                      {status.text}
                     </span>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </Table>
         </Card.Body>
