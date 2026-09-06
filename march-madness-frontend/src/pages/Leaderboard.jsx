@@ -151,6 +151,11 @@ export default function Leaderboard() {
                 {index + 1}. {player.display_name}
               </div>
               <div className="d-flex align-items-center gap-2">
+                {config?.sport_mode === 'football' && typeof player.total_wins === 'number' && (
+                  <span className="badge bg-dark rounded-pill">
+                    {player.total_wins} wins
+                  </span>
+                )}
                 <span className="badge bg-primary rounded-pill">
                   {player.total_points} points
                 </span>
@@ -159,10 +164,11 @@ export default function Leaderboard() {
                 </span>
                 {(() => {
                   const isFootball = config?.sport_mode === 'football';
-                  const showTB = isFootball 
-                    ? player.first_tiebreaker_diff !== 999999
-                    : filter !== 'overall' && player.first_tiebreaker_diff !== 999999;
-                  
+                  // Football rank is wins → locks → name; TB is not a sort key.
+                  const showTB = !isFootball
+                    && filter !== 'overall'
+                    && player.first_tiebreaker_diff !== 999999;
+
                   return showTB && (
                     <span className="badge bg-info rounded-pill" style={{ fontSize: '0.75rem' }}>
                       TB: {player.first_tiebreaker_diff.toFixed(1)}

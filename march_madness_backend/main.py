@@ -549,6 +549,8 @@ def _filter_by_week(items, date_key, filter_key):
 # Leaderboard: cache full computed tables in Firestore (1 read per request vs ~3k+).
 LEADERBOARD_CACHE_COLLECTION = "_cache"
 LEADERBOARD_CACHE_DOC_ID = "leaderboard_v1"
+# Bump when football/MM sort keys change so stale cached ranks are not served.
+LEADERBOARD_SORT_VERSION = "football_wins_locks_name_v1"
 
 # Compute filter keys dynamically based on sport mode
 def _get_leaderboard_filter_keys():
@@ -638,9 +640,11 @@ def _leaderboard_list_for_filter(
     """
     Compute leaderboard for a given filter period.
     
-    Football mode: total_points (game picks only) DESC, first_tiebreaker_diff ASC,
-                   correct_locks DESC, display_name ASC. One numerical TB per period
-                   (earliest start_time); TB awards 0 points (ranking-only).
+    Football mode: total_wins DESC, correct_locks DESC, display_name ASC
+                   (case-insensitive). Numerical TB is not a sort key; it is
+                   still computed for display. Scoring is unchanged (lock = 2 pts).
+                   A win is a settled ATS-correct pick (points_awarded 1 or 2);
+                   a correct lock counts as one win, not two.
     
     March Madness mode: Uses 3 TBs, includes TB points in total_points, separate
                         overall vs period sort logic.
@@ -650,16 +654,21 @@ def _leaderboard_list_for_filter(
     
     mode = get_sport_mode()
 
-    # Compute game points and correct locks (same for both modes)
+    # Compute game points, ATS wins, and correct locks (same for both modes)
     user_game_points = {}
     user_correct_locks = {}
+    user_total_wins = {}
     for p in filtered_picks:
         uid = p.get("user_id")
         if uid not in users:
             continue
-        user_game_points[uid] = user_game_points.get(uid, 0) + (p.get("points_awarded") or 0)
+        pts = p.get("points_awarded") or 0
+        user_game_points[uid] = user_game_points.get(uid, 0) + pts
         if p.get("lock") and p.get("points_awarded") == 2:
             user_correct_locks[uid] = user_correct_locks.get(uid, 0) + 1
+        # Settled correct ATS pick: unlock (1) or lock (2). PUSH / miss / unsettled = 0.
+        if pts in (1, 2):
+            user_total_wins[uid] = user_total_wins.get(uid, 0) + 1
 
     # Compute tiebreaker accuracy
     user_tb_accuracy = {}
@@ -688,10 +697,11 @@ def _leaderboard_list_for_filter(
     leaderboard = []
     
     if mode == SportMode.FOOTBALL:
-        # Football: total_points = game picks only (no TB points)
-        # Ranking: total_points DESC, first_tiebreaker_diff ASC, correct_locks DESC, display_name ASC
+        # Football: total_points = game picks only (no TB points). Scoring unchanged.
+        # Ranking: total_wins DESC, correct_locks DESC, display_name ASC
         for uid, u in users.items():
             total_points = user_game_points.get(uid, 0)  # Game picks only
+            total_wins = user_total_wins.get(uid, 0)
             correct_locks = user_correct_locks.get(uid, 0)
             accuracy_list = user_tb_accuracy.get(uid, [])
             first_diff = accuracy_list[0][1] if len(accuracy_list) > 0 else 999999
@@ -700,6 +710,7 @@ def _leaderboard_list_for_filter(
                 "display_name": u.get("display_name", u.get("email", "")),
                 "uid": uid,
                 "total_points": total_points,
+                "total_wins": total_wins,
                 "correct_locks": correct_locks,
                 "first_tiebreaker_diff": first_diff,
                 "second_tiebreaker_diff": 999999,  # Not used in football
@@ -708,8 +719,7 @@ def _leaderboard_list_for_filter(
 
         # Same sort for all filters (including overall)
         leaderboard.sort(key=lambda x: (
-            -x["total_points"],              # Game points DESC
-            x["first_tiebreaker_diff"],      # Closest TB guess ASC
+            -x["total_wins"],                # ATS wins DESC (correct lock = 1 win)
             -x["correct_locks"],             # Correct locks DESC
             x["display_name"].lower(),       # Name ASC (case-insensitive)
         ))
@@ -808,7 +818,7 @@ def _compute_and_store_leaderboard_cache(db) -> Dict[str, list]:
         for fk in _LEADERBOARD_FILTER_KEYS
     }
     db.collection(LEADERBOARD_CACHE_COLLECTION).document(LEADERBOARD_CACHE_DOC_ID).set(
-        {**cached, "updated_at": server_timestamp()},
+        {**cached, "updated_at": server_timestamp(), "sort_version": LEADERBOARD_SORT_VERSION},
     )
     return cached
 
@@ -896,7 +906,7 @@ def update_leaderboard_totals(db, user_ids: list):
     """
     Recalculate total_points for each user_id from picks.
     
-    Football mode: total_points = game picks only (tiebreaker used for ranking tiebreak, not points).
+    Football mode: total_points = game picks only (TB is not points and not a sort key).
     March Madness mode: total_points = game picks + tiebreaker picks (both award points).
     """
     mode = get_sport_mode()
@@ -1558,9 +1568,10 @@ def _get_leaderboard_response(db, filter_key: str) -> list:
         snap = cache_ref.get()
         if snap.exists:
             data = snap.to_dict() or {}
-            row = data.get(filter_key)
-            if row is not None:
-                return row
+            if data.get("sort_version") == LEADERBOARD_SORT_VERSION:
+                row = data.get(filter_key)
+                if row is not None:
+                    return row
 
         if _try_acquire_leaderboard_build_lock(db):
             try:
