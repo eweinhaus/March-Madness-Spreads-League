@@ -12,7 +12,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, validator
 import os
 from dotenv import load_dotenv
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import logging
 import time
@@ -127,6 +127,23 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # Auth dependency – Firebase ID token verification + get-or-create user
 # ---------------------------------------------------------------------------
 
+# Inclusive America/New_York calendar date; after this day new users are visible.
+AUTO_HIDE_NEW_USERS_THROUGH = date(2026, 12, 31)
+
+
+def new_user_should_auto_hide(now_utc: Optional[datetime] = None) -> bool:
+    """True when a brand-new user should be created with hidden=True.
+
+    Uses the America/New_York calendar date of now_utc (or current UTC).
+    Inclusive through AUTO_HIDE_NEW_USERS_THROUGH (2026-12-31 ET).
+    """
+    now = now_utc or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    local_day = now.astimezone(ZoneInfo("America/New_York")).date()
+    return local_day <= AUTO_HIDE_NEW_USERS_THROUGH
+
+
 async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     """Verify Firebase ID token and return the app user (get-or-create in Firestore)."""
     credentials_exception = HTTPException(
@@ -170,6 +187,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
             hidden=user_data.get("hidden", False),
         )
 
+    auto_hidden = new_user_should_auto_hide()
     new_user = {
         "uid": uid,
         "email": email,
@@ -177,6 +195,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
         "league_id": LEAGUE_ID,
         "make_picks": True,
         "admin": False,
+        "hidden": auto_hidden,
         "created_at": server_timestamp(),
     }
     user_ref.set(new_user)
@@ -190,6 +209,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
         league_id=LEAGUE_ID,
         make_picks=True,
         admin=False,
+        hidden=auto_hidden,
     )
 
 

@@ -27,7 +27,7 @@ Spread Pools is a full-stack spread-picking league app. Users authenticate with 
 
 | Collection | Purpose |
 |------------|---------|
-| `users` | App profile keyed by Firebase UID (admin flag, optional `hidden` omit-from-lists flag, league, display name) |
+| `users` | App profile keyed by Firebase UID (admin flag, optional `hidden` omit-from-lists flag, league, display name). New users are created with `hidden: true` through 2026-12-31 ET; `hidden: false` afterward. Existing docs are not rewritten on login. |
 | `games` | Matchups with spread, schedule, scores, winning team |
 | `picks` | User picks per game (optional lock-of-the-day `*` suffix) |
 | `tiebreaker_picks` | Bonus tiebreaker answers |

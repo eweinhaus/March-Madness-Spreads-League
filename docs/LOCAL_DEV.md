@@ -57,7 +57,7 @@ firebase emulators:start
 
 ## 5. Make a user admin (or hide them from lists)
 
-After signing in once (creates the Firestore user doc). Lookup is `--uid` or `--name` (case-insensitive `display_name`); not email.
+After signing in once (creates the Firestore user doc). New users created through 2026-12-31 America/New_York are auto-hidden (`hidden: true`); after that date they are created visible. Unhide with `--no-hidden` (existing users are never auto-hidden or auto-unhidden on login). Lookup is `--uid` or `--name` (case-insensitive `display_name`); not email.
 
 ```bash
 python scripts/make_admin.py --uid <firebase-uid> --admin
