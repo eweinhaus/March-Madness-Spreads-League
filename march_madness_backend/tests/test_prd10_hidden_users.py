@@ -8,25 +8,29 @@ By-uid GET routes 404 (not 403) when the target is not listed.
 
 import asyncio
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
 
 from auth import User
 from main import (
+    AUTO_HIDE_NEW_USERS_THROUGH,
     _compute_and_store_leaderboard_cache,
     _compute_live_data,
     _compute_player_stats_list,
     _consensus_counts_for_listed_users,
     _require_listed_user,
     get_current_admin_user,
+    get_current_user,
     get_game_picks,
     get_player_detailed_stats,
     get_user_picks,
     get_user_picks_status,
+    new_user_should_auto_hide,
     user_is_listed,
 )
 
@@ -493,3 +497,126 @@ def test_cli_invalidate_reuses_leaderboard_stats_live_helpers():
     with patch("main.invalidate_leaderboard_and_stats") as inv:
         make_admin.invalidate_list_caches(db)
     inv.assert_called_once_with(db)
+
+
+# ---------------------------------------------------------------------------
+# PRD-13: auto-hide new users through 2026-12-31 ET
+# ---------------------------------------------------------------------------
+
+ET = ZoneInfo("America/New_York")
+NEW_UID = "u_new_signup"
+
+
+def _run_get_current_user(db, uid=NEW_UID, email="new@example.com", name="New User"):
+    auth = MagicMock()
+    auth.verify_id_token.return_value = {"uid": uid, "email": email, "name": name}
+    with patch("main.get_auth", return_value=auth), patch(
+        "main.get_db", return_value=db
+    ), patch("main.invalidate_leaderboard_and_stats") as inv, patch(
+        "main.server_timestamp", return_value="ts"
+    ):
+        user = asyncio.run(get_current_user(authorization="Bearer fake-token"))
+    return user, inv
+
+
+def test_auto_hide_constant_is_end_of_2026():
+    assert AUTO_HIDE_NEW_USERS_THROUGH == date(2026, 12, 31)
+
+
+def test_new_user_should_auto_hide_true_last_moment_of_window():
+    now = datetime(2026, 12, 31, 23, 30, tzinfo=ET)
+    assert new_user_should_auto_hide(now) is True
+    now_eod = datetime(2026, 12, 31, 23, 59, 59, tzinfo=ET)
+    assert new_user_should_auto_hide(now_eod) is True
+
+
+def test_new_user_should_auto_hide_false_at_et_new_year():
+    now = datetime(2027, 1, 1, 0, 0, tzinfo=ET)
+    assert new_user_should_auto_hide(now) is False
+
+
+def test_new_user_should_auto_hide_uses_et_date_not_utc():
+    # 2027-01-01 00:30 UTC is still 2026-12-31 19:30 ET.
+    still_in_window = datetime(2027, 1, 1, 0, 30, tzinfo=timezone.utc)
+    assert new_user_should_auto_hide(still_in_window) is True
+    # 2027-01-01 05:00 UTC is 2027-01-01 00:00 ET (EST).
+    after_window = datetime(2027, 1, 1, 5, 0, tzinfo=timezone.utc)
+    assert new_user_should_auto_hide(after_window) is False
+
+
+def test_new_user_should_auto_hide_true_inside_window():
+    now = datetime(2026, 9, 9, 12, 0, tzinfo=ET)
+    assert new_user_should_auto_hide(now) is True
+
+
+def test_create_user_auto_hides_when_helper_true():
+    db = FakeDB({"users": []})
+    with patch("main.new_user_should_auto_hide", return_value=True):
+        user, inv = _run_get_current_user(db)
+
+    stored = db.collection("users").document(NEW_UID).get().to_dict()
+    assert stored["hidden"] is True
+    assert stored["make_picks"] is True
+    assert stored["admin"] is False
+    assert user.hidden is True
+    assert user.make_picks is True
+    inv.assert_called_once()
+
+
+def test_create_user_explicit_hidden_false_after_window():
+    db = FakeDB({"users": []})
+    with patch("main.new_user_should_auto_hide", return_value=False):
+        user, inv = _run_get_current_user(db)
+
+    stored = db.collection("users").document(NEW_UID).get().to_dict()
+    assert "hidden" in stored
+    assert stored["hidden"] is False
+    assert stored["make_picks"] is True
+    assert user.hidden is False
+    inv.assert_called_once()
+
+
+def test_existing_visible_user_login_does_not_touch_hidden():
+    existing = _user(PLAYER_UID, "Player One", hidden=False)
+    original = dict(existing)
+    db = FakeDB({"users": [FakeSnap(PLAYER_UID, existing)]})
+    user, inv = _run_get_current_user(
+        db, uid=PLAYER_UID, email=f"{PLAYER_UID}@example.com", name="Player One"
+    )
+    stored = db.collection("users").document(PLAYER_UID).get().to_dict()
+    assert stored["hidden"] is False
+    assert stored == original
+    assert user.hidden is False
+    inv.assert_not_called()
+
+
+def test_existing_hidden_user_login_stays_hidden():
+    existing = _user(HIDDEN_UID, "Hidden Admin", hidden=True, admin=True)
+    original = dict(existing)
+    db = FakeDB({"users": [FakeSnap(HIDDEN_UID, existing)]})
+    user, inv = _run_get_current_user(
+        db, uid=HIDDEN_UID, email=f"{HIDDEN_UID}@example.com", name="Hidden Admin"
+    )
+    stored = db.collection("users").document(HIDDEN_UID).get().to_dict()
+    assert stored["hidden"] is True
+    assert stored == original
+    assert user.hidden is True
+    inv.assert_not_called()
+
+
+def test_existing_user_missing_hidden_field_unchanged_on_login():
+    existing = _user("u_missing_hidden", "No Hidden Field")
+    assert "hidden" not in existing
+    original = dict(existing)
+    db = FakeDB({"users": [FakeSnap("u_missing_hidden", existing)]})
+    user, inv = _run_get_current_user(
+        db,
+        uid="u_missing_hidden",
+        email="u_missing_hidden@example.com",
+        name="No Hidden Field",
+    )
+    stored = db.collection("users").document("u_missing_hidden").get().to_dict()
+    assert "hidden" not in stored
+    assert stored == original
+    assert user.hidden is False
+    inv.assert_not_called()
