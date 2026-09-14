@@ -570,7 +570,7 @@ def _filter_by_week(items, date_key, filter_key):
 LEADERBOARD_CACHE_COLLECTION = "_cache"
 LEADERBOARD_CACHE_DOC_ID = "leaderboard_v1"
 # Bump when football/MM sort keys change so stale cached ranks are not served.
-LEADERBOARD_SORT_VERSION = "football_wins_locks_name_v1"
+LEADERBOARD_SORT_VERSION = "football_points_wins_locks_name_v1"
 
 # Compute filter keys dynamically based on sport mode
 def _get_leaderboard_filter_keys():
@@ -660,11 +660,11 @@ def _leaderboard_list_for_filter(
     """
     Compute leaderboard for a given filter period.
     
-    Football mode: total_wins DESC, correct_locks DESC, display_name ASC
-                   (case-insensitive). Numerical TB is not a sort key; it is
-                   still computed for display. Scoring is unchanged (lock = 2 pts).
-                   A win is a settled ATS-correct pick (points_awarded 1 or 2);
-                   a correct lock counts as one win, not two.
+    Football mode: total_points DESC, total_wins DESC, correct_locks DESC,
+                   display_name ASC (case-insensitive). Numerical TB is not a
+                   sort key; it is still computed for display. Scoring is
+                   unchanged (correct = 1, correct lock = 2 pts / one win).
+                   A win is a settled ATS-correct pick (points_awarded 1 or 2).
     
     March Madness mode: Uses 3 TBs, includes TB points in total_points, separate
                         overall vs period sort logic.
@@ -718,7 +718,7 @@ def _leaderboard_list_for_filter(
     
     if mode == SportMode.FOOTBALL:
         # Football: total_points = game picks only (no TB points). Scoring unchanged.
-        # Ranking: total_wins DESC, correct_locks DESC, display_name ASC
+        # Ranking: total_points DESC, total_wins DESC, correct_locks DESC, name ASC
         for uid, u in users.items():
             total_points = user_game_points.get(uid, 0)  # Game picks only
             total_wins = user_total_wins.get(uid, 0)
@@ -739,6 +739,7 @@ def _leaderboard_list_for_filter(
 
         # Same sort for all filters (including overall)
         leaderboard.sort(key=lambda x: (
+            -x["total_points"],              # Points DESC (game picks only)
             -x["total_wins"],                # ATS wins DESC (correct lock = 1 win)
             -x["correct_locks"],             # Correct locks DESC
             x["display_name"].lower(),       # Name ASC (case-insensitive)
