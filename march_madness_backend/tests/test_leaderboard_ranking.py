@@ -1,9 +1,10 @@
 """
 Tests for football leaderboard ranking.
 
-Football sort: total_wins DESC, correct_locks DESC, display_name ASC
-(case-insensitive). Numerical TB is not a sort key. March Madness sort is
-unchanged (points, then locks, then TB diffs on non-overall).
+Football sort: total_points DESC, total_wins DESC, correct_locks DESC,
+display_name ASC (case-insensitive). Numerical TB is not a sort key.
+March Madness sort is unchanged (points, then locks, then TB diffs on
+non-overall).
 """
 
 from datetime import datetime, timezone
@@ -102,7 +103,7 @@ def mock_tiebreakers():
 def test_football_blair_kyle_same_points_wins_rank(
     mock_mode, blair_kyle_users, mock_games, mock_tiebreakers, filter_key
 ):
-    """Blair 7-1 / 7 pts / missed lock ranks above Kyle 6-2 / 7 pts / hit lock."""
+    """Equal points: Blair 7-1 / 7 pts / missed lock ranks above Kyle 6-2 / 7 pts / hit lock."""
     mock_mode.return_value = SportMode.FOOTBALL
 
     # Blair: 7 correct unlocks (7 pts, 7 wins) + 1 missed lock
@@ -136,15 +137,16 @@ def test_football_blair_kyle_same_points_wins_rank(
     assert leaderboard[1]["uid"] == "kyle"
 
 
+@pytest.mark.parametrize("filter_key", ["overall", "week_1"])
 @patch("main.get_sport_mode")
-def test_football_higher_wins_rank_above_more_points_and_locks(
-    mock_mode, mock_users, mock_games, mock_tiebreakers
+def test_football_more_points_rank_above_more_wins(
+    mock_mode, mock_users, mock_games, mock_tiebreakers, filter_key
 ):
-    """More ATS wins rank first even when the other player has more points and locks."""
+    """More points rank first even when the other player has more ATS wins."""
     mock_mode.return_value = SportMode.FOOTBALL
 
-    # Charlie (later name) has 4 unlocks / 4 pts / 0 locks.
-    # Alice has 3 correct locks / 6 pts / 3 locks — still ranks below.
+    # Charlie (later name) has 4 unlocks / 4 pts / 4 wins / 0 locks.
+    # Alice has 3 correct locks / 6 pts / 3 wins / 3 locks — ranks first on points.
     all_picks = [
         _pick("user3", "game1", 1),
         _pick("user3", "game2", 1, game_date=SEP6),
@@ -156,32 +158,31 @@ def test_football_higher_wins_rank_above_more_points_and_locks(
     ]
 
     leaderboard = _leaderboard_list_for_filter(
-        mock_users, mock_games, mock_tiebreakers, all_picks, [], "overall"
+        mock_users, mock_games, mock_tiebreakers, all_picks, [], filter_key
     )
 
-    assert leaderboard[0]["uid"] == "user3"
-    assert leaderboard[0]["total_wins"] == 4
-    assert leaderboard[0]["total_points"] == 4
-    assert leaderboard[0]["correct_locks"] == 0
-    assert leaderboard[1]["uid"] == "user1"
-    assert leaderboard[1]["total_wins"] == 3
-    assert leaderboard[1]["total_points"] == 6
-    assert leaderboard[1]["correct_locks"] == 3
+    assert leaderboard[0]["uid"] == "user1"
+    assert leaderboard[0]["total_points"] == 6
+    assert leaderboard[0]["total_wins"] == 3
+    assert leaderboard[0]["correct_locks"] == 3
+    assert leaderboard[1]["uid"] == "user3"
+    assert leaderboard[1]["total_points"] == 4
+    assert leaderboard[1]["total_wins"] == 4
+    assert leaderboard[1]["correct_locks"] == 0
 
 
 @patch("main.get_sport_mode")
-def test_football_equal_wins_more_correct_locks_ranks_higher(
+def test_football_equal_points_and_wins_more_correct_locks_ranks_higher(
     mock_mode, mock_users, mock_games, mock_tiebreakers
 ):
-    """Equal wins: more correct locks ranks higher (even if name would sort later)."""
+    """Equal points and wins: more correct locks ranks higher (even if name would sort later)."""
     mock_mode.return_value = SportMode.FOOTBALL
 
-    # Alice: 2 unlocks (2 wins, 0 locks). Charlie: 1 unlock + 1 correct lock (2 wins, 1 lock).
+    # Isolate locks as the 3rd key: both 2 pts / 1 win. Charlie's pick is a lock.
+    # (A 2-pt unlock is not typical scoring; it keeps points and wins tied.)
     all_picks = [
-        _pick("user1", "game1", 1),
-        _pick("user1", "game2", 1, game_date=SEP6),
-        _pick("user3", "game1", 1),
-        _pick("user3", "game2", 2, lock=True, game_date=SEP6),
+        _pick("user1", "game1", 2, lock=False),
+        _pick("user3", "game1", 2, lock=True),
     ]
 
     leaderboard = _leaderboard_list_for_filter(
@@ -189,18 +190,20 @@ def test_football_equal_wins_more_correct_locks_ranks_higher(
     )
 
     assert leaderboard[0]["uid"] == "user3"
-    assert leaderboard[0]["total_wins"] == 2
+    assert leaderboard[0]["total_points"] == 2
+    assert leaderboard[0]["total_wins"] == 1
     assert leaderboard[0]["correct_locks"] == 1
     assert leaderboard[1]["uid"] == "user1"
-    assert leaderboard[1]["total_wins"] == 2
+    assert leaderboard[1]["total_points"] == 2
+    assert leaderboard[1]["total_wins"] == 1
     assert leaderboard[1]["correct_locks"] == 0
 
 
 @patch("main.get_sport_mode")
-def test_football_equal_wins_and_locks_sort_by_name(
+def test_football_equal_points_wins_and_locks_sort_by_name(
     mock_mode, mock_users, mock_games, mock_tiebreakers
 ):
-    """Equal wins and locks: case-insensitive display_name ascending."""
+    """Full tie on points/wins/locks: case-insensitive display_name ascending."""
     mock_mode.return_value = SportMode.FOOTBALL
 
     all_picks = [
@@ -288,7 +291,7 @@ def test_football_push_incorrect_unsettled_are_not_wins(
 def test_football_tb_diff_not_used_for_sort(
     mock_mode, mock_users, mock_games, mock_tiebreakers
 ):
-    """Same wins/locks: better TB does not outrank an earlier display_name."""
+    """Same points/wins/locks: better TB does not outrank an earlier display_name."""
     mock_mode.return_value = SportMode.FOOTBALL
 
     all_picks = [
@@ -432,7 +435,7 @@ def test_march_madness_period_sort_still_points_then_locks(
 @patch("main._compute_and_store_leaderboard_cache")
 @patch("main._try_acquire_leaderboard_build_lock", return_value=True)
 def test_stale_sort_version_rebuilds_cache(mock_lock, mock_compute, mock_release):
-    """Cached ranks from the old points→TB→locks sort must not be served."""
+    """Cached ranks from the old wins-first sort must not be served."""
     from unittest.mock import MagicMock
 
     from main import LEADERBOARD_SORT_VERSION, _get_leaderboard_response
@@ -447,7 +450,7 @@ def test_stale_sort_version_rebuilds_cache(mock_lock, mock_compute, mock_release
     snap.exists = True
     snap.to_dict.return_value = {
         "overall": [{"uid": "kyle", "total_points": 7, "correct_locks": 1}],
-        "sort_version": "prd03_points_tb_locks",
+        "sort_version": "football_wins_locks_name_v1",
     }
     cache_doc.get.return_value = snap
 
@@ -455,7 +458,7 @@ def test_stale_sort_version_rebuilds_cache(mock_lock, mock_compute, mock_release
 
     assert result == rebuilt
     mock_compute.assert_called_once_with(db)
-    assert LEADERBOARD_SORT_VERSION == "football_wins_locks_name_v1"
+    assert LEADERBOARD_SORT_VERSION == "football_points_wins_locks_name_v1"
 
 
 @patch("main._compute_and_store_leaderboard_cache")
