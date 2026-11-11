@@ -570,7 +570,7 @@ def _filter_by_week(items, date_key, filter_key):
 LEADERBOARD_CACHE_COLLECTION = "_cache"
 LEADERBOARD_CACHE_DOC_ID = "leaderboard_v1"
 # Bump when football/MM sort keys change so stale cached ranks are not served.
-LEADERBOARD_SORT_VERSION = "football_points_wins_locks_name_v1"
+LEADERBOARD_SORT_VERSION = "football_week_tb_overall_locks_v1"
 
 # Compute filter keys dynamically based on sport mode
 def _get_leaderboard_filter_keys():
@@ -660,10 +660,14 @@ def _leaderboard_list_for_filter(
     """
     Compute leaderboard for a given filter period.
     
-    Football mode: total_points DESC, total_wins DESC, correct_locks DESC,
-                   display_name ASC (case-insensitive). Numerical TB is not a
-                   sort key; it is still computed for display. Scoring is
-                   unchanged (correct = 1, correct lock = 2 pts / one win).
+    Football mode: overall uses total_points DESC, total_wins DESC,
+                   correct_locks DESC, display_name ASC (case-insensitive).
+                   Weekly filters (week_N) use total_points DESC, total_wins
+                   DESC, first_tiebreaker_diff ASC (closest guess ranks
+                   higher; missing/non-numeric = 999999), display_name ASC.
+                   Correct locks are not a weekly sort key. Numerical TB is
+                   still computed for display. Scoring is unchanged
+                   (correct = 1, correct lock = 2 pts / one win).
                    A win is a settled ATS-correct pick (points_awarded 1 or 2).
     
     March Madness mode: Uses 3 TBs, includes TB points in total_points, separate
@@ -718,7 +722,8 @@ def _leaderboard_list_for_filter(
     
     if mode == SportMode.FOOTBALL:
         # Football: total_points = game picks only (no TB points). Scoring unchanged.
-        # Ranking: total_points DESC, total_wins DESC, correct_locks DESC, name ASC
+        # Overall ranking: points DESC, wins DESC, correct_locks DESC, name ASC.
+        # Weekly ranking: points DESC, wins DESC, first_tiebreaker_diff ASC, name ASC.
         for uid, u in users.items():
             total_points = user_game_points.get(uid, 0)  # Game picks only
             total_wins = user_total_wins.get(uid, 0)
@@ -737,13 +742,20 @@ def _leaderboard_list_for_filter(
                 "third_tiebreaker_diff": 999999,   # Not used in football
             })
 
-        # Same sort for all filters (including overall)
-        leaderboard.sort(key=lambda x: (
-            -x["total_points"],              # Points DESC (game picks only)
-            -x["total_wins"],                # ATS wins DESC (correct lock = 1 win)
-            -x["correct_locks"],             # Correct locks DESC
-            x["display_name"].lower(),       # Name ASC (case-insensitive)
-        ))
+        if filter_key == "overall":
+            leaderboard.sort(key=lambda x: (
+                -x["total_points"],              # Points DESC (game picks only)
+                -x["total_wins"],                # ATS wins DESC (correct lock = 1 win)
+                -x["correct_locks"],             # Correct locks DESC
+                x["display_name"].lower(),       # Name ASC (case-insensitive)
+            ))
+        else:  # week_N
+            leaderboard.sort(key=lambda x: (
+                -x["total_points"],              # Points DESC (game picks only)
+                -x["total_wins"],                # ATS wins DESC (correct lock = 1 win)
+                x["first_tiebreaker_diff"],      # Closer TB guess ranks higher; 999999 last
+                x["display_name"].lower(),       # Name ASC (case-insensitive)
+            ))
     
     else:  # March Madness mode
         # Compute TB points (only in MM mode)

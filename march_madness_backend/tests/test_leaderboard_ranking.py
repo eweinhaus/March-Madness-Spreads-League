@@ -1,8 +1,13 @@
 """
 Tests for football leaderboard ranking.
 
-Football sort: total_points DESC, total_wins DESC, correct_locks DESC,
-display_name ASC (case-insensitive). Numerical TB is not a sort key.
+Football overall: total_points DESC, total_wins DESC, correct_locks DESC,
+display_name ASC (case-insensitive). Numerical TB is not an overall sort key.
+
+Football weekly (week_N): total_points DESC, total_wins DESC,
+first_tiebreaker_diff ASC (closest guess ranks higher; missing/non-numeric
+= 999999), display_name ASC. Correct locks are not a weekly sort key.
+
 March Madness sort is unchanged (points, then locks, then TB diffs on
 non-overall).
 """
@@ -18,6 +23,8 @@ from sport_config import SportMode
 
 SEP5 = datetime(2026, 9, 5, 19, 0, 0, tzinfo=timezone.utc)
 SEP6 = datetime(2026, 9, 6, 20, 0, 0, tzinfo=timezone.utc)
+# Week 10: Wed 2026-11-04 00:00 ET through Wed 2026-11-11 00:00 ET
+WEEK10 = datetime(2026, 11, 7, 19, 0, 0, tzinfo=timezone.utc)
 
 
 def _pick(uid, game_id, points_awarded, lock=False, game_date=SEP5):
@@ -291,7 +298,7 @@ def test_football_push_incorrect_unsettled_are_not_wins(
 def test_football_tb_diff_not_used_for_sort(
     mock_mode, mock_users, mock_games, mock_tiebreakers
 ):
-    """Same points/wins/locks: better TB does not outrank an earlier display_name."""
+    """Overall: same points/wins/locks, better TB does not outrank an earlier name."""
     mock_mode.return_value = SportMode.FOOTBALL
 
     all_picks = [
@@ -313,6 +320,267 @@ def test_football_tb_diff_not_used_for_sort(
     assert leaderboard[0]["first_tiebreaker_diff"] == 5.0
     assert leaderboard[1]["uid"] == "user2"
     assert leaderboard[1]["first_tiebreaker_diff"] == 2.0
+
+
+@patch("main.get_sport_mode")
+def test_football_week_smaller_tb_diff_ranks_first(
+    mock_mode, mock_users, mock_games, mock_tiebreakers
+):
+    """Week filter: equal points and wins, smaller first_tiebreaker_diff ranks first."""
+    mock_mode.return_value = SportMode.FOOTBALL
+
+    all_picks = [
+        _pick("user1", "game1", 1),
+        _pick("user2", "game1", 1),
+    ]
+    all_tb_picks = [
+        {"user_id": "user1", "tiebreaker_id": "tb1", "answer": "50", "points_awarded": 0, "start_time": SEP5},
+        {"user_id": "user2", "tiebreaker_id": "tb1", "answer": "43", "points_awarded": 0, "start_time": SEP5},
+    ]
+
+    leaderboard = _leaderboard_list_for_filter(
+        mock_users, mock_games, mock_tiebreakers, all_picks, all_tb_picks, "week_1"
+    )
+
+    assert leaderboard[0]["uid"] == "user2"
+    assert leaderboard[0]["first_tiebreaker_diff"] == 2.0
+    assert leaderboard[1]["uid"] == "user1"
+    assert leaderboard[1]["first_tiebreaker_diff"] == 5.0
+
+
+@patch("main.get_sport_mode")
+def test_football_week_higher_points_beat_better_tb(
+    mock_mode, mock_users, mock_games, mock_tiebreakers
+):
+    """Week filter: more points still rank first even with a worse TB."""
+    mock_mode.return_value = SportMode.FOOTBALL
+
+    all_picks = [
+        _pick("user1", "game1", 1),
+        _pick("user1", "game2", 1, game_date=SEP6),
+        _pick("user2", "game1", 1),
+    ]
+    all_tb_picks = [
+        {"user_id": "user1", "tiebreaker_id": "tb1", "answer": "90", "points_awarded": 0, "start_time": SEP5},
+        {"user_id": "user2", "tiebreaker_id": "tb1", "answer": "45", "points_awarded": 0, "start_time": SEP5},
+    ]
+
+    leaderboard = _leaderboard_list_for_filter(
+        mock_users, mock_games, mock_tiebreakers, all_picks, all_tb_picks, "week_1"
+    )
+
+    assert leaderboard[0]["uid"] == "user1"
+    assert leaderboard[0]["total_points"] == 2
+    assert leaderboard[0]["first_tiebreaker_diff"] == 45.0
+    assert leaderboard[1]["uid"] == "user2"
+    assert leaderboard[1]["total_points"] == 1
+    assert leaderboard[1]["first_tiebreaker_diff"] == 0.0
+
+
+@patch("main.get_sport_mode")
+def test_football_week_higher_wins_beat_better_tb(
+    mock_mode, mock_users, mock_games, mock_tiebreakers
+):
+    """Week filter: equal points, more wins rank first even with a worse TB."""
+    mock_mode.return_value = SportMode.FOOTBALL
+
+    # Alice: 2 unlocks = 2 pts / 2 wins. Bob: 1 lock = 2 pts / 1 win, perfect TB.
+    all_picks = [
+        _pick("user1", "game1", 1),
+        _pick("user1", "game2", 1, game_date=SEP6),
+        _pick("user2", "game1", 2, lock=True),
+    ]
+    all_tb_picks = [
+        {"user_id": "user1", "tiebreaker_id": "tb1", "answer": "90", "points_awarded": 0, "start_time": SEP5},
+        {"user_id": "user2", "tiebreaker_id": "tb1", "answer": "45", "points_awarded": 0, "start_time": SEP5},
+    ]
+
+    leaderboard = _leaderboard_list_for_filter(
+        mock_users, mock_games, mock_tiebreakers, all_picks, all_tb_picks, "week_1"
+    )
+
+    assert leaderboard[0]["uid"] == "user1"
+    assert leaderboard[0]["total_points"] == 2
+    assert leaderboard[0]["total_wins"] == 2
+    assert leaderboard[1]["uid"] == "user2"
+    assert leaderboard[1]["total_points"] == 2
+    assert leaderboard[1]["total_wins"] == 1
+    assert leaderboard[1]["first_tiebreaker_diff"] == 0.0
+
+
+@patch("main.get_sport_mode")
+def test_football_week_missing_tb_ranks_below_valid_guess(
+    mock_mode, mock_users, mock_games, mock_tiebreakers
+):
+    """Week filter: missing guess (999999) ranks below a valid guess when otherwise tied."""
+    mock_mode.return_value = SportMode.FOOTBALL
+
+    all_picks = [
+        _pick("user1", "game1", 1),
+        _pick("user2", "game1", 1),
+    ]
+    all_tb_picks = [
+        {"user_id": "user2", "tiebreaker_id": "tb1", "answer": "50", "points_awarded": 0, "start_time": SEP5},
+    ]
+
+    leaderboard = _leaderboard_list_for_filter(
+        mock_users, mock_games, mock_tiebreakers, all_picks, all_tb_picks, "week_1"
+    )
+    by_uid = {row["uid"]: row for row in leaderboard}
+
+    assert by_uid["user2"]["first_tiebreaker_diff"] == 5.0
+    assert by_uid["user1"]["first_tiebreaker_diff"] == 999999
+    assert leaderboard[0]["uid"] == "user2"
+    assert leaderboard[1]["uid"] == "user1"
+
+
+@patch("main.get_sport_mode")
+def test_football_week_equal_tb_diffs_fall_to_name(
+    mock_mode, mock_users, mock_games, mock_tiebreakers
+):
+    """Week filter: equal TB diffs fall to case-insensitive display_name ASC."""
+    mock_mode.return_value = SportMode.FOOTBALL
+
+    all_picks = [
+        _pick("user3", "game1", 1),
+        _pick("user1", "game1", 1),
+    ]
+    all_tb_picks = [
+        {"user_id": "user1", "tiebreaker_id": "tb1", "answer": "50", "points_awarded": 0, "start_time": SEP5},
+        {"user_id": "user3", "tiebreaker_id": "tb1", "answer": "40", "points_awarded": 0, "start_time": SEP5},
+    ]
+
+    leaderboard = _leaderboard_list_for_filter(
+        mock_users, mock_games, mock_tiebreakers, all_picks, all_tb_picks, "week_1"
+    )
+
+    assert leaderboard[0]["first_tiebreaker_diff"] == 5.0
+    assert leaderboard[1]["first_tiebreaker_diff"] == 5.0
+    assert leaderboard[0]["display_name"] == "Alice"
+    assert leaderboard[1]["display_name"] == "Charlie"
+
+
+@patch("main.get_sport_mode")
+def test_football_week_correct_locks_do_not_break_ties(
+    mock_mode, mock_users, mock_games, mock_tiebreakers
+):
+    """Week filter: more locks with worse TB rank lower when points/wins tie."""
+    mock_mode.return_value = SportMode.FOOTBALL
+
+    # Isolate locks vs TB: both 2 pts / 1 win. Charlie's pick is a lock.
+    all_picks = [
+        _pick("user1", "game1", 2, lock=False),
+        _pick("user3", "game1", 2, lock=True),
+    ]
+    all_tb_picks = [
+        {"user_id": "user1", "tiebreaker_id": "tb1", "answer": "46", "points_awarded": 0, "start_time": SEP5},
+        {"user_id": "user3", "tiebreaker_id": "tb1", "answer": "90", "points_awarded": 0, "start_time": SEP5},
+    ]
+
+    leaderboard = _leaderboard_list_for_filter(
+        mock_users, mock_games, mock_tiebreakers, all_picks, all_tb_picks, "week_1"
+    )
+
+    assert leaderboard[0]["uid"] == "user1"
+    assert leaderboard[0]["correct_locks"] == 0
+    assert leaderboard[0]["first_tiebreaker_diff"] == 1.0
+    assert leaderboard[1]["uid"] == "user3"
+    assert leaderboard[1]["correct_locks"] == 1
+    assert leaderboard[1]["first_tiebreaker_diff"] == 45.0
+
+
+@patch("main.get_sport_mode")
+def test_football_overall_locks_break_ties_tb_ignored(
+    mock_mode, mock_users, mock_games, mock_tiebreakers
+):
+    """Overall filter: PRD-14 order — locks break ties; TB is ignored."""
+    mock_mode.return_value = SportMode.FOOTBALL
+
+    all_picks = [
+        _pick("user1", "game1", 2, lock=False),
+        _pick("user3", "game1", 2, lock=True),
+    ]
+    all_tb_picks = [
+        {"user_id": "user1", "tiebreaker_id": "tb1", "answer": "46", "points_awarded": 0, "start_time": SEP5},
+        {"user_id": "user3", "tiebreaker_id": "tb1", "answer": "90", "points_awarded": 0, "start_time": SEP5},
+    ]
+
+    leaderboard = _leaderboard_list_for_filter(
+        mock_users, mock_games, mock_tiebreakers, all_picks, all_tb_picks, "overall"
+    )
+
+    assert leaderboard[0]["uid"] == "user3"
+    assert leaderboard[0]["correct_locks"] == 1
+    assert leaderboard[0]["first_tiebreaker_diff"] == 45.0
+    assert leaderboard[1]["uid"] == "user1"
+    assert leaderboard[1]["correct_locks"] == 0
+    assert leaderboard[1]["first_tiebreaker_diff"] == 1.0
+
+
+@patch("main.get_sport_mode")
+def test_football_week_10_tied_players_rank_by_tb_closeness(mock_mode):
+    """Week 10: four players at 9 pts / 8 wins / 1 lock rank by TB closeness to 29."""
+    mock_mode.return_value = SportMode.FOOTBALL
+
+    users = {
+        "bryce": {"uid": "bryce", "display_name": "Bryce Unruh", "make_picks": True},
+        "kyle": {"uid": "kyle", "display_name": "Kyle McGreevy", "make_picks": True},
+        "brett": {"uid": "brett", "display_name": "Brett Bell", "make_picks": True},
+        "zack": {"uid": "zack", "display_name": "zack ledesma", "make_picks": True},
+    }
+    games = {
+        f"w10g{i}": {
+            "id": f"w10g{i}",
+            "home_team": f"Home{i}",
+            "away_team": f"Away{i}",
+            "spread": 3.5,
+            "game_date": WEEK10,
+        }
+        for i in range(1, 9)
+    }
+    tiebreakers = {
+        "w10tb": {
+            "id": "w10tb",
+            "question": "Total points?",
+            "start_time": WEEK10,
+            "answer": "29",
+        }
+    }
+
+    def tied_picks(uid):
+        picks = [_pick(uid, f"w10g{i}", 1, lock=False, game_date=WEEK10) for i in range(1, 8)]
+        picks.append(_pick(uid, "w10g8", 2, lock=True, game_date=WEEK10))
+        return picks
+
+    all_picks = (
+        tied_picks("bryce") + tied_picks("kyle") + tied_picks("brett") + tied_picks("zack")
+    )
+    guesses = {"bryce": "41", "kyle": "44", "brett": "45", "zack": "48"}
+    all_tb_picks = [
+        {
+            "user_id": uid,
+            "tiebreaker_id": "w10tb",
+            "answer": guess,
+            "points_awarded": 0,
+            "start_time": WEEK10,
+        }
+        for uid, guess in guesses.items()
+    ]
+
+    leaderboard = _leaderboard_list_for_filter(
+        users, games, tiebreakers, all_picks, all_tb_picks, "week_10"
+    )
+
+    ranked = [row["display_name"] for row in leaderboard]
+    assert ranked[:4] == ["Bryce Unruh", "Kyle McGreevy", "Brett Bell", "zack ledesma"]
+    by_name = {row["display_name"]: row for row in leaderboard}
+    assert by_name["Bryce Unruh"]["total_points"] == 9
+    assert by_name["Bryce Unruh"]["total_wins"] == 8
+    assert by_name["Bryce Unruh"]["correct_locks"] == 1
+    assert by_name["Bryce Unruh"]["first_tiebreaker_diff"] == 12.0
+    assert by_name["Kyle McGreevy"]["first_tiebreaker_diff"] == 15.0
+    assert by_name["Brett Bell"]["first_tiebreaker_diff"] == 16.0
+    assert by_name["zack ledesma"]["first_tiebreaker_diff"] == 19.0
 
 
 @patch("main.get_sport_mode")
@@ -450,7 +718,7 @@ def test_stale_sort_version_rebuilds_cache(mock_lock, mock_compute, mock_release
     snap.exists = True
     snap.to_dict.return_value = {
         "overall": [{"uid": "kyle", "total_points": 7, "correct_locks": 1}],
-        "sort_version": "football_wins_locks_name_v1",
+        "sort_version": "football_points_wins_locks_name_v1",
     }
     cache_doc.get.return_value = snap
 
@@ -458,7 +726,7 @@ def test_stale_sort_version_rebuilds_cache(mock_lock, mock_compute, mock_release
 
     assert result == rebuilt
     mock_compute.assert_called_once_with(db)
-    assert LEADERBOARD_SORT_VERSION == "football_points_wins_locks_name_v1"
+    assert LEADERBOARD_SORT_VERSION == "football_week_tb_overall_locks_v1"
 
 
 @patch("main._compute_and_store_leaderboard_cache")

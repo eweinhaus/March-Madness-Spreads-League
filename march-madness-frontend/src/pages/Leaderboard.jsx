@@ -164,7 +164,8 @@ export default function Leaderboard() {
                 </span>
                 {(() => {
                   const isFootball = config?.sport_mode === 'football';
-                  // Football rank is points → wins → locks → name; TB is not a sort key.
+                  // Football overall: points → wins → locks → name.
+                  // Weekly: points → wins → TB closeness → name (TB breaks weekly ties).
                   const showTB = !isFootball
                     && filter !== 'overall'
                     && player.first_tiebreaker_diff !== 999999;
